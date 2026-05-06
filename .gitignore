@@ -1,0 +1,14 @@
+# Runtime/local artifacts
+.DS_Store
+*.log
+node_modules/
+.archon/
+
+# Do not store secrets or machine-local pi state here
+auth.json
+settings.json
+models.json
+sessions/
+git/
+npm/
+bin/
