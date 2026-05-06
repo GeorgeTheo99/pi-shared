@@ -1,0 +1,261 @@
+{
+  "version": 1,
+  "name": "software-engineering-classics",
+  "selection_method": "Curated from SearXNG discovery queries for widely cited, influential, and respected software texts. Public-web/open-license sources are separated from copyrighted metadata-only sources.",
+  "runtime_policy": "Prefer local corpus search. Use metadata-only entries as pointers; do not ingest copyrighted texts unless the user supplies a lawful copy for private indexing.",
+  "sources": [
+    {
+      "id": "sicp",
+      "title": "Structure and Interpretation of Computer Programs",
+      "authors": ["Harold Abelson", "Gerald Jay Sussman", "Julie Sussman"],
+      "canonical_url": "https://mitp-content-server.mit.edu/books/content/sectbyfn/books_pres_0/6515/sicp.zip/index.html",
+      "access": "full_text_public_web",
+      "license_status": "CC BY-SA 4.0 stated on MIT Press web page",
+      "ingest_policy": "eligible_for_local_full_text_index",
+      "tags": ["abstraction", "programming", "scheme", "computer-science", "functional-programming"],
+      "searxng_queries": ["Structure and Interpretation of Computer Programs HTML license"]
+    },
+    {
+      "id": "software-engineering-at-google",
+      "title": "Software Engineering at Google",
+      "authors": ["Titus Winters", "Tom Manshreck", "Hyrum Wright"],
+      "canonical_url": "https://abseil.io/resources/swe-book",
+      "access": "full_text_public_web",
+      "license_status": "CC BY-NC-ND 4.0 stated on Abseil page",
+      "ingest_policy": "eligible_for_local_full_text_index_with_license_attribution",
+      "tags": ["software-engineering", "scale", "codebase", "testing", "culture", "sustainability"],
+      "searxng_queries": ["Software Engineering at Google book free online license"]
+    },
+    {
+      "id": "sre-book",
+      "title": "Site Reliability Engineering: How Google Runs Production Systems",
+      "authors": ["Betsy Beyer", "Chris Jones", "Jennifer Petoff", "Niall Richard Murphy"],
+      "canonical_url": "https://sre.google/sre-book/table-of-contents/",
+      "access": "full_text_public_web",
+      "license_status": "CC BY-NC-ND 4.0 stated on Google SRE table of contents page",
+      "ingest_policy": "eligible_for_local_full_text_index_with_license_attribution",
+      "tags": ["sre", "operations", "reliability", "monitoring", "incidents", "distributed-systems"],
+      "searxng_queries": ["Site Reliability Engineering book Google free online license"]
+    },
+    {
+      "id": "aosa",
+      "title": "The Architecture of Open Source Applications",
+      "authors": ["Amy Brown", "Greg Wilson", "contributors"],
+      "canonical_url": "https://aosabook.org/en/",
+      "access": "full_text_public_web",
+      "license_status": "Creative Commons license page available at https://aosabook.org/en/license.html",
+      "ingest_policy": "eligible_for_local_full_text_index_with_license_attribution",
+      "tags": ["architecture", "open-source", "case-studies", "systems-design"],
+      "searxng_queries": ["The Architecture of Open Source Applications book license"]
+    },
+    {
+      "id": "twelve-factor-app",
+      "title": "The Twelve-Factor App",
+      "authors": ["Adam Wiggins"],
+      "canonical_url": "https://12factor.net/",
+      "access": "public_web",
+      "license_status": "site footer states copyright Salesforce; source available from site GitHub",
+      "ingest_policy": "index_public_web_text_for_private_local_use; verify license before redistribution",
+      "tags": ["cloud", "saas", "deployment", "configuration", "operations"],
+      "searxng_queries": ["The Twelve-Factor App license methodology"]
+    },
+    {
+      "id": "worse-is-better",
+      "title": "Worse Is Better / The Rise of Worse Is Better",
+      "authors": ["Richard P. Gabriel"],
+      "canonical_url": "https://dreamsongs.com/WorseIsBetter.html",
+      "access": "public_web",
+      "license_status": "public author-hosted web essay; verify license before redistribution",
+      "ingest_policy": "index_public_web_text_for_private_local_use; verify license before redistribution",
+      "tags": ["design", "simplicity", "worse-is-better", "software-philosophy"],
+      "searxng_queries": ["Richard Gabriel Worse is Better essay source"]
+    },
+    {
+      "id": "out-of-the-tar-pit",
+      "title": "Out of the Tar Pit",
+      "authors": ["Ben Moseley", "Peter Marks"],
+      "canonical_url": "https://curtclifton.net/papers/MoseleyMarks06a.pdf",
+      "access": "public_web_pdf",
+      "license_status": "publicly available paper; verify redistribution rights before committing extracted text",
+      "ingest_policy": "metadata_until_license_verified_or_user_supplies_copy",
+      "tags": ["complexity", "state", "functional-relational-programming", "software-design"],
+      "searxng_queries": ["Out of the Tar Pit paper full text software engineering"]
+    },
+    {
+      "id": "mythical-man-month",
+      "title": "The Mythical Man-Month",
+      "authors": ["Frederick P. Brooks Jr."],
+      "canonical_url": "https://en.wikipedia.org/wiki/The_Mythical_Man-Month",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["project-management", "estimation", "teams", "software-engineering-classic"],
+      "searxng_queries": ["most influential software engineering books mythical man month"]
+    },
+    {
+      "id": "pragmatic-programmer",
+      "title": "The Pragmatic Programmer",
+      "authors": ["Andrew Hunt", "David Thomas"],
+      "canonical_url": "https://pragprog.com/titles/tpp20/the-pragmatic-programmer-20th-anniversary-edition/",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["craft", "professionalism", "practice", "career"],
+      "searxng_queries": ["most influential software engineering books pragmatic programmer"]
+    },
+    {
+      "id": "code-complete",
+      "title": "Code Complete",
+      "authors": ["Steve McConnell"],
+      "canonical_url": "https://www.microsoftpressstore.com/store/code-complete-9780735619678",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["construction", "coding", "quality", "implementation"],
+      "searxng_queries": ["Code Complete influential software engineering book"]
+    },
+    {
+      "id": "design-patterns-gof",
+      "title": "Design Patterns: Elements of Reusable Object-Oriented Software",
+      "authors": ["Erich Gamma", "Richard Helm", "Ralph Johnson", "John Vlissides"],
+      "canonical_url": "https://en.wikipedia.org/wiki/Design_Patterns",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["patterns", "object-oriented-design", "architecture", "reuse"],
+      "searxng_queries": ["Design Patterns Gang of Four influential software engineering book"]
+    },
+    {
+      "id": "refactoring",
+      "title": "Refactoring",
+      "authors": ["Martin Fowler"],
+      "canonical_url": "https://martinfowler.com/books/refactoring.html",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["refactoring", "design", "code-smells", "testing"],
+      "searxng_queries": ["Refactoring Martin Fowler classic software engineering book"]
+    },
+    {
+      "id": "clean-code",
+      "title": "Clean Code",
+      "authors": ["Robert C. Martin"],
+      "canonical_url": "https://www.pearson.com/en-us/subject-catalog/p/clean-code-a-handbook-of-agile-software-craftsmanship/P200000009042",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["code-quality", "craft", "readability", "testing"],
+      "searxng_queries": ["Clean Code influential software engineering book"]
+    },
+    {
+      "id": "working-effectively-with-legacy-code",
+      "title": "Working Effectively with Legacy Code",
+      "authors": ["Michael Feathers"],
+      "canonical_url": "https://www.oreilly.com/library/view/working-effectively-with/0131177052/",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["legacy-code", "testing", "refactoring", "maintenance"],
+      "searxng_queries": ["Working Effectively with Legacy Code classic software engineering book"]
+    },
+    {
+      "id": "domain-driven-design",
+      "title": "Domain-Driven Design",
+      "authors": ["Eric Evans"],
+      "canonical_url": "https://www.domainlanguage.com/ddd/",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["ddd", "modeling", "architecture", "domain-model"],
+      "searxng_queries": ["Domain-Driven Design Eric Evans classic software engineering book"]
+    },
+    {
+      "id": "poeaa",
+      "title": "Patterns of Enterprise Application Architecture",
+      "authors": ["Martin Fowler"],
+      "canonical_url": "https://martinfowler.com/books/eaa.html",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["enterprise", "patterns", "architecture", "applications"],
+      "searxng_queries": ["Patterns of Enterprise Application Architecture classic software book"]
+    },
+    {
+      "id": "peopleware",
+      "title": "Peopleware",
+      "authors": ["Tom DeMarco", "Tim Lister"],
+      "canonical_url": "https://en.wikipedia.org/wiki/Peopleware:_Productive_Projects_and_Teams",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["teams", "management", "culture", "productivity"],
+      "searxng_queries": ["Peopleware classic software engineering book"]
+    },
+    {
+      "id": "continuous-delivery",
+      "title": "Continuous Delivery",
+      "authors": ["Jez Humble", "David Farley"],
+      "canonical_url": "https://continuousdelivery.com/book/",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["delivery", "deployment", "devops", "automation"],
+      "searxng_queries": ["Continuous Delivery Humble Farley classic software book"]
+    },
+    {
+      "id": "release-it",
+      "title": "Release It!",
+      "authors": ["Michael T. Nygard"],
+      "canonical_url": "https://pragprog.com/titles/mnee2/release-it-second-edition/",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["production", "resilience", "stability", "operations"],
+      "searxng_queries": ["Release It Michael Nygard classic software architecture book"]
+    },
+    {
+      "id": "ddia",
+      "title": "Designing Data-Intensive Applications",
+      "authors": ["Martin Kleppmann"],
+      "canonical_url": "https://dataintensive.net/",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["data-systems", "distributed-systems", "storage", "consistency"],
+      "searxng_queries": ["Designing Data-Intensive Applications classic software book"]
+    },
+    {
+      "id": "accelerate",
+      "title": "Accelerate",
+      "authors": ["Nicole Forsgren", "Jez Humble", "Gene Kim"],
+      "canonical_url": "https://itrevolution.com/product/accelerate/",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["devops", "metrics", "delivery", "research"],
+      "searxng_queries": ["Accelerate Forsgren Humble Kim software delivery book"]
+    },
+    {
+      "id": "philosophy-of-software-design",
+      "title": "A Philosophy of Software Design",
+      "authors": ["John Ousterhout"],
+      "canonical_url": "https://web.stanford.edu/~ouster/cgi-bin/book.php",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["complexity", "design", "interfaces", "modules"],
+      "searxng_queries": ["A Philosophy of Software Design Ousterhout book"]
+    },
+    {
+      "id": "tdd-by-example",
+      "title": "Test-Driven Development: By Example",
+      "authors": ["Kent Beck"],
+      "canonical_url": "https://www.oreilly.com/library/view/test-driven-development/0321146530/",
+      "access": "metadata_only",
+      "license_status": "copyrighted book",
+      "ingest_policy": "do_not_ingest_unless_user_supplies_lawful_copy_for_private_indexing",
+      "tags": ["testing", "tdd", "design", "xp"],
+      "searxng_queries": ["Test-Driven Development By Example Kent Beck classic book"]
+    }
+  ]
+}

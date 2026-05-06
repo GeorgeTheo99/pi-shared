@@ -7,7 +7,8 @@ Shared pi instructions and explicitly shareable pi resources.
 ## Contents
 
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
-- `extensions/` — shared pi extensions.
+- `extensions/` — shared pi extensions, including `software-kb` tools (`kb_search`, `kb_sources`) and commands (`/kb-search`, `/kb-sources`).
+- `knowledge/software-engineering/` — curated software engineering classics source catalog and local searchable corpus. Future state: ingest public/open texts and user-supplied lawful private copies for copyrighted books; metadata-only until then.
 - `skills/` — pi-specific shared skills only. General cross-harness skills live in `~/local_code/agent_skills`.
 - `prompts/` — shared prompt templates.
 - `themes/` — shared themes.

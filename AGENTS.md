@@ -8,6 +8,16 @@
 - For non-trivial requests, derive a concise checklist of the steps required to complete the task successfully, work through it step by step, and update it if new information changes the plan.
 - When work should be delegated or split into parallel workstreams, use Archon as the subagent-enabling mechanism. Use Archon when the work benefits from isolated workflow execution, separate git worktrees/branches, parallel specialist investigation, substantial implementation/review, or iterative synthesis by the main thread. Do not use Archon for tiny questions or quick local checks; prefer the simplest mechanism that fits the work.
 
+## Code Change Loop
+
+For non-trivial code changes:
+1. Inspect before editing.
+2. State a concise plan.
+3. Implement in small steps.
+4. Run relevant verification.
+5. If verification fails, diagnose and retry up to 2 times.
+6. Stop and ask if blocked or risk is high.
+
 ## Response Style
 
 - Default to short answers.
