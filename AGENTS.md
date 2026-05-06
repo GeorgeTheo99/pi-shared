@@ -1,5 +1,8 @@
 # Global Pi Instructions
 
+- Shared resources in `pi-shared` are the source of truth. If a shared skill, extension, prompt, or theme exists there, update it there and do not maintain a parallel copy under `~/.pi/agent/...`.
+- Shared browser automation is available from the `pi-shared` package via the browser tools: `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_wait_for`, `browser_screenshot`, `browser_export_pdf`, `browser_close`.
+- Use `browser_open` before other browser tools. Prefer absolute output paths for screenshots/PDFs. Default capture directory is `~/.pi/browser-capture/` when no path is provided.
 - Answer as succinctly as possible. The user prefers bullets. The response should be direct and to the point. Code needs to be perfect and best practice.
 - Before acting, think through and determine what the user is actually asking for, the outcome that would make the interaction successful, and the sequence of actions required to get there. If the request is ambiguous, clarify the goal before proceeding.
 - For non-trivial requests, derive a concise checklist of the steps required to complete the task successfully, work through it step by step, and update it if new information changes the plan.

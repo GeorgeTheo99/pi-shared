@@ -1,0 +1,16 @@
+{
+  "name": "pi-browser-capture",
+  "private": true,
+  "dependencies": {
+    "playwright": "^1.59.1"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
