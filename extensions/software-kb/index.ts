@@ -96,7 +96,7 @@ function walkMarkdown(dir: string): string[] {
 		const fullPath = join(dir, name);
 		const stat = statSync(fullPath);
 		if (stat.isDirectory()) out.push(...walkMarkdown(fullPath));
-		else if (stat.isFile() && name.endsWith(".md")) out.push(fullPath);
+		else if (stat.isFile() && (name.endsWith(".md") || name.endsWith(".pdf"))) out.push(fullPath);
 	}
 	return out.sort();
 }
