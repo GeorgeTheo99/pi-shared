@@ -9,7 +9,7 @@ Shared pi instructions and explicitly shareable pi resources.
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
 - `extensions/` — shared pi extensions, including `software-kb` tools (`kb_search`, `kb_sources`) and commands (`/kb-search`, `/kb-sources`).
 - `knowledge/software-engineering/` — curated software engineering classics source catalog and local searchable corpus. Future state: ingest public/open texts and user-supplied lawful private copies for copyrighted books; metadata-only until then.
-- `skills/` — pi-specific shared skills only. General cross-harness skills live in `~/local_code/agent_skills`.
+- `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-local/skills`.
 - `prompts/` — shared prompt templates.
 - `themes/` — shared themes.
 
@@ -31,22 +31,46 @@ Shared pi instructions and explicitly shareable pi resources.
 - `skills/handoff` — writes a structured continuation handoff for a fresh pi, Claude Code, or Codex CLI session
 - `skills/resume-handoff` — resumes from the most recent handoff file and verifies current repo state before continuing
 
-## Shared vs local-only skills
+## Shared vs local-only setup
 
-Use `pi-shared/skills/<skill-name>/SKILL.md` only for skills that should travel with this repo.
+Use this simple mental model:
 
-When you commit and push this repo:
+```text
+~/local_code/pi-shared/  = shared by git across machines
+~/local_code/pi-local/   = private to this machine
+```
 
-- Skills under `pi-shared/skills/` are included if they are added to git.
-- Machine-local skills under `~/.pi/agent/skills/` are not included.
-- Symlinks from `~/.pi/agent/skills/<name>` to a source folder outside this repo are not included.
-- If you accidentally create a local-only skill inside `pi-shared/skills/`, it can be committed and pushed like any other repo file.
+### What goes in `pi-shared`
 
-Recommended local-only pattern:
+Put resources here only when they should travel to every machine that installs this repo:
+
+```text
+~/local_code/pi-shared/AGENTS.md      # shared Pi instructions
+~/local_code/pi-shared/skills/        # shared skills
+~/local_code/pi-shared/extensions/    # shared tools/extensions
+~/local_code/pi-shared/prompts/       # shared prompt templates
+~/local_code/pi-shared/themes/        # shared themes
+```
+
+When you `git add`, `git commit`, and `git push` from `pi-shared`, those resources become available to other machines after they `git pull` and run `/reload` in Pi.
+
+### What goes in `pi-local`
+
+Put machine-specific resources here. Do not commit this directory to `pi-shared`.
+
+```text
+~/local_code/pi-local/AGENTS.md       # local-only project instructions
+~/local_code/pi-local/skills/         # local-only skill source
+~/local_code/pi-local/extensions/     # local-only tools/extensions
+~/local_code/pi-local/prompts/        # local-only prompt templates, if needed
+~/local_code/pi-local/themes/         # local-only themes, if needed
+```
+
+Recommended local-only skill pattern:
 
 ```bash
-mkdir -p ~/local_code/agent_skills/my-private-skill
-cat > ~/local_code/agent_skills/my-private-skill/SKILL.md <<'MD'
+mkdir -p ~/local_code/pi-local/skills/my-private-skill
+cat > ~/local_code/pi-local/skills/my-private-skill/SKILL.md <<'MD'
 ---
 name: my-private-skill
 description: What this private machine-local skill does and when to use it.
@@ -58,10 +82,15 @@ Instructions go here.
 MD
 
 mkdir -p ~/.pi/agent/skills
-ln -sfn ~/local_code/agent_skills/my-private-skill ~/.pi/agent/skills/my-private-skill
+ln -sfn ~/local_code/pi-local/skills/my-private-skill ~/.pi/agent/skills/my-private-skill
 ```
 
-Then run `/reload` in Pi. Do not add machine-local-only skills to this repo.
+Recommended local-only extension pattern:
+
+```bash
+mkdir -p ~/local_code/pi-local/extensions
+# Add local extension files here, then include this path in local Pi settings if needed.
+```
 
 Recommended shared-skill pattern:
 
@@ -74,7 +103,7 @@ git commit -m "Add shared my-shared-skill skill"
 git push
 ```
 
-After pulling shared-skill updates on another machine, run `/reload` in Pi.
+After adding or changing skills/extensions, run `/reload` in Pi.
 
 Avoid using the same skill `name` in both local-only and shared locations. Pi warns on duplicate skill names and keeps the first discovered copy, which can be confusing.
 
