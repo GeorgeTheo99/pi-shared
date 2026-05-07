@@ -31,6 +31,53 @@ Shared pi instructions and explicitly shareable pi resources.
 - `skills/handoff` — writes a structured continuation handoff for a fresh pi, Claude Code, or Codex CLI session
 - `skills/resume-handoff` — resumes from the most recent handoff file and verifies current repo state before continuing
 
+## Shared vs local-only skills
+
+Use `pi-shared/skills/<skill-name>/SKILL.md` only for skills that should travel with this repo.
+
+When you commit and push this repo:
+
+- Skills under `pi-shared/skills/` are included if they are added to git.
+- Machine-local skills under `~/.pi/agent/skills/` are not included.
+- Symlinks from `~/.pi/agent/skills/<name>` to a source folder outside this repo are not included.
+- If you accidentally create a local-only skill inside `pi-shared/skills/`, it can be committed and pushed like any other repo file.
+
+Recommended local-only pattern:
+
+```bash
+mkdir -p ~/local_code/agent_skills/my-private-skill
+cat > ~/local_code/agent_skills/my-private-skill/SKILL.md <<'MD'
+---
+name: my-private-skill
+description: What this private machine-local skill does and when to use it.
+---
+
+# My Private Skill
+
+Instructions go here.
+MD
+
+mkdir -p ~/.pi/agent/skills
+ln -sfn ~/local_code/agent_skills/my-private-skill ~/.pi/agent/skills/my-private-skill
+```
+
+Then run `/reload` in Pi. Do not add machine-local-only skills to this repo.
+
+Recommended shared-skill pattern:
+
+```bash
+mkdir -p ~/local_code/pi-shared/skills/my-shared-skill
+$EDITOR ~/local_code/pi-shared/skills/my-shared-skill/SKILL.md
+cd ~/local_code/pi-shared
+git add skills/my-shared-skill/SKILL.md README.md
+git commit -m "Add shared my-shared-skill skill"
+git push
+```
+
+After pulling shared-skill updates on another machine, run `/reload` in Pi.
+
+Avoid using the same skill `name` in both local-only and shared locations. Pi warns on duplicate skill names and keeps the first discovered copy, which can be confusing.
+
 ## This machine setup
 
 This repo is now loaded by the project via:
