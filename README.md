@@ -29,6 +29,7 @@ Shared pi instructions and explicitly shareable pi resources.
 
 - `skills/frontend-design` — high-quality frontend/UI design skill for building polished, distinctive web interfaces
 - `skills/handoff` — writes a structured continuation handoff for a fresh pi, Claude Code, or Codex CLI session
+- `skills/resume-handoff` — resumes from the most recent handoff file and verifies current repo state before continuing
 
 ## This machine setup
 
