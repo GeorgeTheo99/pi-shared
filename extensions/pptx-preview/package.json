@@ -1,0 +1,9 @@
+{
+  "name": "pptx-preview",
+  "version": "1.0.0",
+  "description": "Preview PowerPoint files by converting to images",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "dependencies": {}
+}
