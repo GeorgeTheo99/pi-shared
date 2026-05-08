@@ -162,18 +162,29 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params) {
       const { page } = await ensureState();
       const timeoutMs = params.timeoutMs ?? 5000;
+      type WaitState = "attached" | "detached" | "visible" | "hidden";
       if (params.selector) {
-        const waitState = (params.state as "attached" | "detached" | "visible" | "hidden" | undefined) ?? "visible";
+        const waitState = (params.state as WaitState | undefined) ?? "visible";
         await page.waitForSelector(params.selector, { timeout: timeoutMs, state: waitState });
         return {
           content: [{ type: "text", text: `Selector ready: ${params.selector}` }],
-          details: { url: page.url(), selector: params.selector, state: waitState },
+          details: {
+            url: page.url(),
+            selector: params.selector as string | null,
+            state: waitState as typeof waitState | null,
+            waitedMs: null as number | null,
+          },
         };
       }
       await page.waitForTimeout(timeoutMs);
       return {
         content: [{ type: "text", text: `Waited ${timeoutMs}ms` }],
-        details: { url: page.url(), waitedMs: timeoutMs },
+        details: {
+          url: page.url(),
+          selector: null as string | null,
+          state: null as WaitState | null,
+          waitedMs: timeoutMs as number | null,
+        },
       };
     },
   });
