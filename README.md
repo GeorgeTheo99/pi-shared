@@ -16,8 +16,9 @@ Shared pi instructions and explicitly shareable pi resources.
 ## Included shared extensions
 
 - `extensions/goal` — durable `/goal` loop for long-running work:
-  - `/goal <objective> [--max-turns N]` starts a goal
+  - `/goal <objective> [--max-turns N]` starts a user-requested goal
   - `/goal status`, `/goal pause`, `/goal resume`, `/goal clear` control it
+  - `start_goal` lets the agent create a durable goal from a normal session when the user explicitly requests or strongly implies multi-turn/autonomous tracking
   - `update_goal` lets the agent log progress, mark completion after evidence audit, or stop when blocked
 - `extensions/pi-browser-capture` — Playwright-powered browser tools:
   - `browser_open`
