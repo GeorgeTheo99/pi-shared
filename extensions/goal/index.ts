@@ -188,6 +188,12 @@ function setStatus(ctx: ExtensionContext) {
   else ctx.ui.setStatus("goal", undefined);
 }
 
+function queueGoalPrompt(pi: ExtensionAPI, prompt: string) {
+  // Goal prompts are often emitted from extension commands or agent_end while the
+  // runtime is still marked busy. Queue as a follow-up to avoid reentrant turns.
+  pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+}
+
 export default function goalExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     restore(ctx);
@@ -223,7 +229,7 @@ export default function goalExtension(pi: ExtensionAPI) {
         goal.progressLog.push({ timestamp: goal.updatedAt, status: "active", note: "Resumed by user." });
         save(pi, goal);
         setStatus(ctx);
-        pi.sendUserMessage(continuationPrompt(goal));
+        queueGoalPrompt(pi, continuationPrompt(goal));
         return;
       }
 
@@ -245,7 +251,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       goal = createGoal(objective, maxTurns, "Goal created by user.");
       save(pi, goal);
       setStatus(ctx);
-      pi.sendUserMessage(continuationPrompt(goal));
+      queueGoalPrompt(pi, continuationPrompt(goal));
     },
   });
 
@@ -334,10 +340,10 @@ export default function goalExtension(pi: ExtensionAPI) {
       goal.progressLog.push({ timestamp: goal.updatedAt, status: "budget_limited", note: "Goal turn budget reached." });
       save(pi, goal);
       setStatus(ctx);
-      pi.sendUserMessage(budgetPrompt(goal));
+      queueGoalPrompt(pi, budgetPrompt(goal));
       return;
     }
 
-    pi.sendUserMessage(continuationPrompt(goal));
+    queueGoalPrompt(pi, continuationPrompt(goal));
   });
 }
