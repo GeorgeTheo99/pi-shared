@@ -122,6 +122,23 @@ function statusText(state: GoalState | null) {
     .join("\n");
 }
 
+function completionSummary(state: GoalState) {
+  const elapsedSeconds = Math.max(0, Math.round(((state.completedAt ?? state.updatedAt) - state.createdAt) / 1000));
+  const latest = state.progressLog.at(-1);
+  const evidence = latest?.evidence?.trim();
+
+  return [
+    "✅ Goal complete",
+    `Objective: ${state.objective}`,
+    `Summary: ${latest?.note ?? "Marked complete."}`,
+    evidence ? `Evidence: ${evidence}` : undefined,
+    `Turns: ${state.turnsCompleted}/${state.maxTurns}`,
+    `Elapsed: ${elapsedSeconds}s`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function continuationPrompt(state: GoalState) {
   const elapsedSeconds = Math.max(0, Math.round((now() - state.createdAt) / 1000));
   const recentLog = state.progressLog
@@ -316,6 +333,19 @@ export default function goalExtension(pi: ExtensionAPI) {
       if (!goal) throw new Error("No active goal. Start one with /goal <objective> or start_goal.");
       record(pi, params.status as GoalStatus, params.note, params.evidence);
       setStatus(ctx);
+
+      if (params.status === "complete" && goal) {
+        pi.sendMessage(
+          {
+            customType: "goal",
+            content: completionSummary(goal),
+            display: true,
+            details: cloneState(goal),
+          },
+          { deliverAs: "followUp" },
+        );
+      }
+
       return {
         content: [{ type: "text", text: statusText(goal) }],
         details: cloneState(goal),
