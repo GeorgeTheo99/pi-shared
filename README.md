@@ -32,6 +32,7 @@ Shared pi instructions and explicitly shareable pi resources.
 
 ## Included shared skills
 
+- `skills/archon` — guidance for running, creating, configuring, and troubleshooting Archon CLI workflows
 - `skills/frontend-design` — high-quality frontend/UI design skill for building polished, distinctive web interfaces
 - `skills/handoff` — writes a structured continuation handoff for a fresh pi, Claude Code, or Codex CLI session
 - `skills/resume-handoff` — resumes from the most recent handoff file and verifies current repo state before continuing
