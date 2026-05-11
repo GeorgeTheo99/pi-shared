@@ -22,8 +22,6 @@ Prefer `browser_*` for actual interaction with public web pages:
 - `browser_page_state`
 - `browser_close`
 
-Legacy `browse_*` aliases are still registered for compatibility with existing sessions/prompts.
-
 ## App testing tools
 
 Use `app_*` for local/private web app testing:
