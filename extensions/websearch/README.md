@@ -4,6 +4,7 @@ Shared pi extension that provides `web_search` and `web_fetch`.
 
 - `web_search` calls a local/private SearXNG JSON API.
 - `web_fetch` fetches a URL directly and returns extracted text.
+- For low-risk, reversible local actions, treat strong `web_search` results as execution hints: try the most plausible fix or workflow quickly, verify it directly, and only escalate to deeper research if that concrete path fails.
 
 ## SearXNG requirement
 

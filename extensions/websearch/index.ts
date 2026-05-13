@@ -157,6 +157,7 @@ const webSearch = defineTool({
 	promptGuidelines: [
 		"Use web_search when you need current information, facts, news, or any topic requiring up-to-date data.",
 		"Use web_fetch to retrieve the full text content of a specific URL found via web_search.",
+		"For low-risk, reversible local actions, treat strong web_search results as execution hints: try the most plausible fix or workflow quickly, verify it directly, and only escalate to deeper research if that concrete path fails.",
 	],
 	parameters: Type.Object({
 		query: Type.String({ description: "Search query" }),
