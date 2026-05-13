@@ -7,14 +7,39 @@ Shared pi instructions and explicitly shareable pi resources.
 ## Contents
 
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
-- `extensions/` — shared pi extensions, including SearXNG-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
+- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), SearXNG-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
 - `knowledge/software-engineering/` — curated software engineering classics source catalog and local searchable corpus. Future state: ingest public/open texts and user-supplied lawful private copies for copyrighted books; metadata-only until then.
 - `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-local/skills`.
 - `prompts/` — shared prompt templates.
 - `themes/` — shared themes.
+- `bin/pi-vanilla` — recovery launcher for a vanilla Pi session when shared/local harness resources break normal startup.
+
+## Vanilla recovery launcher
+
+`bin/pi-vanilla` starts Pi with an isolated config/session directory and disables all packages, extensions, skills, prompt templates, themes, and context files. It is meant as a safe recovery path when the normal Pi harness is broken.
+
+Local install:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sfn ~/local_code/pi-shared/bin/pi-vanilla ~/.local/bin/pi-vanilla
+```
+
+Requirements and behavior:
+
+- `pi` must be installed separately and available on `PATH`, or set `PI_VANILLA_PI_BIN=/path/to/pi`.
+- It uses `~/.pi/vanilla-agent` and `~/.pi/vanilla-sessions` by default.
+- If `~/.pi/vanilla-agent/auth.json` does not exist, it symlinks `~/.pi/agent/auth.json` so existing Pi login/auth can be reused without copying secrets.
+- Defaults are `PI_VANILLA_PROVIDER=openai-codex`, `PI_VANILLA_MODEL=gpt-5.5`, and `PI_VANILLA_THINKING=high`; override those environment variables per machine if needed.
+- Existing shell aliases/functions for `pi` do not affect `pi-vanilla`; if a machine already has a `pi-vanilla` alias/function, remove it or point it at this script.
 
 ## Included shared extensions
 
+- `extensions/memory` — machine-local, project-only memory:
+  - stores canonical JSON in `~/.pi/memory/projects/`
+  - injects active memories into the prompt as untrusted project context
+  - provides `memory_read` and `memory_write` tools plus `/memory [active|all|review|path|help]`
+  - global memory is intentionally not implemented; store only durable project-specific facts and never secrets
 - `extensions/websearch` — local/private SearXNG-backed web tools:
   - `web_search` searches SearXNG via `/search?format=json`
   - `web_fetch` fetches a URL directly and returns extracted text
@@ -55,9 +80,10 @@ Put resources here only when they should travel to every machine that installs t
 ~/local_code/pi-shared/extensions/    # shared tools/extensions
 ~/local_code/pi-shared/prompts/       # shared prompt templates
 ~/local_code/pi-shared/themes/        # shared themes
+~/local_code/pi-shared/bin/           # shared helper launchers, including pi-vanilla
 ```
 
-When you `git add`, `git commit`, and `git push` from `pi-shared`, those resources become available to other machines after they `git pull` and run `/reload` in Pi.
+When you `git add`, `git commit`, and `git push` from `pi-shared`, those resources become available to other machines after they `git pull` and run `/reload` in Pi. Helper launchers in `bin/` also need a local symlink or PATH entry on each machine.
 
 ### What goes in `pi-local`
 
@@ -132,7 +158,8 @@ Project-local setups can instead use `./pi-shared` from `~/local_code/.pi/settin
 4. Install package dependencies once.
 5. For `web_search`, run/configure SearXNG on that machine. Recommended endpoint: `http://127.0.0.1:8888`; JSON output must be enabled. Override with `SEARXNG_BASE_URL`, `SEARXNG_URL`, `PI_SEARXNG_BASE_URL`, `PI_RESEARCH_SEARXNG_URL`, or `~/.pi/research/config.json`.
 6. For `app_*`, set `BROWSER_MCP_APP_BASE_URL` when the target app is not `http://127.0.0.1:8100`; optionally add `BROWSER_MCP_APP_ALLOWED_HOSTS` for additional private hosts.
-7. Run `/reload`.
+7. Install the optional `pi-vanilla` recovery launcher if desired.
+8. Run `/reload`.
 
 Example:
 
@@ -147,6 +174,12 @@ cat > ~/local_code/.pi/settings.json <<'JSON'
 }
 JSON
 cd ~/local_code/pi-shared/extensions/pi-browser-capture && npm install
+
+# Optional recovery launcher that bypasses shared/local Pi resources
+mkdir -p ~/.local/bin
+ln -sfn ~/local_code/pi-shared/bin/pi-vanilla ~/.local/bin/pi-vanilla
+# Ensure ~/.local/bin is in PATH, then verify:
+pi-vanilla --list-models gpt-5.5
 
 # Optional web_search endpoint config if SearXNG is not on 127.0.0.1:8888
 mkdir -p ~/.pi/research

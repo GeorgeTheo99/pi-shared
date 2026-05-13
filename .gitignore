@@ -11,4 +11,5 @@ models.json
 sessions/
 git/
 npm/
-bin/
+bin/*
+!bin/pi-vanilla

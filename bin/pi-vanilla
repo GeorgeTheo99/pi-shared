@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Recovery launcher for a vanilla Pi session.
+# It intentionally bypasses shared/local Pi packages, extensions, skills, prompts,
+# themes, and AGENTS.md/CLAUDE.md context files so a broken custom harness does
+# not prevent opening a usable Pi session.
+
+PI_BIN="${PI_VANILLA_PI_BIN:-}"
+if [[ -z "$PI_BIN" ]]; then
+  PI_BIN="$(type -P pi || true)"
+fi
+
+if [[ -z "$PI_BIN" || ! -x "$PI_BIN" ]]; then
+  cat >&2 <<'EOF'
+pi-vanilla: could not find an executable pi binary on PATH.
+Install Pi or set PI_VANILLA_PI_BIN, for example:
+  export PI_VANILLA_PI_BIN=/opt/homebrew/bin/pi
+EOF
+  exit 127
+fi
+
+VANILLA_AGENT_DIR="${PI_VANILLA_AGENT_DIR:-$HOME/.pi/vanilla-agent}"
+VANILLA_SESSION_DIR="${PI_VANILLA_SESSION_DIR:-$HOME/.pi/vanilla-sessions}"
+SOURCE_AGENT_DIR="${PI_VANILLA_SOURCE_AGENT_DIR:-$HOME/.pi/agent}"
+
+mkdir -p "$VANILLA_AGENT_DIR" "$VANILLA_SESSION_DIR"
+
+# Reuse normal Pi auth without copying secrets. If the user wants fully separate
+# credentials, they can create $VANILLA_AGENT_DIR/auth.json themselves.
+if [[ ! -e "$VANILLA_AGENT_DIR/auth.json" && ! -L "$VANILLA_AGENT_DIR/auth.json" && -e "$SOURCE_AGENT_DIR/auth.json" ]]; then
+  ln -s "$SOURCE_AGENT_DIR/auth.json" "$VANILLA_AGENT_DIR/auth.json"
+fi
+
+PROVIDER="${PI_VANILLA_PROVIDER:-openai-codex}"
+MODEL="${PI_VANILLA_MODEL:-gpt-5.5}"
+THINKING="${PI_VANILLA_THINKING:-high}"
+
+exec env \
+  PI_CODING_AGENT_DIR="$VANILLA_AGENT_DIR" \
+  PI_CODING_AGENT_SESSION_DIR="$VANILLA_SESSION_DIR" \
+  PI_SKIP_VERSION_CHECK="${PI_SKIP_VERSION_CHECK:-1}" \
+  "$PI_BIN" \
+  --provider "$PROVIDER" \
+  --model "$MODEL" \
+  --thinking "$THINKING" \
+  --session-dir "$VANILLA_SESSION_DIR" \
+  --no-extensions \
+  --no-skills \
+  --no-prompt-templates \
+  --no-themes \
+  --no-context-files \
+  "$@"
