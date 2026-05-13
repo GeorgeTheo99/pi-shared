@@ -139,6 +139,49 @@ function completionSummary(state: GoalState) {
     .join("\n");
 }
 
+function blockedSummary(state: GoalState) {
+  const elapsedSeconds = Math.max(0, Math.round(((state.completedAt ?? state.updatedAt) - state.createdAt) / 1000));
+  const latest = state.progressLog.at(-1);
+  const evidence = latest?.evidence?.trim();
+
+  return [
+    "⛔ Goal blocked",
+    `Objective: ${state.objective}`,
+    `Blocker: ${latest?.note ?? "Waiting on user input or approval."}`,
+    evidence ? `Evidence: ${evidence}` : undefined,
+    `Turns: ${state.turnsCompleted}/${state.maxTurns}`,
+    `Elapsed: ${elapsedSeconds}s`,
+    "Next: reply with the needed decision/approval, then run /goal resume.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function pausedSummary(state: GoalState) {
+  const elapsedSeconds = Math.max(0, Math.round(((state.completedAt ?? state.updatedAt) - state.createdAt) / 1000));
+  const latest = state.progressLog.at(-1);
+  const evidence = latest?.evidence?.trim();
+
+  return [
+    "⏸️ Goal paused",
+    `Objective: ${state.objective}`,
+    `Summary: ${latest?.note ?? "Paused."}`,
+    evidence ? `Evidence: ${evidence}` : undefined,
+    `Turns: ${state.turnsCompleted}/${state.maxTurns}`,
+    `Elapsed: ${elapsedSeconds}s`,
+    "Next: run /goal resume when you want to continue.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function terminalSummary(state: GoalState) {
+  if (state.status === "complete") return completionSummary(state);
+  if (state.status === "blocked") return blockedSummary(state);
+  if (state.status === "paused") return pausedSummary(state);
+  return statusText(state);
+}
+
 function continuationPrompt(state: GoalState) {
   const elapsedSeconds = Math.max(0, Math.round((now() - state.createdAt) / 1000));
   const recentLog = state.progressLog
@@ -334,11 +377,11 @@ export default function goalExtension(pi: ExtensionAPI) {
       record(pi, params.status as GoalStatus, params.note, params.evidence);
       setStatus(ctx);
 
-      if (params.status === "complete" && goal) {
+      if ((params.status === "complete" || params.status === "blocked" || params.status === "paused") && goal) {
         pi.sendMessage(
           {
             customType: "goal",
-            content: completionSummary(goal),
+            content: terminalSummary(goal),
             display: true,
             details: cloneState(goal),
           },
