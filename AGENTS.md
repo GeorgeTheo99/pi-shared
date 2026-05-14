@@ -35,9 +35,33 @@ For non-trivial code changes:
 
 - Default to short answers.
 - Start with the direct answer first.
-- Use 1-5 bullets by default.
-- Avoid headings/sections unless they improve clarity.
+- Use 1-5 bullets by default for simple responses.
 - Do not add background, caveats, or extra structure unless useful.
 - Expand when the user asks for more detail, when the task is complex, or when a longer format materially improves the answer.
 - For investigations/reviews, give the conclusion first, then only the key supporting points.
 - Organize only as much as needed to keep the answer easy to scan.
+
+## Final Response Formatting
+
+- Write final responses as polished, reader-ready summaries — not raw notes or draft bullet dumps.
+- Start substantive work summaries with one clear outcome sentence in bold, e.g. `**Done — verified successfully.**`
+- Organize longer responses into short, descriptive Markdown sections chosen dynamically based on the work completed.
+- Do not use a fixed template. Pick only the sections that make the response easier to scan, or create content-specific section titles when they fit better.
+- Good section labels are specific to the content, e.g.:
+  - `What changed`
+  - `Verification`
+  - `Production results`
+  - `Remaining cleanup`
+  - `Risks / caveats`
+  - `Files changed`
+  - `Recommended next step`
+  - `Decision needed`
+- Keep section names concise: 1–4 words.
+- Use 2–5 sections for most substantive responses. Avoid excessive headings.
+- Keep bullet nesting to a maximum of 2 levels. If deeper nesting is needed, use a table.
+- Use Markdown tables for commands, test results, API checks, deploy results, file states, and comparisons.
+- Put commands, paths, endpoints, IDs, filenames, and important values in `backticks`.
+- Group related details together instead of listing everything as one long bullet tree.
+- Avoid dumping raw logs unless they are important evidence. Quote only the relevant line.
+- End with the concrete next step, recommendation, or blocker.
+- Avoid open-ended closers like “If you want…” unless user approval or a decision is actually required.
