@@ -2,7 +2,6 @@
 .DS_Store
 *.log
 node_modules/
-.archon/
 
 # Do not store secrets or machine-local pi state here
 auth.json

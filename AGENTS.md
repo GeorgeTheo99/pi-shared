@@ -19,7 +19,7 @@
 - Ask for clarification only when missing information would materially change the outcome, create meaningful risk, require sensitive data, or cannot be discovered from available sources. Keep questions narrow and actionable.
 - Always confirm with the user before destructive, non-rollbackable, irreversible, high-impact, or externally visible actions such as deploys, production writes, destructive commands, purchases, sending messages, or pushing/merging code unless the user explicitly authorized that specific action.
 - For non-trivial requests, derive a concise checklist of the steps required to complete the task successfully, work through it step by step, and update it if new information changes the plan.
-- When work should be delegated or split into parallel workstreams, use Archon as the subagent-enabling mechanism. Use Archon when the work benefits from isolated workflow execution, separate git worktrees/branches, parallel specialist investigation, substantial implementation/review, or iterative synthesis by the main thread. Do not use Archon for tiny questions or quick local checks; prefer the simplest mechanism that fits the work.
+- When work should be delegated or split into parallel workstreams, prefer the native `spawn_subagent` tool from `pi-shared`. Use it when work benefits from isolated context, parallel specialist investigation, substantial implementation/review, or iterative synthesis by the main thread. Do not use subagents for tiny questions or quick local checks; prefer the simplest direct tool workflow that fits the work. If git worktree/branch isolation is needed, create/manage that explicitly before delegating.
 
 ## Code Change Loop
 

@@ -1,0 +1,587 @@
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { StringEnum, type Message } from "@mariozechner/pi-ai";
+import { type AgentToolResult, type ExtensionAPI, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
+import { Type } from "typebox";
+import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList } from "./agents.js";
+
+const MAX_PARALLEL_TASKS = 8;
+const MAX_CONCURRENCY = 4;
+const MAX_RETURN_CHARS = 24000;
+
+interface UsageStats {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+  contextTokens: number;
+  turns: number;
+}
+
+interface SingleResult {
+  agent: string;
+  agentSource: AgentConfig["source"] | "unknown";
+  task: string;
+  exitCode: number;
+  messages: Message[];
+  stderr: string;
+  usage: UsageStats;
+  model?: string;
+  stopReason?: string;
+  errorMessage?: string;
+  step?: number;
+}
+
+interface SpawnSubagentDetails {
+  mode: "single" | "parallel" | "chain";
+  agentScope: AgentScope;
+  agents: Array<{ name: string; source: string; description: string; filePath: string }>;
+  sharedAgentsDir: string;
+  userAgentsDir: string;
+  projectAgentsDir: string | null;
+  results: SingleResult[];
+}
+
+type SpawnSubagentResult = AgentToolResult<SpawnSubagentDetails>;
+type OnUpdateCallback = (partial: SpawnSubagentResult) => void;
+
+function formatTokens(count: number): string {
+  if (count < 1000) return count.toString();
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1000000) return `${Math.round(count / 1000)}k`;
+  return `${(count / 1000000).toFixed(1)}M`;
+}
+
+function formatUsage(usage: UsageStats, model?: string): string {
+  const parts: string[] = [];
+  if (usage.turns) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
+  if (usage.input) parts.push(`in:${formatTokens(usage.input)}`);
+  if (usage.output) parts.push(`out:${formatTokens(usage.output)}`);
+  if (usage.cacheRead) parts.push(`cacheR:${formatTokens(usage.cacheRead)}`);
+  if (usage.cacheWrite) parts.push(`cacheW:${formatTokens(usage.cacheWrite)}`);
+  if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+  if (usage.contextTokens) parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
+  if (model) parts.push(model);
+  return parts.join(" ");
+}
+
+function limitText(text: string, maxChars = MAX_RETURN_CHARS): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n\n[spawn_subagent output truncated at ${maxChars} chars]`;
+}
+
+function getFinalOutput(messages: Message[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role !== "assistant") continue;
+    for (const part of message.content) {
+      if (part.type === "text") return part.text;
+    }
+  }
+  return "";
+}
+
+function getPiInvocation(args: string[]): { command: string; args: string[] } {
+  const currentScript = process.argv[1];
+  const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
+  if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
+    return { command: process.execPath, args: [currentScript, ...args] };
+  }
+
+  const execName = path.basename(process.execPath).toLowerCase();
+  const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
+  if (!isGenericRuntime) return { command: process.execPath, args };
+  return { command: "pi", args };
+}
+
+function resolveCwd(defaultCwd: string, cwd?: string): string {
+  if (!cwd) return defaultCwd;
+  const expanded = cwd === "~" ? os.homedir() : cwd.startsWith("~/") ? path.join(os.homedir(), cwd.slice(2)) : cwd;
+  return path.isAbsolute(expanded) ? expanded : path.resolve(defaultCwd, expanded);
+}
+
+async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-spawn-subagent-"));
+  const safeName = agentName.replace(/[^\w.-]+/g, "_");
+  const filePath = path.join(dir, `prompt-${safeName}.md`);
+  await withFileMutationQueue(filePath, async () => {
+    await fs.promises.writeFile(filePath, prompt, { encoding: "utf8", mode: 0o600 });
+  });
+  return { dir, filePath };
+}
+
+function emptyUsage(): UsageStats {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+}
+
+function isFailure(result: SingleResult): boolean {
+  return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+}
+
+function summarizeFailure(result: SingleResult): string {
+  return result.errorMessage || result.stderr.trim() || getFinalOutput(result.messages) || "(no output)";
+}
+
+function makeDetailsFactory(
+  mode: SpawnSubagentDetails["mode"],
+  agentScope: AgentScope,
+  discovery: ReturnType<typeof discoverAgents>,
+) {
+  return (results: SingleResult[]): SpawnSubagentDetails => ({
+    mode,
+    agentScope,
+    agents: discovery.agents.map((agent) => ({
+      name: agent.name,
+      source: agent.source,
+      description: agent.description,
+      filePath: agent.filePath,
+    })),
+    sharedAgentsDir: discovery.sharedAgentsDir,
+    userAgentsDir: discovery.userAgentsDir,
+    projectAgentsDir: discovery.projectAgentsDir,
+    results,
+  });
+}
+
+async function runSingleAgent(options: {
+  defaultCwd: string;
+  agents: AgentConfig[];
+  agentName: string;
+  task: string;
+  cwd?: string;
+  model?: string;
+  step?: number;
+  signal?: AbortSignal;
+  onUpdate?: OnUpdateCallback;
+  makeDetails: (results: SingleResult[]) => SpawnSubagentDetails;
+}): Promise<SingleResult> {
+  const agent = options.agents.find((candidate) => candidate.name === options.agentName);
+  if (!agent) {
+    const available = options.agents.map((candidate) => `"${candidate.name}"`).join(", ") || "none";
+    return {
+      agent: options.agentName,
+      agentSource: "unknown",
+      task: options.task,
+      exitCode: 1,
+      messages: [],
+      stderr: `Unknown agent: "${options.agentName}". Available agents: ${available}.`,
+      usage: emptyUsage(),
+      step: options.step,
+    };
+  }
+
+  const args = ["--mode", "json", "-p", "--no-session"];
+  const model = options.model ?? agent.model;
+  if (model) args.push("--model", model);
+  if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+
+  let tmpPromptDir: string | null = null;
+  let tmpPromptPath: string | null = null;
+
+  const currentResult: SingleResult = {
+    agent: agent.name,
+    agentSource: agent.source,
+    task: options.task,
+    exitCode: 0,
+    messages: [],
+    stderr: "",
+    usage: emptyUsage(),
+    model,
+    step: options.step,
+  };
+
+  const emitUpdate = () => {
+    options.onUpdate?.({
+      content: [{ type: "text", text: limitText(getFinalOutput(currentResult.messages) || "(running...)" )}],
+      details: options.makeDetails([currentResult]),
+    });
+  };
+
+  try {
+    if (agent.systemPrompt.trim()) {
+      const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+      tmpPromptDir = tmp.dir;
+      tmpPromptPath = tmp.filePath;
+      args.push("--append-system-prompt", tmpPromptPath);
+    }
+
+    args.push(`Task: ${options.task}`);
+    const cwd = resolveCwd(options.defaultCwd, options.cwd);
+    let wasAborted = false;
+
+    const exitCode = await new Promise<number>((resolve) => {
+      const invocation = getPiInvocation(args);
+      const proc = spawn(invocation.command, invocation.args, {
+        cwd,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let buffer = "";
+
+      const processLine = (line: string) => {
+        if (!line.trim()) return;
+        let event: any;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          return;
+        }
+
+        if (event.type === "message_end" && event.message) {
+          const message = event.message as Message;
+          currentResult.messages.push(message);
+          if (message.role === "assistant") {
+            currentResult.usage.turns++;
+            const usage = message.usage;
+            if (usage) {
+              currentResult.usage.input += usage.input || 0;
+              currentResult.usage.output += usage.output || 0;
+              currentResult.usage.cacheRead += usage.cacheRead || 0;
+              currentResult.usage.cacheWrite += usage.cacheWrite || 0;
+              currentResult.usage.cost += usage.cost?.total || 0;
+              currentResult.usage.contextTokens = usage.totalTokens || 0;
+            }
+            if (!currentResult.model && message.model) currentResult.model = message.model;
+            if (message.stopReason) currentResult.stopReason = message.stopReason;
+            if (message.errorMessage) currentResult.errorMessage = message.errorMessage;
+          }
+          emitUpdate();
+        }
+
+        if (event.type === "tool_result_end" && event.message) {
+          currentResult.messages.push(event.message as Message);
+          emitUpdate();
+        }
+      };
+
+      proc.stdout.on("data", (data) => {
+        buffer += data.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) processLine(line);
+      });
+
+      proc.stderr.on("data", (data) => {
+        currentResult.stderr += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        if (buffer.trim()) processLine(buffer);
+        resolve(code ?? 0);
+      });
+
+      proc.on("error", () => resolve(1));
+
+      if (options.signal) {
+        const killProc = () => {
+          wasAborted = true;
+          proc.kill("SIGTERM");
+          setTimeout(() => {
+            if (!proc.killed) proc.kill("SIGKILL");
+          }, 5000).unref?.();
+        };
+        if (options.signal.aborted) killProc();
+        else options.signal.addEventListener("abort", killProc, { once: true });
+      }
+    });
+
+    currentResult.exitCode = exitCode;
+    if (wasAborted) currentResult.stopReason = "aborted";
+    return currentResult;
+  } finally {
+    if (tmpPromptPath) await fs.promises.unlink(tmpPromptPath).catch(() => undefined);
+    if (tmpPromptDir) await fs.promises.rmdir(tmpPromptDir).catch(() => undefined);
+  }
+}
+
+async function mapWithConcurrencyLimit<TIn, TOut>(
+  items: TIn[],
+  concurrency: number,
+  fn: (item: TIn, index: number) => Promise<TOut>,
+): Promise<TOut[]> {
+  const results = new Array<TOut>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(
+    new Array(workerCount).fill(null).map(async () => {
+      while (true) {
+        const index = nextIndex++;
+        if (index >= items.length) return;
+        results[index] = await fn(items[index], index);
+      }
+    }),
+  );
+  return results;
+}
+
+const TaskItem = Type.Object({
+  agent: Type.String({ description: "Name of the agent to invoke" }),
+  task: Type.String({ description: "Task to delegate to that agent" }),
+  cwd: Type.Optional(Type.String({ description: "Working directory for this subagent process" })),
+});
+
+const ChainItem = Type.Object({
+  agent: Type.String({ description: "Name of the agent to invoke" }),
+  task: Type.String({ description: "Task with optional {previous} placeholder for the prior step output" }),
+  cwd: Type.Optional(Type.String({ description: "Working directory for this subagent process" })),
+});
+
+const AgentScopeSchema = StringEnum(["shared", "user", "project", "all"] as const, {
+  description:
+    'Agent source. Default "shared" uses pi-shared bundled agents. "project" reads .pi/agents and requires confirmation in UI. "all" merges shared, user, then project agents.',
+  default: "shared",
+});
+
+const SpawnSubagentParams = Type.Object({
+  agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (single mode)" })),
+  task: Type.Optional(Type.String({ description: "Task to delegate (single mode)" })),
+  tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel mode: array of {agent, task, cwd?}" })),
+  chain: Type.Optional(Type.Array(ChainItem, { description: "Chain mode: sequential steps; use {previous} in later tasks" })),
+  agentScope: Type.Optional(AgentScopeSchema),
+  model: Type.Optional(Type.String({ description: "Optional pi model pattern/id override for this invocation" })),
+  cwd: Type.Optional(Type.String({ description: "Working directory for the subagent process (single mode)" })),
+  confirmProjectAgents: Type.Optional(
+    Type.Boolean({ description: "Prompt before running project-local .pi/agents. Default: true.", default: true }),
+  ),
+});
+
+function send(pi: ExtensionAPI, content: string) {
+  pi.sendMessage({ customType: "spawn-subagent", content, display: true });
+}
+
+export default function spawnSubagentExtension(pi: ExtensionAPI) {
+  pi.registerCommand("subagents", {
+    description: "List available spawn_subagent agents.",
+    handler: async (rawArgs, ctx) => {
+      const scope = rawArgs.trim() || "shared";
+      if (!["shared", "user", "project", "all"].includes(scope)) {
+        send(pi, "Usage: /subagents [shared|user|project|all]");
+        return;
+      }
+      const discovery = discoverAgents(ctx.cwd, scope as AgentScope);
+      send(
+        pi,
+        [
+          `Agents (${scope}):`,
+          formatAgentList(discovery.agents),
+          "",
+          `shared: ${discovery.sharedAgentsDir}`,
+          `user: ${discovery.userAgentsDir}`,
+          `project: ${discovery.projectAgentsDir ?? "none"}`,
+        ].join("\n"),
+      );
+    },
+  });
+
+  pi.registerTool({
+    name: "spawn_subagent",
+    label: "Spawn Subagent",
+    description: [
+      "Spawn one or more isolated Pi subagents and return their final outputs.",
+      "Supports single agent, parallel tasks, and sequential chains with {previous} placeholder handoff.",
+      "Default agentScope is shared, using bundled pi-shared agents. Use project/all only for trusted repos.",
+    ].join(" "),
+    promptSnippet: "Spawn isolated Pi subagents for parallel investigation, review, planning, or implementation.",
+    promptGuidelines: [
+      "Use spawn_subagent when work benefits from isolated context, parallel investigation, or a specialist review/plan/implementation pass.",
+      "Do not use spawn_subagent for tiny local checks; use direct tools for quick reads, greps, and edits.",
+      "When using spawn_subagent with project-local agents, set agentScope to project or all only for trusted repositories.",
+    ],
+    parameters: SpawnSubagentParams,
+
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      const agentScope: AgentScope = params.agentScope ?? "shared";
+      const discovery = discoverAgents(ctx.cwd, agentScope);
+      const agents = discovery.agents;
+      const confirmProjectAgents = params.confirmProjectAgents ?? true;
+
+      const hasChain = (params.chain?.length ?? 0) > 0;
+      const hasTasks = (params.tasks?.length ?? 0) > 0;
+      const hasSingle = Boolean(params.agent && params.task);
+      const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
+      const mode: SpawnSubagentDetails["mode"] = hasChain ? "chain" : hasTasks ? "parallel" : "single";
+      const makeDetails = makeDetailsFactory(mode, agentScope, discovery);
+
+      if (modeCount !== 1) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Invalid parameters. Provide exactly one mode: {agent, task}, tasks, or chain.\n\nAvailable agents:\n${formatAgentList(agents)}`,
+            },
+          ],
+          details: makeDetails([]),
+        };
+      }
+
+      if ((agentScope === "project" || agentScope === "all") && confirmProjectAgents && ctx.hasUI) {
+        const requested = new Set<string>();
+        if (params.agent) requested.add(params.agent);
+        for (const task of params.tasks ?? []) requested.add(task.agent);
+        for (const step of params.chain ?? []) requested.add(step.agent);
+
+        const projectAgents = Array.from(requested)
+          .map((name) => agents.find((agent) => agent.name === name))
+          .filter((agent): agent is AgentConfig => agent?.source === "project");
+
+        if (projectAgents.length > 0) {
+          const ok = await ctx.ui.confirm(
+            "Run project-local subagents?",
+            `Agents: ${projectAgents.map((agent) => agent.name).join(", ")}\nSource: ${discovery.projectAgentsDir ?? "unknown"}\n\nProject agents are repo-controlled prompts. Continue only for trusted repositories.`,
+          );
+          if (!ok) {
+            return {
+              content: [{ type: "text", text: "Canceled: project-local subagents were not approved." }],
+              details: makeDetails([]),
+            };
+          }
+        }
+      }
+
+      if (params.chain && params.chain.length > 0) {
+        const results: SingleResult[] = [];
+        let previousOutput = "";
+
+        for (let i = 0; i < params.chain.length; i++) {
+          const step = params.chain[i];
+          const task = step.task.replace(/\{previous\}/g, previousOutput);
+          const result = await runSingleAgent({
+            defaultCwd: ctx.cwd,
+            agents,
+            agentName: step.agent,
+            task,
+            cwd: step.cwd,
+            model: params.model,
+            step: i + 1,
+            signal,
+            onUpdate: onUpdate
+              ? (partial) => {
+                  const current = partial.details?.results[0];
+                  if (current) {
+                    onUpdate({ content: partial.content, details: makeDetails([...results, current]) });
+                  }
+                }
+              : undefined,
+            makeDetails,
+          });
+          results.push(result);
+
+          if (isFailure(result)) {
+            return {
+              content: [{ type: "text", text: limitText(`Chain stopped at step ${i + 1} (${step.agent}): ${summarizeFailure(result)}`) }],
+              details: makeDetails(results),
+            };
+          }
+          previousOutput = getFinalOutput(result.messages);
+        }
+
+        return {
+          content: [{ type: "text", text: limitText(getFinalOutput(results[results.length - 1].messages) || "(no output)") }],
+          details: makeDetails(results),
+        };
+      }
+
+      if (params.tasks && params.tasks.length > 0) {
+        if (params.tasks.length > MAX_PARALLEL_TASKS) {
+          return {
+            content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }],
+            details: makeDetails([]),
+          };
+        }
+
+        const liveResults: SingleResult[] = params.tasks.map((task) => ({
+          agent: task.agent,
+          agentSource: "unknown",
+          task: task.task,
+          exitCode: -1,
+          messages: [],
+          stderr: "",
+          usage: emptyUsage(),
+        }));
+
+        const emitParallelUpdate = () => {
+          const done = liveResults.filter((result) => result.exitCode !== -1).length;
+          const running = liveResults.length - done;
+          onUpdate?.({
+            content: [{ type: "text", text: `Parallel subagents: ${done}/${liveResults.length} done, ${running} running.` }],
+            details: makeDetails([...liveResults]),
+          });
+        };
+
+        const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (task, index) => {
+          const result = await runSingleAgent({
+            defaultCwd: ctx.cwd,
+            agents,
+            agentName: task.agent,
+            task: task.task,
+            cwd: task.cwd,
+            model: params.model,
+            signal,
+            onUpdate: (partial) => {
+              if (partial.details?.results[0]) {
+                liveResults[index] = partial.details.results[0];
+                emitParallelUpdate();
+              }
+            },
+            makeDetails,
+          });
+          liveResults[index] = result;
+          emitParallelUpdate();
+          return result;
+        });
+
+        const successCount = results.filter((result) => !isFailure(result)).length;
+        const summaries = results.map((result) => {
+          const status = isFailure(result) ? "failed" : "completed";
+          const output = isFailure(result) ? summarizeFailure(result) : getFinalOutput(result.messages);
+          const usage = formatUsage(result.usage, result.model);
+          return `## ${result.agent} — ${status}${usage ? `\n${usage}` : ""}\n\n${limitText(output || "(no output)", 4000)}`;
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: limitText(`Parallel subagents: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}`),
+            },
+          ],
+          details: makeDetails(results),
+        };
+      }
+
+      if (params.agent && params.task) {
+        const result = await runSingleAgent({
+          defaultCwd: ctx.cwd,
+          agents,
+          agentName: params.agent,
+          task: params.task,
+          cwd: params.cwd,
+          model: params.model,
+          signal,
+          onUpdate,
+          makeDetails,
+        });
+
+        if (isFailure(result)) {
+          return {
+            content: [{ type: "text", text: limitText(`Subagent ${result.agent} failed: ${summarizeFailure(result)}`) }],
+            details: makeDetails([result]),
+          };
+        }
+
+        return {
+          content: [{ type: "text", text: limitText(getFinalOutput(result.messages) || "(no output)") }],
+          details: makeDetails([result]),
+        };
+      }
+
+      return {
+        content: [{ type: "text", text: `Invalid parameters.\n\nAvailable agents:\n${formatAgentList(agents)}` }],
+        details: makeDetails([]),
+      };
+    },
+  });
+}

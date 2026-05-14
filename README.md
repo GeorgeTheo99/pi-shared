@@ -7,7 +7,7 @@ Shared pi instructions and explicitly shareable pi resources.
 ## Contents
 
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
-- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), SearXNG-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
+- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), SearXNG-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
 - `knowledge/software-engineering/` — curated software engineering classics source catalog and local searchable corpus. Future state: ingest public/open texts and user-supplied lawful private copies for copyrighted books; metadata-only until then.
 - `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-local/skills`.
 - `prompts/` — shared prompt templates.
@@ -53,10 +53,14 @@ Requirements and behavior:
   - canonical `browser_*` tools for actual public web browsing: `browser_open`, `browser_navigate`, `browser_open_tab`, `browser_list_tabs`, `browser_switch_tab`, `browser_close_tab`, `browser_click`, `browser_type`, `browser_wait_for`, `browser_extract_text`, `browser_screenshot`, `browser_export_pdf`, `browser_console_logs`, `browser_page_state`, `browser_close`
   - `app_*` tools for local/private web app testing: `app_open`, `app_click`, `app_type_text`, `app_wait_for`, `app_extract_text`, `app_screenshot`, `app_console_logs`, `app_network_log`, `app_api_request`, `app_page_state`, and tab helpers
   - `browser_*` private hosts are blocked by default; use `app_*` tools for local app testing or set `BROWSER_MCP_WEB_ALLOW_PRIVATE_HOSTS=true`
+- `extensions/spawn-subagent` — native subagent delegation:
+  - `spawn_subagent` spawns isolated `pi --mode json -p --no-session` subprocesses for single, parallel, or chained specialist work
+  - bundled shared agents: `scout`, `planner`, `reviewer`, `worker`
+  - `/subagents [shared|user|project|all]` lists available agents
+  - project-local `.pi/agents` are disabled by default unless `agentScope` is `project` or `all` and confirmed in UI
 
 ## Included shared skills
 
-- `skills/archon` — guidance for running, creating, configuring, and troubleshooting Archon CLI workflows
 - `skills/frontend-design` — high-quality frontend/UI design skill for building polished, distinctive web interfaces
 - `skills/handoff` — writes a structured continuation handoff for a fresh pi, Claude Code, or Codex CLI session
 - `skills/resume-handoff` — resumes from the most recent handoff file and verifies current repo state before continuing
