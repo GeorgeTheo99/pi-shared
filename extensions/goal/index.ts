@@ -208,6 +208,12 @@ ${recentLog}
 
 Choose the next concrete action toward the objective. Avoid repeating work already done.
 
+For non-trivial implementation, refactor, debugging, or multi-step UI work inside this goal, maintain a visible checklist with the work_plan tool:
+- Create or update the plan before substantial work.
+- Keep exactly one active item when possible.
+- Mark completed items only after concrete verification.
+- Represent dependencies with blockedBy so blocked items render as "blocked by #N".
+
 Before deciding the goal is achieved, perform a completion audit against the actual current state:
 - Restate the objective as concrete deliverables or success criteria.
 - Build a prompt-to-artifact checklist mapping every explicit requirement, named file, command, test, gate, and deliverable to concrete evidence.
