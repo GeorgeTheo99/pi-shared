@@ -54,6 +54,7 @@ Lists available agents for the selected scope.
 ## Behavior
 
 - Spawns a separate `pi --mode json -p --no-session` process per task.
+- Model precedence per spawn: explicit `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.id`). The parent's model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
 - Streams partial updates back into the tool result.
 - Propagates aborts to child Pi processes.
 - Limits parallel mode to 8 tasks with max concurrency 4.

@@ -153,6 +153,7 @@ async function runSingleAgent(options: {
   task: string;
   cwd?: string;
   model?: string;
+  parentModel?: string;
   step?: number;
   signal?: AbortSignal;
   onUpdate?: OnUpdateCallback;
@@ -174,7 +175,11 @@ async function runSingleAgent(options: {
   }
 
   const args = ["--mode", "json", "-p", "--no-session"];
-  const model = options.model ?? agent.model;
+  // Model precedence: explicit call param > agent frontmatter > parent session model.
+  // Inheriting the parent model avoids spawning children that fall back to a
+  // default provider with no usable credentials (e.g. Databricks-routed parents
+  // where OPENAI_API_KEY is a sentinel value).
+  const model = options.model ?? agent.model ?? options.parentModel;
   if (model) args.push("--model", model);
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
@@ -397,6 +402,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
       const discovery = discoverAgents(ctx.cwd, agentScope);
       const agents = discovery.agents;
       const confirmProjectAgents = params.confirmProjectAgents ?? true;
+      const parentModel = ctx.model?.id;
 
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -455,6 +461,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
             task,
             cwd: step.cwd,
             model: params.model,
+            parentModel,
             step: i + 1,
             signal,
             onUpdate: onUpdate
@@ -519,6 +526,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
             task: task.task,
             cwd: task.cwd,
             model: params.model,
+            parentModel,
             signal,
             onUpdate: (partial) => {
               if (partial.details?.results[0]) {
@@ -560,6 +568,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
           task: params.task,
           cwd: params.cwd,
           model: params.model,
+          parentModel,
           signal,
           onUpdate,
           makeDetails,
