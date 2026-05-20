@@ -15,6 +15,19 @@ type PlanItem = {
 	updatedAt: number;
 	startedAt?: number;
 	completedAt?: number;
+	/**
+	 * Total milliseconds the agent has actively spent on this item across all
+	 * runs while it was the active task. Only accrues while the agent is
+	 * streaming. Idle wall-clock time between turns does not count.
+	 */
+	activeMs?: number;
+	/**
+	 * Wall-clock timestamp when the current agent run started while this item
+	 * was active. Set on agent_start when this item is the active task; cleared
+	 * on agent_end (and the delta is folded into activeMs). Undefined when the
+	 * agent is idle or when the item is not currently active.
+	 */
+	runStartedAt?: number;
 };
 
 type WorkPlanState = {
@@ -69,6 +82,12 @@ function activeItem() {
 	return state.activeId === undefined ? undefined : findItem(state.activeId);
 }
 
+function effectiveActiveMs(item: PlanItem) {
+	const base = item.activeMs ?? 0;
+	if (item.runStartedAt) return base + Math.max(0, now() - item.runStartedAt);
+	return base;
+}
+
 function iconFor(status: PlanStatus, isActive: boolean) {
 	if (status === "done") return "✔";
 	if (status === "blocked") return "◻";
@@ -104,16 +123,30 @@ function formatPlainPlan() {
 	return state.items.map((item) => itemLine(item, undefined, 160)).join("\n");
 }
 
-function setActive(id: number | undefined) {
+function flushRun(item: PlanItem) {
+	if (item.runStartedAt) {
+		item.activeMs = (item.activeMs ?? 0) + Math.max(0, now() - item.runStartedAt);
+		item.runStartedAt = undefined;
+	}
+}
+
+function setActive(id: number | undefined, options?: { agentStreaming?: boolean }) {
+	const timestamp = now();
 	state.activeId = id;
 	for (const item of state.items) {
 		if (item.id === id) {
 			item.status = "active";
-			item.startedAt = item.startedAt ?? now();
-			item.updatedAt = now();
+			item.startedAt = item.startedAt ?? timestamp;
+			item.updatedAt = timestamp;
+			// Start charging time immediately if the agent is currently working.
+			if (options?.agentStreaming && !item.runStartedAt) item.runStartedAt = timestamp;
 		} else if (item.status === "active") {
+			flushRun(item);
 			item.status = item.blockedBy.length ? "blocked" : "todo";
-			item.updatedAt = now();
+			item.updatedAt = timestamp;
+		} else if (item.runStartedAt) {
+			// Defensive: stale runStartedAt on a non-active item.
+			flushRun(item);
 		}
 	}
 }
@@ -129,6 +162,13 @@ function restore(ctx: ExtensionContext) {
 		if (entry.type !== "custom" || entry.customType !== CUSTOM_TYPE) continue;
 		state = clone(entry.data as WorkPlanState) ?? emptyState();
 	}
+	// Restored state may carry a stale runStartedAt from a previous Pi process
+	// that was killed mid-stream. Don't credit that wall-clock time — fold any
+	// pending in-flight delta into activeMs only if we genuinely know about it,
+	// otherwise just reset so the timer doesn't spike on /reload.
+	for (const item of state.items) {
+		if (item.runStartedAt) item.runStartedAt = undefined;
+	}
 }
 
 function setUi(ctx: ExtensionContext) {
@@ -140,23 +180,37 @@ function setUi(ctx: ExtensionContext) {
 	}
 
 	ctx.ui.setStatus("work-plan", planStatusSummary());
-	ctx.ui.setWidget("work-plan", (_tui, theme) => ({
-		invalidate() {},
-		render(width: number) {
-			const lines: string[] = [];
+	ctx.ui.setWidget("work-plan", (tui, theme) => {
+		// Self-tick once per second so the active-item timer animates while the
+		// agent is streaming. We only request a render when the timer is
+		// actively charging (active item with runStartedAt set); otherwise the
+		// displayed value is frozen on accumulatedActiveMs and there's nothing
+		// to redraw, so we stay quiet and don't waste TUI render cycles.
+		const tickHandle = setInterval(() => {
 			const active = activeItem();
-			const activeText = active
-				? `✳ ${active.title}… (${formatDuration(now() - (active.startedAt ?? active.updatedAt))})`
-				: "✳ Work plan";
-			lines.push(truncateToWidth(theme.fg("accent", activeText), width));
-			const items = state.items.slice(0, MAX_WIDGET_ITEMS);
-			for (const item of items) lines.push(`  ${itemLine(item, theme, Math.max(0, width - 2))}`);
-			if (state.items.length > MAX_WIDGET_ITEMS) {
-				lines.push(truncateToWidth(theme.fg("dim", `  … ${state.items.length - MAX_WIDGET_ITEMS} more`), width));
-			}
-			return lines;
-		},
-	}));
+			if (active?.runStartedAt) tui.requestRender();
+		}, 1000);
+		return {
+			invalidate() {},
+			render(width: number) {
+				const lines: string[] = [];
+				const active = activeItem();
+				const activeText = active
+					? `✳ ${active.title}… (${formatDuration(effectiveActiveMs(active))})`
+					: "✳ Work plan";
+				lines.push(truncateToWidth(theme.fg("accent", activeText), width));
+				const items = state.items.slice(0, MAX_WIDGET_ITEMS);
+				for (const item of items) lines.push(`  ${itemLine(item, theme, Math.max(0, width - 2))}`);
+				if (state.items.length > MAX_WIDGET_ITEMS) {
+					lines.push(truncateToWidth(theme.fg("dim", `  … ${state.items.length - MAX_WIDGET_ITEMS} more`), width));
+				}
+				return lines;
+			},
+			dispose() {
+				clearInterval(tickHandle);
+			},
+		};
+	});
 }
 
 function planStatusSummary() {
@@ -197,6 +251,33 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event) => ({
 		systemPrompt: `${event.systemPrompt}\n\nWork planning protocol:\n- For non-trivial implementation, refactor, debugging, or multi-step UI work, maintain a visible work plan with the work_plan tool.\n- Create or update the plan before doing substantial work; keep exactly one active item when possible.\n- Mark dependencies with blockedBy so blocked items render as \"blocked by #N\".\n- Update the plan as soon as a task becomes active, done, or blocked.\n- Do not use work_plan for tiny one-shot answers or trivial edits.`,
 	}));
+
+	// Pause the active-item timer when the agent is idle. The widget timer
+	// represents agent work spent on the active task, not wall-clock time since
+	// the task was first activated.
+	pi.on("agent_start", async (_event, ctx) => {
+		const active = activeItem();
+		if (active && !active.runStartedAt) {
+			active.runStartedAt = now();
+			setUi(ctx);
+		}
+	});
+
+	pi.on("agent_end", async (_event, ctx) => {
+		let changed = false;
+		for (const item of state.items) {
+			if (item.runStartedAt) {
+				flushRun(item);
+				changed = true;
+			}
+		}
+		if (changed) {
+			// Persist the flushed accumulator so a /reload or session restore picks
+			// up the correct elapsed-on-task value instead of resetting to zero.
+			save(pi);
+			setUi(ctx);
+		}
+	});
 
 	pi.registerCommand("plan", {
 		description: "Show or clear the current work plan. Usage: /plan [clear]",
@@ -272,7 +353,7 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 						});
 					}
 					const firstActive = state.items.find((item) => item.status === "active") ?? state.items.find((item) => item.status !== "done" && item.status !== "blocked");
-					setActive(firstActive?.id);
+					setActive(firstActive?.id, { agentStreaming: !ctx.isIdle() });
 					break;
 				}
 				case "add": {
@@ -291,7 +372,7 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 						updatedAt: timestamp,
 					};
 					state.items.push(item);
-					if (item.status === "active") setActive(item.id);
+					if (item.status === "active") setActive(item.id, { agentStreaming: !ctx.isIdle() });
 					break;
 				}
 				case "update": {
@@ -308,31 +389,36 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 					if (params.note !== undefined) item.note = params.note.trim() || undefined;
 					if (params.status) item.status = params.status as PlanStatus;
 					item.updatedAt = now();
-					if (item.status === "active") setActive(item.id);
-					else if (state.activeId === item.id && item.status !== "active") state.activeId = undefined;
+					if (item.status === "active") setActive(item.id, { agentStreaming: !ctx.isIdle() });
+					else if (state.activeId === item.id && item.status !== "active") {
+						flushRun(item);
+						state.activeId = undefined;
+					}
 					break;
 				}
 				case "activate": {
 					const item = findItem(params.id);
 					if (!item) return result(action, "valid id is required for activate");
-					setActive(item.id);
+					setActive(item.id, { agentStreaming: !ctx.isIdle() });
 					break;
 				}
 				case "complete": {
 					const item = findItem(params.id);
 					if (!item) return result(action, "valid id is required for complete");
+					flushRun(item);
 					item.status = "done";
 					item.completedAt = now();
 					item.updatedAt = now();
 					if (params.note !== undefined) item.note = params.note.trim() || undefined;
 					if (state.activeId === item.id) state.activeId = undefined;
 					const next = state.items.find((candidate) => candidate.status === "todo" && candidate.blockedBy.length === 0);
-					if (next) setActive(next.id);
+					if (next) setActive(next.id, { agentStreaming: !ctx.isIdle() });
 					break;
 				}
 				case "block": {
 					const item = findItem(params.id);
 					if (!item) return result(action, "valid id is required for block");
+					flushRun(item);
 					item.status = "blocked";
 					item.blockedBy = normalizeBlockedBy(params.blockedBy);
 					if (params.note !== undefined) item.note = params.note.trim() || undefined;
