@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { Type } from "typebox";
+import { StringEnum } from "@mariozechner/pi-ai";
 
 interface ResearchOptions {
   mode: "general" | "data" | "sources";
@@ -664,6 +666,112 @@ export default function deepResearchExtension(pi: ExtensionAPI) {
         }
       } catch (error) {
         send(pi, `Research failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  });
+
+  // --- deep_research tool (LLM-callable, returns gathered sources for synthesis) ---
+
+  const MAX_TOOL_RESULT_CHARS = 24_000;
+
+  pi.registerTool({
+    name: "deep_research",
+    label: "Deep Research",
+    description:
+      "Multi-source web research via local SearXNG. Gathers, fetches, and excerpts sources for deep questions, dataset discovery, or authoritative source finding. Returns gathered sources with excerpts for the agent to synthesize. Use when web_search is insufficient — when you need multiple sources, cross-referencing, cited synthesis, or dataset/API discovery.",
+    promptSnippet: "deep_research for multi-source web research with cited synthesis",
+    promptGuidelines: [
+      "Use deep_research when a question requires multiple sources, cross-referencing, cited synthesis, or dataset/API discovery — not when a single web_search would suffice.",
+      "Use deep_research mode 'data' for datasets/APIs/catalogs/benchmarks, 'sources' for authoritative documentation, 'general' for broad research questions.",
+      "deep_research costs more than web_search (multiple queries + fetches). Prefer web_search for quick single-fact lookups.",
+      "Use deep_research instead of making 3+ sequential web_search + web_fetch calls for the same topic — one deep_research call is more effective.",
+    ],
+    parameters: Type.Object({
+      question: Type.String({ description: "Research question to investigate" }),
+      mode: Type.Optional(
+        StringEnum(["general", "data", "sources"] as const, {
+          description: "general=web/docs research, data=datasets/APIs/catalogs, sources=authoritative source discovery. Default: general",
+          default: "general",
+        }),
+      ),
+      depth: Type.Optional(
+        StringEnum(["quick", "normal", "deep"] as const, {
+          description: "quick=8 sources/3 fetches, normal=14/6, deep=24/10. Default: normal",
+          default: "normal",
+        }),
+      ),
+      max_sources: Type.Optional(Type.Number({ description: "Max sources to gather", default: 14 })),
+      fetch_count: Type.Optional(Type.Number({ description: "Number of source pages to fetch and excerpt", default: 6 })),
+    }),
+
+    async execute(_id, params, _signal, onUpdate, _ctx) {
+      const options: ResearchOptions = {
+        question: params.question,
+        mode: (params.mode as ResearchOptions["mode"]) ?? "general",
+        depth: (params.depth as ResearchOptions["depth"]) ?? "normal",
+        maxSources: params.max_sources,
+        fetchCount: params.fetch_count,
+        save: true,
+        synthesize: false,
+      };
+      const applied = applyDepthDefaults(options);
+
+      onUpdate?.({ content: [{ type: "text", text: "Resolving SearXNG..." }] });
+
+      const resolved = await resolveSearxngBaseUrl();
+      if (!resolved.baseUrl) {
+        return {
+          content: [{ type: "text" as const, text: resolved.error ?? "Could not resolve SearXNG base URL." }],
+          details: { error: true, checked: resolved.checked },
+        };
+      }
+
+      onUpdate?.({ content: [{ type: "text", text: `Searching SearXNG at ${resolved.baseUrl}...` }] });
+
+      try {
+        const bundle = await runResearch(applied, resolved.baseUrl);
+        onUpdate?.({ content: [{ type: "text", text: `Gathered ${bundle.sources.length} sources. Saving bundle...` }] });
+        const bundleDir = saveBundle(bundle);
+
+        // Format results for the LLM — include excerpts up to the char budget
+        const sourceLines: string[] = [];
+        let charsUsed = 0;
+        for (let i = 0; i < bundle.sources.length; i++) {
+          const source = bundle.sources[i];
+          const fetched = source.fetched ? "✓" : "✗";
+          const snippet = source.snippet ? `\n   Snippet: ${source.snippet}` : "";
+          const excerpt = source.excerpt && source.fetched ? `\n   Excerpt: ${source.excerpt.slice(0, 800)}` : "";
+          const dataInfo =
+            source.dataProfile?.likelyDataSource
+              ? `\n   Data: ${source.dataProfile.accessMethod}, formats: ${source.dataProfile.formats.join("/")}, auth: ${source.dataProfile.authRequired}`
+              : "";
+          const line = `[${i + 1}] ${fetched} ${source.title} — ${source.url}${snippet}${excerpt}${dataInfo}`;
+          if (charsUsed + line.length > MAX_TOOL_RESULT_CHARS) {
+            sourceLines.push(`\n... ${bundle.sources.length - i} more sources in bundle: ${bundleDir}`);
+            break;
+          }
+          sourceLines.push(line);
+          charsUsed += line.length;
+        }
+
+        const text = [
+          `Research: ${bundle.sources.length} sources (${bundle.sources.filter((s) => s.fetched).length} fetched)`,
+          `Mode: ${bundle.mode}, Depth: ${bundle.depth}`,
+          `Bundle: ${bundleDir}`,
+          "",
+          "## Sources",
+          ...sourceLines,
+        ].join("\n");
+
+        return {
+          content: [{ type: "text" as const, text }],
+          details: { question: params.question, bundleDir, sourceCount: bundle.sources.length, fetchedCount: bundle.sources.filter((s) => s.fetched).length },
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Research failed: ${error instanceof Error ? error.message : String(error)}` }],
+          details: { error: true },
+        };
       }
     },
   });

@@ -153,11 +153,12 @@ const webSearch = defineTool({
 	label: "Web Search",
 	description:
 		"Search the web via local SearXNG. Use this for ANY question about current events, news, facts, people, places, or any topic that requires up-to-date information. Returns ranked results with titles, URLs, and snippets.",
-	promptSnippet: "web_search to search the web via SearXNG",
+	promptSnippet: "web_search for quick web lookups via SearXNG",
 	promptGuidelines: [
-		"Use web_search when you need current information, facts, news, or any topic requiring up-to-date data.",
-		"Use web_fetch to retrieve the full text content of a specific URL found via web_search.",
-		"For low-risk, reversible local actions, treat strong web_search results as execution hints: try the most plausible fix or workflow quickly, verify it directly, and only escalate to deeper research if that concrete path fails.",
+		"Use web_search for quick facts, current information, or single-page lookups. Use web_fetch to read a specific URL found via web_search.",
+		"Do NOT use web_search for deep multi-source research — use deep_research instead.",
+		"Do NOT make 3+ sequential web_search + web_fetch calls for the same topic — use deep_research once instead.",
+		"For low-risk, reversible local actions, treat strong web_search results as execution hints: try the most plausible fix quickly, verify it directly, and escalate to deep_research only if that path fails.",
 	],
 	parameters: Type.Object({
 		query: Type.String({ description: "Search query" }),
@@ -229,6 +230,10 @@ const webFetch = defineTool({
 	description:
 		"Fetch a URL and return its text content. Use this to read the full content of a web page found via web_search, or any URL the user provides.",
 	promptSnippet: "web_fetch to retrieve full page content from a URL",
+	promptGuidelines: [
+		"Use web_fetch to read a specific URL's content — typically a URL found via web_search.",
+		"Do NOT use web_fetch for research questions — use web_search or deep_research instead.",
+	],
 	parameters: Type.Object({
 		url: Type.String({ description: "URL to fetch" }),
 		max_chars: Type.Optional(

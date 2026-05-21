@@ -340,6 +340,28 @@ const AgentScopeSchema = StringEnum(["shared", "user", "project", "all"] as cons
   default: "shared",
 });
 
+// Task routing table injected into the system prompt by before_agent_start.
+// Add a line when you introduce a new CATEGORY of work (not when you add a new agent
+// that fits an existing category). See README.md "Orchestration > Maintenance guide".
+const ROUTING_TABLE = `Task routing (pick the most specific match):
+- Quick fact, current info, or single-page lookup       → web_search → web_fetch
+- Deep multi-source research with cited synthesis        → deep_research
+- Explore/map/understand unfamiliar code before editing  → spawn_subagent scout
+- Find code, APIs, patterns in unfamiliar codebase       → spawn_subagent scout
+- Plan implementation from requirements/recon            → spawn_subagent planner
+- Review changes for regressions/security/style          → spawn_subagent reviewer
+- Implement in isolated context                          → spawn_subagent worker
+- N independent investigation questions                  → spawn_subagent parallel
+- Multi-step pipeline (scout→plan→work)                  → spawn_subagent chain
+- Multi-step durable work with autopilot                 → start_goal + work_plan
+
+Delegation signals (prefer spawn_subagent when):
+- The user asks to explore, map, understand, trace, or investigate an unfamiliar code area before editing
+- You would need 5+ sequential read/grep/find calls to understand a codebase
+- The task has independent subtasks that could run in parallel
+- A specialist perspective (review, planning) would improve the result
+- You are about to do deep research that web_search alone won't cover`;
+
 const SpawnSubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (single mode)" })),
   task: Type.Optional(Type.String({ description: "Task to delegate (single mode)" })),
@@ -358,6 +380,23 @@ function send(pi: ExtensionAPI, content: string) {
 }
 
 export default function spawnSubagentExtension(pi: ExtensionAPI) {
+  pi.on("before_agent_start", async (event) => {
+    const selectedTools = event.systemPromptOptions?.selectedTools ?? [];
+    if (!selectedTools.includes("spawn_subagent")) return;
+
+    const cwd = event.systemPromptOptions?.cwd ?? process.cwd();
+    const discovery = discoverAgents(cwd, "shared");
+    if (discovery.agents.length === 0) return;
+
+    const roster = discovery.agents
+      .map((a) => `- ${a.name}: ${a.description}`)
+      .join("\n");
+
+    return {
+      systemPrompt: event.systemPrompt + `\n\nSubagents available:\n${roster}\n\n${ROUTING_TABLE}`,
+    };
+  });
+
   pi.registerCommand("subagents", {
     description: "List available spawn_subagent agents.",
     handler: async (rawArgs, ctx) => {
@@ -391,8 +430,11 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
     ].join(" "),
     promptSnippet: "Spawn isolated Pi subagents for parallel investigation, review, planning, or implementation.",
     promptGuidelines: [
-      "Use spawn_subagent when work benefits from isolated context, parallel investigation, or a specialist review/plan/implementation pass.",
-      "Do not use spawn_subagent for tiny local checks; use direct tools for quick reads, greps, and edits.",
+      "Use spawn_subagent when the user asks to explore, map, understand, trace, or investigate an unfamiliar code area before editing; delegate that read-only reconnaissance to scout.",
+      "Use spawn_subagent when you would need 5+ sequential read/grep/find calls, when the task has independent subtasks, or when a specialist perspective (review, planning, isolated implementation) would improve the result.",
+      "Do NOT use spawn_subagent for single-file reads, quick greps, or edits you can do directly.",
+      "Prefer spawn_subagent over doing extensive reconnaissance yourself — delegate to scout instead of running 5+ search calls in sequence.",
+      "Use parallel mode for independent questions, chain mode for sequential pipelines (scout→planner→worker), and single mode for one specialist pass.",
       "When using spawn_subagent with project-local agents, set agentScope to project or all only for trusted repositories.",
     ],
     parameters: SpawnSubagentParams,
