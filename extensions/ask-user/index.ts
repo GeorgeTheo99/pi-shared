@@ -49,6 +49,7 @@ const askUserTool = defineTool({
 		"Use ask_user for opinionated topics, product/design decisions, irreversible tradeoffs, or when you are genuinely unsure.",
 		"Do not use ask_user for routine status updates, rhetorical questions, or information you can safely discover with available tools.",
 		"Provide concise, mutually exclusive options. Include a safe/cancel/no-op option when relevant.",
+		"ALWAYS invoke ask_user via the native tool-call channel. NEVER emit `<ask_user>`, `<question>`, `<options>`, `<allow_custom>`, or any other XML/HTML-style tag in assistant text to represent a question — that syntax is from a different harness and will render as raw markup to the user instead of opening an interactive prompt. If you want to ask the user, call the ask_user tool; otherwise just write the question as plain prose.",
 	],
 	parameters: Type.Object({
 		question: Type.String({ description: "The question to show the user" }),
