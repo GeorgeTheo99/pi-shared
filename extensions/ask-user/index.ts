@@ -42,13 +42,14 @@ const askUserTool = defineTool({
 	name: "ask_user",
 	label: "Ask User",
 	description:
-		"Ask the user an interactive multiple-choice question and return their answer. Use only when progress is blocked by a necessary user decision, preference, missing fact, or approval.",
+		"Ask the user an interactive multiple-choice question and return their answer. Use only when progress is blocked by a necessary user decision, preference, missing fact, or approval. If the user declines, dismisses, or times out the prompt, the agent loop is aborted and control is returned to the user — the agent must wait for the user's next message and must NEVER assume an answer or continue the prior task.",
 	promptSnippet: "ask_user to ask the user a structured question with selectable options",
 	promptGuidelines: [
 		"Use ask_user when you genuinely need a user decision to proceed and the choices can be made explicit.",
 		"Use ask_user for opinionated topics, product/design decisions, irreversible tradeoffs, or when you are genuinely unsure.",
 		"Do not use ask_user for routine status updates, rhetorical questions, or information you can safely discover with available tools.",
 		"Provide concise, mutually exclusive options. Include a safe/cancel/no-op option when relevant.",
+		"If the user dismisses or times out an ask_user prompt, the agent loop is aborted automatically. Do not assume a default answer, do not pick an option on the user's behalf, and do not continue the prior task. Wait for the user's next message before doing anything.",
 		"ALWAYS invoke ask_user via the native tool-call channel. NEVER emit `<ask_user>`, `<question>`, `<options>`, `<allow_custom>`, or any other XML/HTML-style tag in assistant text to represent a question — that syntax is from a different harness and will render as raw markup to the user instead of opening an interactive prompt. If you want to ask the user, call the ask_user tool; otherwise just write the question as plain prose.",
 	],
 	parameters: Type.Object({
@@ -83,6 +84,22 @@ const askUserTool = defineTool({
 			wasCustom: false,
 		};
 
+		// Build a tool result that returns control to the user when they decline,
+		// dismiss, or time out the prompt. ctx.abort() halts the agent loop so the
+		// model cannot continue assuming an answer.
+		const cancelledResult = (details: AskUserDetails) => {
+			try {
+				ctx.abort();
+			} catch {
+				// ctx.abort() should always be safe inside a running tool, but ignore any
+				// runner-side error so we still return a well-formed tool result.
+			}
+			return textResult(
+				"User did not answer the question (declined, dismissed, or timed out). The agent loop has been aborted and control is returned to the user. Do NOT assume an answer, do NOT pick a default, and do NOT continue the prior task. Wait for the user's next message before taking any further action.",
+				details,
+			);
+		};
+
 		if (!question) {
 			return textResult("Error: question is required", {
 				...baseDetails,
@@ -112,7 +129,7 @@ const askUserTool = defineTool({
 			);
 			const trimmed = answer?.trim();
 			if (!trimmed) {
-				return textResult("User cancelled the question", { ...baseDetails, cancelled: true, wasCustom: true });
+				return cancelledResult({ ...baseDetails, cancelled: true, wasCustom: true });
 			}
 			return textResult(`User answered: ${trimmed}`, {
 				...baseDetails,
@@ -127,7 +144,7 @@ const askUserTool = defineTool({
 		const selected = await ctx.ui.select(question, displayedOptions, dialogOptions(params.timeout_ms));
 
 		if (!selected) {
-			return textResult("User cancelled the question", { ...baseDetails, cancelled: true });
+			return cancelledResult({ ...baseDetails, cancelled: true });
 		}
 
 		if (selected === customLabel) {
@@ -138,7 +155,7 @@ const askUserTool = defineTool({
 			);
 			const trimmed = answer?.trim();
 			if (!trimmed) {
-				return textResult("User cancelled the question", { ...baseDetails, cancelled: true, wasCustom: true });
+				return cancelledResult({ ...baseDetails, cancelled: true, wasCustom: true });
 			}
 			return textResult(`User answered: ${trimmed}`, {
 				...baseDetails,
