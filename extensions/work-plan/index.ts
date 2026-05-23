@@ -49,6 +49,10 @@ const CUSTOM_TYPE = "pi-work-plan-state";
 const MAX_ITEMS = 40;
 const MAX_WIDGET_ITEMS = 12;
 const BLOCKED_ARROW = " › blocked by ";
+// When more than KEEP_RECENT_DONE done items exist, the oldest ones are
+// collapsed into a single summary line for rendering. State is preserved in
+// full — this is purely a visual / prompt-budget condense, not a prune.
+const KEEP_RECENT_DONE = 3;
 
 let state: WorkPlanState = emptyState();
 
@@ -118,9 +122,52 @@ function itemLine(item: PlanItem, theme: Theme | undefined, width: number) {
 	return truncateToWidth(`${title}${mutedTail}`, width);
 }
 
+/**
+ * Returns a render plan that condenses older done items into a single
+ * summary entry once their count exceeds KEEP_RECENT_DONE. The original
+ * insertion order is preserved; the summary is inserted at the position of
+ * the first hidden done item so the checklist still reads chronologically.
+ * State.items is never mutated by this helper.
+ */
+type RenderEntry = { kind: "item"; item: PlanItem } | { kind: "summary"; count: number };
+
+function renderEntries(items: PlanItem[] = state.items): RenderEntry[] {
+	const doneItems = items.filter((item) => item.status === "done");
+	if (doneItems.length <= KEEP_RECENT_DONE + 1) {
+		return items.map((item) => ({ kind: "item", item }));
+	}
+	const keepIds = new Set(doneItems.slice(-KEEP_RECENT_DONE).map((item) => item.id));
+	const hiddenCount = doneItems.length - KEEP_RECENT_DONE;
+	const entries: RenderEntry[] = [];
+	let summaryEmitted = false;
+	for (const item of items) {
+		if (item.status === "done" && !keepIds.has(item.id)) {
+			if (!summaryEmitted) {
+				entries.push({ kind: "summary", count: hiddenCount });
+				summaryEmitted = true;
+			}
+			continue;
+		}
+		entries.push({ kind: "item", item });
+	}
+	return entries;
+}
+
+function summaryLine(count: number, theme: Theme | undefined, width: number) {
+	const raw = `✔ ${count} earlier tasks done`;
+	if (!theme) return truncateToWidth(raw, width);
+	return truncateToWidth(theme.fg("dim", raw), width);
+}
+
+function renderLines(theme: Theme | undefined, width: number, items?: PlanItem[]) {
+	return renderEntries(items).map((entry) =>
+		entry.kind === "summary" ? summaryLine(entry.count, theme, width) : itemLine(entry.item, theme, width),
+	);
+}
+
 function formatPlainPlan() {
 	if (state.items.length === 0) return "No work plan.";
-	return state.items.map((item) => itemLine(item, undefined, 160)).join("\n");
+	return renderLines(undefined, 160).join("\n");
 }
 
 function flushRun(item: PlanItem) {
@@ -199,10 +246,15 @@ function setUi(ctx: ExtensionContext) {
 					? `✳ ${active.title}… (${formatDuration(effectiveActiveMs(active))})`
 					: "✳ Work plan";
 				lines.push(truncateToWidth(theme.fg("accent", activeText), width));
-				const items = state.items.slice(0, MAX_WIDGET_ITEMS);
-				for (const item of items) lines.push(`  ${itemLine(item, theme, Math.max(0, width - 2))}`);
-				if (state.items.length > MAX_WIDGET_ITEMS) {
-					lines.push(truncateToWidth(theme.fg("dim", `  … ${state.items.length - MAX_WIDGET_ITEMS} more`), width));
+				const entries = renderEntries();
+				const visible = entries.slice(0, MAX_WIDGET_ITEMS);
+				const innerWidth = Math.max(0, width - 2);
+				for (const entry of visible) {
+					const body = entry.kind === "summary" ? summaryLine(entry.count, theme, innerWidth) : itemLine(entry.item, theme, innerWidth);
+					lines.push(`  ${body}`);
+				}
+				if (entries.length > MAX_WIDGET_ITEMS) {
+					lines.push(truncateToWidth(theme.fg("dim", `  … ${entries.length - MAX_WIDGET_ITEMS} more`), width));
 				}
 				return lines;
 			},
@@ -249,7 +301,7 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event) => ({
-		systemPrompt: `${event.systemPrompt}\n\nWork planning protocol:\n- For non-trivial implementation, refactor, debugging, or multi-step UI work, maintain a visible work plan with the work_plan tool.\n- Create or update the plan before doing substantial work; keep exactly one active item when possible.\n- Mark dependencies with blockedBy so blocked items render as \"blocked by #N\".\n- Update the plan as soon as a task becomes active, done, or blocked.\n- Do not use work_plan for tiny one-shot answers or trivial edits.`,
+		systemPrompt: `${event.systemPrompt}\n\nWork planning protocol:\n- For non-trivial implementation, refactor, debugging, or multi-step UI work, maintain a visible work plan with the work_plan tool.\n- Create or update the plan before doing substantial work; keep exactly one active item when possible.\n- Mark dependencies with blockedBy so blocked items render as \"blocked by #N\".\n- Update the plan as soon as a task becomes active, done, or blocked.\n- Older done items are condensed automatically into a single \"✔ N earlier tasks done\" line; full state is preserved on disk, so you do not need to delete or rewrite finished items to keep the plan readable.\n- Do not use work_plan for tiny one-shot answers or trivial edits.`,
 	}));
 
 	// Pause the active-item timer when the agent is idle. The widget timer
@@ -464,9 +516,13 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 			if (details.error) return new Text(theme.fg("error", details.error), 0, 0);
 			const plan = details.state.items;
 			if (plan.length === 0) return new Text(theme.fg("dim", "No work plan"), 0, 0);
-			const visible = expanded ? plan : plan.slice(0, 8);
-			const lines = visible.map((item) => itemLine(item, theme, 160));
-			if (!expanded && plan.length > visible.length) lines.push(theme.fg("dim", `… ${plan.length - visible.length} more`));
+			// Expanded view always shows every item; collapsed view condenses older
+			// done items just like the widget and tool-result text body.
+			const lines = expanded
+				? plan.map((item) => itemLine(item, theme, 160))
+				: renderLines(theme, 160, plan).slice(0, 8);
+			const totalEntries = expanded ? plan.length : renderEntries(plan).length;
+			if (!expanded && totalEntries > lines.length) lines.push(theme.fg("dim", `… ${totalEntries - lines.length} more`));
 			return new Text(lines.join("\n"), 0, 0);
 		},
 	});

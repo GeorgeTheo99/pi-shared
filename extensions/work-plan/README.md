@@ -20,6 +20,16 @@ Actions:
 - `list` — return current plan.
 - `clear` — clear the plan.
 
+## Auto-condense
+
+Long-running plans accumulate done items quickly. To keep the widget and the
+tool-result text small (and out of the LLM's prompt budget), the renderer
+automatically condenses older done items into a single summary line once more
+than `KEEP_RECENT_DONE` (default `3`) done items exist. The full state — every
+item, its history, timestamps, and notes — is preserved on disk and in the
+expanded result view; only the rendering is collapsed. Expanding a tool-result
+card in the TUI still shows the complete list.
+
 ## Example
 
 ```json
@@ -42,4 +52,16 @@ The widget renders like:
   ◼ Redesign MusicPage layout
   ◻ Add album art color extraction › blocked by #2
   ◻ Browser iteration and final polish › blocked by #2, #3
+```
+
+Once more than three items are done, the older ones collapse:
+
+```text
+✳ Polish hero animation… (45s)
+  ✔ 7 earlier tasks done
+  ✔ Wire telemetry hook
+  ✔ Refactor preview pane
+  ✔ Add keyboard shortcut
+  ◼ Polish hero animation
+  ◻ Final QA pass › blocked by #11
 ```
