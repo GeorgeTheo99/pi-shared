@@ -10,6 +10,13 @@ import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList } fr
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const MAX_RETURN_CHARS = 24000;
+const MAX_NOTIFICATION_CHARS = 1200;
+const MAX_PERSISTED_JOBS = 100;
+const MAX_PERSISTED_JOB_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_PERSISTED_TEXT_CHARS = 12000;
+const JOB_STORE_VERSION = 1;
+const JOB_STORE_DIR = process.env.PI_SPAWN_SUBAGENT_DIR || path.join(os.homedir(), ".pi", "agent", "spawn-subagent");
+const JOB_STORE_PATH = path.join(JOB_STORE_DIR, "jobs.json");
 
 interface UsageStats {
   input: number;
@@ -56,12 +63,52 @@ interface BackgroundSubagentJob {
   label: string;
   startedAt: string;
   updatedAt: string;
+  cwd?: string;
+  notifiedAt?: string;
   abortController: AbortController;
   result?: SpawnSubagentResult;
   error?: string;
 }
 
+interface PersistedSingleResult {
+  agent: string;
+  agentSource: AgentConfig["source"] | "unknown";
+  task: string;
+  exitCode: number;
+  stderr: string;
+  usage: UsageStats;
+  model?: string;
+  stopReason?: string;
+  errorMessage?: string;
+  step?: number;
+  output: string;
+}
+
+interface PersistedSpawnSubagentResult {
+  contentText: string;
+  details: Omit<SpawnSubagentDetails, "results"> & { results: PersistedSingleResult[] };
+}
+
+interface PersistedBackgroundSubagentJob {
+  id: string;
+  status: BackgroundJobStatus;
+  mode: SpawnSubagentDetails["mode"];
+  label: string;
+  startedAt: string;
+  updatedAt: string;
+  cwd?: string;
+  notifiedAt?: string;
+  result?: PersistedSpawnSubagentResult;
+  error?: string;
+}
+
+interface BackgroundJobStore {
+  version: number;
+  jobs: PersistedBackgroundSubagentJob[];
+}
+
 const backgroundJobs = new Map<string, BackgroundSubagentJob>();
+let persistedJobsRestored = false;
 
 function formatTokens(count: number): string {
   if (count < 1000) return count.toString();
@@ -88,6 +135,17 @@ function limitText(text: string, maxChars = MAX_RETURN_CHARS): string {
   return `${text.slice(0, maxChars)}\n\n[spawn_subagent output truncated at ${maxChars} chars]`;
 }
 
+function sanitizePersistedText(text: string, maxChars = MAX_PERSISTED_TEXT_CHARS): string {
+  const redacted = text
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[redacted private key]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted jwt]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [redacted]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted aws access key]")
+    .replace(/(["']?)([a-z0-9_.-]*(?:api[_-]?key|token|secret(?:[_-]?access[_-]?key)?|password|credential)[a-z0-9_.-]*)\1\s*[:=]\s*["']?[^"',}\]\s]+["']?/gi, "$1$2$1: [redacted]")
+    .replace(/\b(?:sk|pk|ghp|gho|ghu|github_pat|xox[baprs])[-_][-_a-z0-9]{12,}\b/gi, "[redacted token]");
+  return limitText(redacted, maxChars);
+}
+
 function makeJobId(): string {
   return `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -95,7 +153,7 @@ function makeJobId(): string {
 function formatJobLine(job: BackgroundSubagentJob): string {
   const resultCount = job.result?.details?.results.length ?? 0;
   const resultSuffix = resultCount ? `, results=${resultCount}` : "";
-  return `${job.id} — ${job.status} — ${job.mode} — ${job.label} — started ${job.startedAt}${resultSuffix}`;
+  return `${job.id} — ${job.status} — ${job.mode} — ${sanitizePersistedText(job.label, 500)} — started ${job.startedAt}${resultSuffix}`;
 }
 
 function formatJobList(): string {
@@ -110,6 +168,230 @@ function summarizeJobLabel(params: any, mode: SpawnSubagentDetails["mode"]): str
   if (mode === "parallel") return `${params.tasks?.length ?? 0} parallel task(s)`;
   if (mode === "chain") return `${params.chain?.length ?? 0} chain step(s)`;
   return `${params.agent}: ${String(params.task ?? "").slice(0, 80)}`;
+}
+
+function extractResultText(result?: SpawnSubagentResult): string {
+  return result?.content
+    ?.map((part) => (part.type === "text" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n") ?? "";
+}
+
+function persistUsage(usage?: Partial<UsageStats> | null): UsageStats {
+  return {
+    input: Number.isFinite(usage?.input) ? usage.input! : 0,
+    output: Number.isFinite(usage?.output) ? usage.output! : 0,
+    cacheRead: Number.isFinite(usage?.cacheRead) ? usage.cacheRead! : 0,
+    cacheWrite: Number.isFinite(usage?.cacheWrite) ? usage.cacheWrite! : 0,
+    cost: Number.isFinite(usage?.cost) ? usage.cost! : 0,
+    contextTokens: Number.isFinite(usage?.contextTokens) ? usage.contextTokens! : 0,
+    turns: Number.isFinite(usage?.turns) ? usage.turns! : 0,
+  };
+}
+
+function persistResult(result?: SpawnSubagentResult): PersistedSpawnSubagentResult | undefined {
+  if (!result) return undefined;
+  return {
+    contentText: sanitizePersistedText(extractResultText(result)),
+    details: {
+      mode: result.details.mode,
+      agentScope: result.details.agentScope,
+      agents: result.details.agents,
+      sharedAgentsDir: result.details.sharedAgentsDir,
+      userAgentsDir: result.details.userAgentsDir,
+      projectAgentsDir: result.details.projectAgentsDir,
+      results: result.details.results.map((item) => ({
+        agent: item.agent,
+        agentSource: item.agentSource,
+        task: sanitizePersistedText(item.task, 2000),
+        exitCode: item.exitCode,
+        stderr: sanitizePersistedText(item.stderr),
+        usage: persistUsage(item.usage),
+        model: item.model,
+        stopReason: item.stopReason,
+        errorMessage: item.errorMessage ? sanitizePersistedText(item.errorMessage, 2000) : undefined,
+        step: item.step,
+        output: sanitizePersistedText(getFinalOutput(item.messages)),
+      })),
+    },
+  };
+}
+
+function isMode(value: unknown): value is SpawnSubagentDetails["mode"] {
+  return value === "single" || value === "parallel" || value === "chain";
+}
+
+function isJobStatus(value: unknown): value is BackgroundJobStatus {
+  return value === "running" || value === "completed" || value === "failed" || value === "canceled";
+}
+
+function isAgentScope(value: unknown): value is AgentScope {
+  return value === "shared" || value === "user" || value === "project" || value === "all";
+}
+
+function hydrateResult(result?: PersistedSpawnSubagentResult): SpawnSubagentResult | undefined {
+  try {
+    if (!result?.details) return undefined;
+    const details = result.details as Partial<PersistedSpawnSubagentResult["details"]>;
+    return {
+      content: [{ type: "text", text: typeof result.contentText === "string" ? result.contentText : "" }],
+      details: {
+        mode: isMode(details.mode) ? details.mode : "single",
+        agentScope: isAgentScope(details.agentScope) ? details.agentScope : "shared",
+        agents: Array.isArray(details.agents) ? details.agents : [],
+        sharedAgentsDir: typeof details.sharedAgentsDir === "string" ? details.sharedAgentsDir : "",
+        userAgentsDir: typeof details.userAgentsDir === "string" ? details.userAgentsDir : "",
+        projectAgentsDir: typeof details.projectAgentsDir === "string" ? details.projectAgentsDir : null,
+        results: (Array.isArray(details.results) ? details.results : []).map((item) => ({
+          agent: typeof item.agent === "string" ? item.agent : "unknown",
+          agentSource: item.agentSource,
+          task: typeof item.task === "string" ? item.task : "",
+          exitCode: Number.isFinite(item.exitCode) ? item.exitCode : 1,
+          messages: item.output ? [{ role: "assistant", content: [{ type: "text", text: item.output }] } as Message] : [],
+          stderr: typeof item.stderr === "string" ? item.stderr : "",
+          usage: persistUsage(item.usage),
+          model: item.model,
+          stopReason: item.stopReason,
+          errorMessage: item.errorMessage,
+          step: item.step,
+        })),
+      },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function persistJob(job: BackgroundSubagentJob): PersistedBackgroundSubagentJob {
+  return {
+    id: job.id,
+    status: job.status,
+    mode: job.mode,
+    label: sanitizePersistedText(job.label, 500),
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+    cwd: job.cwd,
+    notifiedAt: job.notifiedAt,
+    result: persistResult(job.result),
+    error: job.error ? sanitizePersistedText(job.error, 2000) : undefined,
+  };
+}
+
+function readBackgroundJobStore(): BackgroundJobStore {
+  try {
+    if (!fs.existsSync(JOB_STORE_PATH)) return { version: JOB_STORE_VERSION, jobs: [] };
+    const parsed = JSON.parse(fs.readFileSync(JOB_STORE_PATH, "utf8")) as Partial<BackgroundJobStore>;
+    return { version: JOB_STORE_VERSION, jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [] };
+  } catch {
+    return { version: JOB_STORE_VERSION, jobs: [] };
+  }
+}
+
+async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await fs.promises.writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await fs.promises.rename(tmp, filePath);
+}
+
+function shouldKeepPersistedJob(job: BackgroundSubagentJob, nowMs: number): boolean {
+  if (job.status === "running") return true;
+  const updatedMs = Date.parse(job.updatedAt);
+  if (!Number.isFinite(updatedMs)) return true;
+  return nowMs - updatedMs <= MAX_PERSISTED_JOB_AGE_MS;
+}
+
+async function saveBackgroundJobStore(): Promise<void> {
+  await withFileMutationQueue(JOB_STORE_PATH, async () => {
+    const nowMs = Date.now();
+    const jobs = Array.from(backgroundJobs.values())
+      .filter((job) => shouldKeepPersistedJob(job, nowMs))
+      .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+      .slice(-MAX_PERSISTED_JOBS)
+      .map(persistJob);
+    await atomicWriteJson(JOB_STORE_PATH, { version: JOB_STORE_VERSION, jobs });
+  });
+}
+
+function queueSaveBackgroundJobStore(): void {
+  void saveBackgroundJobStore().catch(() => undefined);
+}
+
+function restorePersistedBackgroundJobs(): void {
+  if (persistedJobsRestored) return;
+  persistedJobsRestored = true;
+
+  const store = readBackgroundJobStore();
+  let changed = false;
+  const now = new Date().toISOString();
+  for (const persisted of store.jobs) {
+    if (!persisted || typeof persisted.id !== "string" || backgroundJobs.has(persisted.id)) continue;
+    const job: BackgroundSubagentJob = {
+      id: persisted.id,
+      status: isJobStatus(persisted.status) ? persisted.status : "failed",
+      mode: isMode(persisted.mode) ? persisted.mode : "single",
+      label: typeof persisted.label === "string" ? persisted.label : "unknown background job",
+      startedAt: typeof persisted.startedAt === "string" ? persisted.startedAt : now,
+      updatedAt: typeof persisted.updatedAt === "string" ? persisted.updatedAt : now,
+      cwd: typeof persisted.cwd === "string" ? persisted.cwd : undefined,
+      notifiedAt: typeof persisted.notifiedAt === "string" ? persisted.notifiedAt : undefined,
+      abortController: new AbortController(),
+      result: hydrateResult(persisted.result),
+      error: typeof persisted.error === "string" ? persisted.error : undefined,
+    };
+    if (job.status === "running") {
+      job.status = "failed";
+      job.updatedAt = now;
+      job.error = "Background job was still running when Pi reloaded or restarted; child process state cannot be restored.";
+      changed = true;
+    }
+    backgroundJobs.set(job.id, job);
+  }
+  if (changed) queueSaveBackgroundJobStore();
+}
+
+function jobSuccessSummary(job: BackgroundSubagentJob): string {
+  const results = job.result?.details.results ?? [];
+  if (results.length === 0) return "results unavailable";
+  const successCount = results.filter((result) => !isFailure(result)).length;
+  return `${successCount}/${results.length} succeeded`;
+}
+
+function formatJobNotification(job: BackgroundSubagentJob): string {
+  const output = job.error || extractResultText(job.result) || "(no output)";
+  return [
+    `Background subagent job ${job.id} ${job.status}.`,
+    `${job.mode}: ${sanitizePersistedText(job.label, 500)}`,
+    `Results: ${jobSuccessSummary(job)}`,
+    "",
+    "Preview:",
+    sanitizePersistedText(output, MAX_NOTIFICATION_CHARS),
+    "",
+    `Status: {"jobAction":"status","jobId":"${job.id}"}`,
+  ].join("\n");
+}
+
+function notifyJobFinished(pi: ExtensionAPI, job: BackgroundSubagentJob): void {
+  if (job.status === "running" || job.notifiedAt) return;
+  job.notifiedAt = new Date().toISOString();
+  pi.sendMessage(
+    { customType: "spawn-subagent", content: formatJobNotification(job), display: true, details: persistJob(job) },
+    { deliverAs: "followUp" },
+  );
+  queueSaveBackgroundJobStore();
+}
+
+function sanitizedDetails(result: SpawnSubagentResult | undefined, fallback: SpawnSubagentDetails): SpawnSubagentDetails {
+  return hydrateResult(persistResult(result))?.details ?? fallback;
+}
+
+async function trySaveBackgroundJobStore(): Promise<string | undefined> {
+  try {
+    await saveBackgroundJobStore();
+    return undefined;
+  } catch (error: unknown) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 function getFinalOutput(messages: Message[]): string {
@@ -428,6 +710,8 @@ function send(pi: ExtensionAPI, content: string) {
 }
 
 export default function spawnSubagentExtension(pi: ExtensionAPI) {
+  restorePersistedBackgroundJobs();
+
   pi.on("before_agent_start", async (event) => {
     const selectedTools = event.systemPromptOptions?.selectedTools ?? [];
     if (!selectedTools.includes("spawn_subagent")) return;
@@ -515,15 +799,20 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
         if (params.jobAction === "cancel") {
           if (job.status === "running") {
             job.status = "canceled";
+            job.error = job.error ?? "Canceled by request.";
             job.updatedAt = new Date().toISOString();
             job.abortController.abort();
+            notifyJobFinished(pi, job);
+          } else {
+            await saveBackgroundJobStore();
           }
-          return { content: [{ type: "text", text: `Background subagent job ${job.id} is ${job.status}.` }], details: job.result?.details ?? makeDetails([]) };
+          return { content: [{ type: "text", text: `Background subagent job ${job.id} is ${job.status}.` }], details: sanitizedDetails(job.result, makeDetails([])) };
         }
 
-        const output = job.result?.content?.map((part) => (part.type === "text" ? part.text : "")).filter(Boolean).join("\n") ?? "";
-        const body = [`${formatJobLine(job)}`, job.error ? `Error: ${job.error}` : "", output ? `\n${output}` : ""].filter(Boolean).join("\n");
-        return { content: [{ type: "text", text: limitText(body) }], details: job.result?.details ?? makeDetails([]) };
+        const output = sanitizePersistedText(extractResultText(job.result));
+        const error = job.error ? `Error: ${sanitizePersistedText(job.error, 2000)}` : "";
+        const body = [`${formatJobLine(job)}`, error, output ? `\n${output}` : ""].filter(Boolean).join("\n");
+        return { content: [{ type: "text", text: limitText(body) }], details: sanitizedDetails(job.result, makeDetails([])) };
       }
 
       if (modeCount !== 1) {
@@ -718,9 +1007,11 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
           label: summarizeJobLabel(params, mode),
           startedAt: now,
           updatedAt: now,
+          cwd: ctx.cwd,
           abortController: new AbortController(),
         };
         backgroundJobs.set(job.id, job);
+        const persistenceWarning = await trySaveBackgroundJobStore();
 
         void runRequest(job.abortController.signal)
           .then((result) => {
@@ -729,18 +1020,22 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
               job.status = result.details.results.some(isFailure) ? "failed" : "completed";
             }
             job.updatedAt = new Date().toISOString();
+            notifyJobFinished(pi, job);
+            queueSaveBackgroundJobStore();
           })
           .catch((error: unknown) => {
             job.error = error instanceof Error ? error.message : String(error);
             if (job.status !== "canceled") job.status = "failed";
             job.updatedAt = new Date().toISOString();
+            notifyJobFinished(pi, job);
+            queueSaveBackgroundJobStore();
           });
 
         return {
           content: [
             {
               type: "text",
-              text: `Started background subagent job ${job.id} (${job.mode}: ${job.label}). Poll with {"jobAction":"status","jobId":"${job.id}"}; list jobs with {"jobAction":"list"}; cancel with {"jobAction":"cancel","jobId":"${job.id}"}.`,
+              text: `Started background subagent job ${job.id} (${job.mode}: ${sanitizePersistedText(job.label, 500)}). Poll with {"jobAction":"status","jobId":"${job.id}"}; list jobs with {"jobAction":"list"}; cancel with {"jobAction":"cancel","jobId":"${job.id}"}.${persistenceWarning ? ` Warning: initial job persistence failed: ${sanitizePersistedText(persistenceWarning, 500)}` : ""}`,
             },
           ],
           details: makeDetails([]),

@@ -59,7 +59,10 @@ Lists available agents for the selected scope.
 - Model precedence per spawn: explicit `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.id`). The parent's model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
 - Streams partial updates back into the tool result for foreground jobs.
 - Background jobs return a job id immediately and keep running in the current Pi extension process; poll with `jobAction=status`, list with `jobAction=list`, and cancel with `jobAction=cancel`.
-- Propagates aborts to child Pi processes; background jobs can be canceled by job id.
+- Background jobs emit a visible completion message when they transition to `completed`, `failed`, or `canceled`; the message includes the job id, mode/label, success count, and a truncated preview.
+- Background job metadata and truncated/redacted result summaries persist to `~/.pi/agent/spawn-subagent/jobs.json` by default (`PI_SPAWN_SUBAGENT_DIR` overrides the directory), capped to the most recent 100 jobs and jobs updated in the last 30 days.
+- Persisted `running` jobs from a previous Pi process are marked `failed` on reload/restart because child process state cannot be restored.
+- Propagates aborts to child Pi processes; background jobs can be canceled by job id and the canceled state is persisted.
 - Limits parallel mode to 8 tasks with max concurrency 4.
 - Does not create git worktrees or branches; use normal git/worktree workflows explicitly when needed.
 
