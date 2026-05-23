@@ -13,6 +13,8 @@ Modes:
 - Single: `{ "agent": "scout", "task": "find auth entry points" }`
 - Parallel: `{ "tasks": [{ "agent": "scout", "task": "find models" }, { "agent": "scout", "task": "find routes" }] }`
 - Chain: `{ "chain": [{ "agent": "scout", "task": "inspect X" }, { "agent": "planner", "task": "plan from this: {previous}" }] }`
+- Background start: `{ "background": true, "tasks": [{ "agent": "scout", "task": "find models" }, { "agent": "scout", "task": "find routes" }] }`
+- Background status/list/cancel: `{ "jobAction": "status", "jobId": "sub_..." }`, `{ "jobAction": "list" }`, `{ "jobAction": "cancel", "jobId": "sub_..." }`
 
 ## Agents
 
@@ -55,10 +57,21 @@ Lists available agents for the selected scope.
 
 - Spawns a separate `pi --mode json -p --no-session` process per task.
 - Model precedence per spawn: explicit `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.id`). The parent's model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
-- Streams partial updates back into the tool result.
-- Propagates aborts to child Pi processes.
+- Streams partial updates back into the tool result for foreground jobs.
+- Background jobs return a job id immediately and keep running in the current Pi extension process; poll with `jobAction=status`, list with `jobAction=list`, and cancel with `jobAction=cancel`.
+- Propagates aborts to child Pi processes; background jobs can be canceled by job id.
 - Limits parallel mode to 8 tasks with max concurrency 4.
 - Does not create git worktrees or branches; use normal git/worktree workflows explicitly when needed.
+
+## Delegation Gates
+
+Use subagents when isolation, parallelism, or specialist perspective adds value:
+
+- **Recon gate** — unfamiliar code area that would likely need 5+ sequential read/grep/find calls; delegate read-only reconnaissance to `scout` before editing.
+- **Parallel gate** — 2+ independent investigation paths can run concurrently; use parallel mode with focused scout/reviewer tasks.
+- **Specialist gate** — planning or review would materially improve correctness after non-trivial diffs, risky changes, or broad refactors.
+
+Do not use subagents for single-file reads, quick greps, obvious edits, or normal linear test/fix loops. Keep routine execution in the main agent so context and responsibility stay visible.
 
 ## Orchestration
 
@@ -80,7 +93,7 @@ This extension injects a task routing table and agent roster into every system p
 | Remove a tool/agent | Delete it | ✅ Routing table line becomes inert (LLM skips unavailable tools) |
 | Change routing priority | Edit `ROUTING_TABLE` | ❌ Manual |
 
-The `ROUTING_TABLE` is the only manual coordination point. It lives in this file as the `ROUTING_TABLE` constant near the top of the extension. Add a line when you introduce a new *category* of work — not when you add a new agent that fits an existing category. Broad requests to explore, map, understand, trace, or investigate unfamiliar code should route to `scout` before planning or implementation.
+The `ROUTING_TABLE` is the only manual coordination point. It lives in this file as the `ROUTING_TABLE` constant near the top of the extension. Add a line when you introduce a new *category* of work — not when you add a new agent that fits an existing category. Broad requests to explore, map, understand, trace, or investigate unfamiliar code should route to `scout` before planning or implementation. Prompts should also ask subagents for structured output: files inspected, key findings, recommended edit points, verification commands, and risks/blockers.
 
 ### Adding a new routing category
 

@@ -232,10 +232,11 @@ Work loop for this turn:
 1. Look at the most recent failure, partial state, or last action's output.
 2. Form the smallest plausible next concrete action that advances the goal.
 3. Execute it. If it fails, inspect, fix, retry — within the same turn when feasible.
-4. When the work_plan has independent items that could proceed in parallel, use spawn_subagent parallel mode to advance multiple items simultaneously.
-5. When a specific item would benefit from a specialist perspective (review, planning, reconnaissance), use spawn_subagent with the appropriate agent (scout, planner, reviewer, worker).
-6. Update work_plan if the structure of remaining work changed.
-7. Call update_goal with status "active" and a one-line progress note (with evidence when meaningful) only if the turn produced a real state change worth logging. Do not log no-op turns.
+4. When the work_plan has 2+ independent investigation paths that could proceed in parallel, use spawn_subagent parallel mode with focused scout/reviewer tasks.
+5. When a specific item crosses a delegation gate — unfamiliar code likely needing 5+ read/grep/find calls, or a specialist review/planning pass would materially improve correctness — use spawn_subagent with the appropriate agent (scout, planner, reviewer, worker). Do not delegate single-file reads, quick greps, obvious edits, or normal linear test/fix loops.
+6. Ask subagents for structured outputs with files inspected, key findings, recommended edit points, verification commands, and risks.
+7. Update work_plan if the structure of remaining work changed.
+8. Call update_goal with status "active" and a one-line progress note (with evidence when meaningful) only if the turn produced a real state change worth logging. Do not log no-op turns.
 
 For non-trivial implementation, refactor, debugging, or multi-step UI work inside this goal, maintain a visible checklist with the work_plan tool:
 - Create or update the plan before substantial work.

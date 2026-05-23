@@ -47,6 +47,21 @@ interface SpawnSubagentDetails {
 
 type SpawnSubagentResult = AgentToolResult<SpawnSubagentDetails>;
 type OnUpdateCallback = (partial: SpawnSubagentResult) => void;
+type BackgroundJobStatus = "running" | "completed" | "failed" | "canceled";
+
+interface BackgroundSubagentJob {
+  id: string;
+  status: BackgroundJobStatus;
+  mode: SpawnSubagentDetails["mode"];
+  label: string;
+  startedAt: string;
+  updatedAt: string;
+  abortController: AbortController;
+  result?: SpawnSubagentResult;
+  error?: string;
+}
+
+const backgroundJobs = new Map<string, BackgroundSubagentJob>();
 
 function formatTokens(count: number): string {
   if (count < 1000) return count.toString();
@@ -71,6 +86,30 @@ function formatUsage(usage: UsageStats, model?: string): string {
 function limitText(text: string, maxChars = MAX_RETURN_CHARS): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n\n[spawn_subagent output truncated at ${maxChars} chars]`;
+}
+
+function makeJobId(): string {
+  return `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function formatJobLine(job: BackgroundSubagentJob): string {
+  const resultCount = job.result?.details?.results.length ?? 0;
+  const resultSuffix = resultCount ? `, results=${resultCount}` : "";
+  return `${job.id} — ${job.status} — ${job.mode} — ${job.label} — started ${job.startedAt}${resultSuffix}`;
+}
+
+function formatJobList(): string {
+  if (backgroundJobs.size === 0) return "No background subagent jobs.";
+  return Array.from(backgroundJobs.values())
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+    .map(formatJobLine)
+    .join("\n");
+}
+
+function summarizeJobLabel(params: any, mode: SpawnSubagentDetails["mode"]): string {
+  if (mode === "parallel") return `${params.tasks?.length ?? 0} parallel task(s)`;
+  if (mode === "chain") return `${params.chain?.length ?? 0} chain step(s)`;
+  return `${params.agent}: ${String(params.task ?? "").slice(0, 80)}`;
 }
 
 function getFinalOutput(messages: Message[]): string {
@@ -348,25 +387,34 @@ const ROUTING_TABLE = `Task routing (pick the most specific match):
 - Deep multi-source research with cited synthesis        → deep_research
 - Explore/map/understand unfamiliar code before editing  → spawn_subagent scout
 - Find code, APIs, patterns in unfamiliar codebase       → spawn_subagent scout
+- Unfamiliar multi-file implementation                  → spawn_subagent scout, then main agent or planner
 - Plan implementation from requirements/recon            → spawn_subagent planner
-- Review changes for regressions/security/style          → spawn_subagent reviewer
+- Review non-trivial diffs/regressions/security/style    → spawn_subagent reviewer
 - Implement in isolated context                          → spawn_subagent worker
-- N independent investigation questions                  → spawn_subagent parallel
-- Multi-step pipeline (scout→plan→work)                  → spawn_subagent chain
+- 2+ independent investigation questions                 → spawn_subagent parallel
+- Long-running delegations while main chat continues      → spawn_subagent background=true, then jobAction=status
+- Multi-step pipeline (scout→planner→worker)             → spawn_subagent chain
 - Multi-step durable work with autopilot                 → start_goal + work_plan
 
-Delegation signals (prefer spawn_subagent when):
-- The user asks to explore, map, understand, trace, or investigate an unfamiliar code area before editing
-- You would need 5+ sequential read/grep/find calls to understand a codebase
-- The task has independent subtasks that could run in parallel
-- A specialist perspective (review, planning) would improve the result
-- You are about to do deep research that web_search alone won't cover`;
+Delegation gates (prefer spawn_subagent when one applies):
+- Recon gate: unfamiliar area + likely 5+ sequential read/grep/find calls; delegate read-only reconnaissance to scout before editing
+- Parallel gate: 2+ independent investigation paths can run concurrently; use parallel mode with focused scout/reviewer tasks
+- Specialist gate: planning or review would materially improve correctness after non-trivial diffs, risky changes, or broad refactors
+
+Do not use spawn_subagent for single-file reads, quick greps, obvious edits, or normal linear test/fix loops. Keep execution ownership in the main agent unless isolation or parallelism adds value. Ask subagents for structured output: files inspected, key findings, recommended edit points, verification commands, and risks.`;
+
+const JobActionSchema = StringEnum(["list", "status", "cancel"] as const, {
+  description: "Background job action. Use list, status with jobId, or cancel with jobId.",
+});
 
 const SpawnSubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (single mode)" })),
   task: Type.Optional(Type.String({ description: "Task to delegate (single mode)" })),
   tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel mode: array of {agent, task, cwd?}" })),
   chain: Type.Optional(Type.Array(ChainItem, { description: "Chain mode: sequential steps; use {previous} in later tasks" })),
+  background: Type.Optional(Type.Boolean({ description: "Start the subagent job in the background and return a job id immediately. Poll later with jobAction=status.", default: false })),
+  jobAction: Type.Optional(JobActionSchema),
+  jobId: Type.Optional(Type.String({ description: "Background subagent job id for status or cancel." })),
   agentScope: Type.Optional(AgentScopeSchema),
   model: Type.Optional(Type.String({ description: "Optional pi model pattern/id override for this invocation" })),
   cwd: Type.Optional(Type.String({ description: "Working directory for the subagent process (single mode)" })),
@@ -425,16 +473,17 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
     label: "Spawn Subagent",
     description: [
       "Spawn one or more isolated Pi subagents and return their final outputs.",
-      "Supports single agent, parallel tasks, and sequential chains with {previous} placeholder handoff.",
+      "Supports single agent, parallel tasks, sequential chains with {previous} placeholder handoff, and background jobs.",
       "Default agentScope is shared, using bundled pi-shared agents. Use project/all only for trusted repos.",
     ].join(" "),
     promptSnippet: "Spawn isolated Pi subagents for parallel investigation, review, planning, or implementation.",
     promptGuidelines: [
-      "Use spawn_subagent when the user asks to explore, map, understand, trace, or investigate an unfamiliar code area before editing; delegate that read-only reconnaissance to scout.",
-      "Use spawn_subagent when you would need 5+ sequential read/grep/find calls, when the task has independent subtasks, or when a specialist perspective (review, planning, isolated implementation) would improve the result.",
-      "Do NOT use spawn_subagent for single-file reads, quick greps, or edits you can do directly.",
-      "Prefer spawn_subagent over doing extensive reconnaissance yourself — delegate to scout instead of running 5+ search calls in sequence.",
+      "Use spawn_subagent for read-only reconnaissance when the user asks to explore, map, understand, trace, or investigate an unfamiliar code area before editing.",
+      "Prefer spawn_subagent when one of three gates applies: likely 5+ sequential read/grep/find calls, 2+ independent investigation paths, or a specialist review/planning pass would materially improve correctness.",
+      "Do NOT use spawn_subagent for single-file reads, quick greps, obvious edits, or normal linear test/fix loops the main agent can execute directly.",
       "Use parallel mode for independent questions, chain mode for sequential pipelines (scout→planner→worker), and single mode for one specialist pass.",
+      "Use background=true for long-running agent jobs when the main chat can continue orchestrating other work; poll with jobAction=status and cancel with jobAction=cancel.",
+      "Ask subagents for structured output: files inspected, key findings, recommended edit points, verification commands, and risks/blockers.",
       "When using spawn_subagent with project-local agents, set agentScope to project or all only for trusted repositories.",
     ],
     parameters: SpawnSubagentParams,
@@ -452,6 +501,30 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
       const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
       const mode: SpawnSubagentDetails["mode"] = hasChain ? "chain" : hasTasks ? "parallel" : "single";
       const makeDetails = makeDetailsFactory(mode, agentScope, discovery);
+
+      if (params.jobAction) {
+        if (params.jobAction === "list") {
+          return { content: [{ type: "text", text: formatJobList() }], details: makeDetails([]) };
+        }
+
+        const job = params.jobId ? backgroundJobs.get(params.jobId) : undefined;
+        if (!job) {
+          return { content: [{ type: "text", text: `Background subagent job not found: ${params.jobId ?? "(missing jobId)"}` }], details: makeDetails([]) };
+        }
+
+        if (params.jobAction === "cancel") {
+          if (job.status === "running") {
+            job.status = "canceled";
+            job.updatedAt = new Date().toISOString();
+            job.abortController.abort();
+          }
+          return { content: [{ type: "text", text: `Background subagent job ${job.id} is ${job.status}.` }], details: job.result?.details ?? makeDetails([]) };
+        }
+
+        const output = job.result?.content?.map((part) => (part.type === "text" ? part.text : "")).filter(Boolean).join("\n") ?? "";
+        const body = [`${formatJobLine(job)}`, job.error ? `Error: ${job.error}` : "", output ? `\n${output}` : ""].filter(Boolean).join("\n");
+        return { content: [{ type: "text", text: limitText(body) }], details: job.result?.details ?? makeDetails([]) };
+      }
 
       if (modeCount !== 1) {
         return {
@@ -489,150 +562,192 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
         }
       }
 
-      if (params.chain && params.chain.length > 0) {
-        const results: SingleResult[] = [];
-        let previousOutput = "";
+      const runRequest = async (runSignal: AbortSignal, runOnUpdate?: OnUpdateCallback): Promise<SpawnSubagentResult> => {
+        if (params.chain && params.chain.length > 0) {
+          const results: SingleResult[] = [];
+          let previousOutput = "";
 
-        for (let i = 0; i < params.chain.length; i++) {
-          const step = params.chain[i];
-          const task = step.task.replace(/\{previous\}/g, previousOutput);
-          const result = await runSingleAgent({
-            defaultCwd: ctx.cwd,
-            agents,
-            agentName: step.agent,
-            task,
-            cwd: step.cwd,
-            model: params.model,
-            parentModel,
-            step: i + 1,
-            signal,
-            onUpdate: onUpdate
-              ? (partial) => {
-                  const current = partial.details?.results[0];
-                  if (current) {
-                    onUpdate({ content: partial.content, details: makeDetails([...results, current]) });
+          for (let i = 0; i < params.chain.length; i++) {
+            const step = params.chain[i];
+            const task = step.task.replace(/\{previous\}/g, previousOutput);
+            const result = await runSingleAgent({
+              defaultCwd: ctx.cwd,
+              agents,
+              agentName: step.agent,
+              task,
+              cwd: step.cwd,
+              model: params.model,
+              parentModel,
+              step: i + 1,
+              signal: runSignal,
+              onUpdate: runOnUpdate
+                ? (partial) => {
+                    const current = partial.details?.results[0];
+                    if (current) {
+                      runOnUpdate({ content: partial.content, details: makeDetails([...results, current]) });
+                    }
                   }
-                }
-              : undefined,
-            makeDetails,
-          });
-          results.push(result);
+                : undefined,
+              makeDetails,
+            });
+            results.push(result);
 
-          if (isFailure(result)) {
-            return {
-              content: [{ type: "text", text: limitText(`Chain stopped at step ${i + 1} (${step.agent}): ${summarizeFailure(result)}`) }],
-              details: makeDetails(results),
-            };
+            if (isFailure(result)) {
+              return {
+                content: [{ type: "text", text: limitText(`Chain stopped at step ${i + 1} (${step.agent}): ${summarizeFailure(result)}`) }],
+                details: makeDetails(results),
+              };
+            }
+            previousOutput = getFinalOutput(result.messages);
           }
-          previousOutput = getFinalOutput(result.messages);
-        }
 
-        return {
-          content: [{ type: "text", text: limitText(getFinalOutput(results[results.length - 1].messages) || "(no output)") }],
-          details: makeDetails(results),
-        };
-      }
-
-      if (params.tasks && params.tasks.length > 0) {
-        if (params.tasks.length > MAX_PARALLEL_TASKS) {
           return {
-            content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }],
-            details: makeDetails([]),
+            content: [{ type: "text", text: limitText(getFinalOutput(results[results.length - 1].messages) || "(no output)") }],
+            details: makeDetails(results),
           };
         }
 
-        const liveResults: SingleResult[] = params.tasks.map((task) => ({
-          agent: task.agent,
-          agentSource: "unknown",
-          task: task.task,
-          exitCode: -1,
-          messages: [],
-          stderr: "",
-          usage: emptyUsage(),
-        }));
+        if (params.tasks && params.tasks.length > 0) {
+          if (params.tasks.length > MAX_PARALLEL_TASKS) {
+            return {
+              content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }],
+              details: makeDetails([]),
+            };
+          }
 
-        const emitParallelUpdate = () => {
-          const done = liveResults.filter((result) => result.exitCode !== -1).length;
-          const running = liveResults.length - done;
-          onUpdate?.({
-            content: [{ type: "text", text: `Parallel subagents: ${done}/${liveResults.length} done, ${running} running.` }],
-            details: makeDetails([...liveResults]),
+          const liveResults: SingleResult[] = params.tasks.map((task) => ({
+            agent: task.agent,
+            agentSource: "unknown",
+            task: task.task,
+            exitCode: -1,
+            messages: [],
+            stderr: "",
+            usage: emptyUsage(),
+          }));
+
+          const emitParallelUpdate = () => {
+            const done = liveResults.filter((result) => result.exitCode !== -1).length;
+            const running = liveResults.length - done;
+            runOnUpdate?.({
+              content: [{ type: "text", text: `Parallel subagents: ${done}/${liveResults.length} done, ${running} running.` }],
+              details: makeDetails([...liveResults]),
+            });
+          };
+
+          const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (task, index) => {
+            const result = await runSingleAgent({
+              defaultCwd: ctx.cwd,
+              agents,
+              agentName: task.agent,
+              task: task.task,
+              cwd: task.cwd,
+              model: params.model,
+              parentModel,
+              signal: runSignal,
+              onUpdate: (partial) => {
+                if (partial.details?.results[0]) {
+                  liveResults[index] = partial.details.results[0];
+                  emitParallelUpdate();
+                }
+              },
+              makeDetails,
+            });
+            liveResults[index] = result;
+            emitParallelUpdate();
+            return result;
           });
-        };
 
-        const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (task, index) => {
+          const successCount = results.filter((result) => !isFailure(result)).length;
+          const summaries = results.map((result) => {
+            const status = isFailure(result) ? "failed" : "completed";
+            const output = isFailure(result) ? summarizeFailure(result) : getFinalOutput(result.messages);
+            const usage = formatUsage(result.usage, result.model);
+            return `## ${result.agent} — ${status}${usage ? `\n${usage}` : ""}\n\n${limitText(output || "(no output)", 4000)}`;
+          });
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: limitText(`Parallel subagents: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}`),
+              },
+            ],
+            details: makeDetails(results),
+          };
+        }
+
+        if (params.agent && params.task) {
           const result = await runSingleAgent({
             defaultCwd: ctx.cwd,
             agents,
-            agentName: task.agent,
-            task: task.task,
-            cwd: task.cwd,
+            agentName: params.agent,
+            task: params.task,
+            cwd: params.cwd,
             model: params.model,
             parentModel,
-            signal,
-            onUpdate: (partial) => {
-              if (partial.details?.results[0]) {
-                liveResults[index] = partial.details.results[0];
-                emitParallelUpdate();
-              }
-            },
+            signal: runSignal,
+            onUpdate: runOnUpdate,
             makeDetails,
           });
-          liveResults[index] = result;
-          emitParallelUpdate();
-          return result;
-        });
 
-        const successCount = results.filter((result) => !isFailure(result)).length;
-        const summaries = results.map((result) => {
-          const status = isFailure(result) ? "failed" : "completed";
-          const output = isFailure(result) ? summarizeFailure(result) : getFinalOutput(result.messages);
-          const usage = formatUsage(result.usage, result.model);
-          return `## ${result.agent} — ${status}${usage ? `\n${usage}` : ""}\n\n${limitText(output || "(no output)", 4000)}`;
-        });
+          if (isFailure(result)) {
+            return {
+              content: [{ type: "text", text: limitText(`Subagent ${result.agent} failed: ${summarizeFailure(result)}`) }],
+              details: makeDetails([result]),
+            };
+          }
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: limitText(`Parallel subagents: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}`),
-            },
-          ],
-          details: makeDetails(results),
-        };
-      }
-
-      if (params.agent && params.task) {
-        const result = await runSingleAgent({
-          defaultCwd: ctx.cwd,
-          agents,
-          agentName: params.agent,
-          task: params.task,
-          cwd: params.cwd,
-          model: params.model,
-          parentModel,
-          signal,
-          onUpdate,
-          makeDetails,
-        });
-
-        if (isFailure(result)) {
           return {
-            content: [{ type: "text", text: limitText(`Subagent ${result.agent} failed: ${summarizeFailure(result)}`) }],
+            content: [{ type: "text", text: limitText(getFinalOutput(result.messages) || "(no output)") }],
             details: makeDetails([result]),
           };
         }
 
         return {
-          content: [{ type: "text", text: limitText(getFinalOutput(result.messages) || "(no output)") }],
-          details: makeDetails([result]),
+          content: [{ type: "text", text: `Invalid parameters.\n\nAvailable agents:\n${formatAgentList(agents)}` }],
+          details: makeDetails([]),
+        };
+      };
+
+      if (params.background) {
+        const now = new Date().toISOString();
+        const job: BackgroundSubagentJob = {
+          id: makeJobId(),
+          status: "running",
+          mode,
+          label: summarizeJobLabel(params, mode),
+          startedAt: now,
+          updatedAt: now,
+          abortController: new AbortController(),
+        };
+        backgroundJobs.set(job.id, job);
+
+        void runRequest(job.abortController.signal)
+          .then((result) => {
+            job.result = result;
+            if (job.status !== "canceled") {
+              job.status = result.details.results.some(isFailure) ? "failed" : "completed";
+            }
+            job.updatedAt = new Date().toISOString();
+          })
+          .catch((error: unknown) => {
+            job.error = error instanceof Error ? error.message : String(error);
+            if (job.status !== "canceled") job.status = "failed";
+            job.updatedAt = new Date().toISOString();
+          });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Started background subagent job ${job.id} (${job.mode}: ${job.label}). Poll with {"jobAction":"status","jobId":"${job.id}"}; list jobs with {"jobAction":"list"}; cancel with {"jobAction":"cancel","jobId":"${job.id}"}.`,
+            },
+          ],
+          details: makeDetails([]),
         };
       }
 
-      return {
-        content: [{ type: "text", text: `Invalid parameters.\n\nAvailable agents:\n${formatAgentList(agents)}` }],
-        details: makeDetails([]),
-      };
+      return runRequest(signal, onUpdate);
     },
   });
 }
