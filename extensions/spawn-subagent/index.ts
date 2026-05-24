@@ -777,7 +777,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
       const discovery = discoverAgents(ctx.cwd, agentScope);
       const agents = discovery.agents;
       const confirmProjectAgents = params.confirmProjectAgents ?? true;
-      const parentModel = ctx.model?.id;
+      const parentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
 
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasTasks = (params.tasks?.length ?? 0) > 0;

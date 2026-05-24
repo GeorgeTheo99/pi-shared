@@ -56,7 +56,7 @@ Lists available agents for the selected scope.
 ## Behavior
 
 - Spawns a separate `pi --mode json -p --no-session` process per task.
-- Model precedence per spawn: explicit `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.id`). The parent's model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
+- Model precedence per spawn: explicit `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.provider/ctx.model.id`). The parent's provider-qualified model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
 - Streams partial updates back into the tool result for foreground jobs.
 - Background jobs return a job id immediately and keep running in the current Pi extension process; poll with `jobAction=status`, list with `jobAction=list`, and cancel with `jobAction=cancel`.
 - Background jobs emit a visible completion message when they transition to `completed`, `failed`, or `canceled`; the message includes the job id, mode/label, success count, and a truncated preview.
