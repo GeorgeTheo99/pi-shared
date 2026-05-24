@@ -13,6 +13,22 @@ Shared pi instructions and explicitly shareable pi resources.
 - `prompts/` — shared prompt templates.
 - `themes/` — shared themes.
 - `bin/pi-vanilla` — recovery launcher for a vanilla Pi session when shared/local harness resources break normal startup.
+- `bin/pi-omlx-repair` — repair/wiring script for the dedicated `~/.pi-omlx/agent` Pi profile used by local oMLX/cloud model launchers.
+
+## Pi launcher profiles
+
+Current launcher/profile split:
+
+| Launcher | Profile | `pi-shared` behavior |
+|---|---|---|
+| `pi` | `~/.pi/agent` | Loads `pi-shared` through `settings.json`; `~/.pi/agent/AGENTS.md` should symlink to `pi-shared/AGENTS.md`. |
+| generated `pi-*` model functions | `~/.pi-omlx/agent` | Must call `bin/pi-omlx-repair` before launch/reload so the profile loads `pi-shared`, local extensions, shared `AGENTS.md`, and the zero-usage context fallback. |
+| `pi-vanilla` | `~/.pi/vanilla-agent` | Intentionally bypasses packages, extensions, skills, prompts, themes, and context files for recovery. Do not wire `pi-shared` into it. |
+
+Future Pi launchers should follow one of two rules:
+
+1. If they are normal/enhanced Pi sessions, load `pi-shared` as a package and use the shared `AGENTS.md`.
+2. If they are recovery/minimal launchers, explicitly bypass shared resources and document that exception.
 
 ## Vanilla recovery launcher
 
@@ -32,6 +48,23 @@ Requirements and behavior:
 - If `~/.pi/vanilla-agent/auth.json` does not exist, it symlinks `~/.pi/agent/auth.json` so existing Pi login/auth can be reused without copying secrets.
 - Defaults are `PI_VANILLA_PROVIDER=openai-codex`, `PI_VANILLA_MODEL=gpt-5.5`, and `PI_VANILLA_THINKING=high`; override those environment variables per machine if needed.
 - Existing shell aliases/functions for `pi` do not affect `pi-vanilla`; if a machine already has a `pi-vanilla` alias/function, remove it or point it at this script.
+
+## oMLX/cloud profile repair
+
+`bin/pi-omlx-repair` repairs the dedicated `~/.pi-omlx/agent` profile used by generated `pi-*` model launchers. It:
+
+- writes `settings.json` so `../../local_code/pi-shared` is loaded as a package
+- includes `../../local_code/pi-local/extensions` and `~/.codex/skills`
+- symlinks `~/.pi-omlx/agent/AGENTS.md` to `~/local_code/pi-shared/AGENTS.md`
+- patches the installed Pi compaction code to ignore all-zero provider usage and fall back to token estimation for context percentage
+
+Run manually if needed:
+
+```bash
+~/local_code/pi-shared/bin/pi-omlx-repair
+```
+
+Current generated `pi-*` shell launchers call this automatically before writing models or launching Pi. Future launchers that set `PI_CODING_AGENT_DIR=~/.pi-omlx/agent` should do the same.
 
 ## Included shared extensions
 
@@ -84,7 +117,7 @@ Put resources here only when they should travel to every machine that installs t
 ~/local_code/pi-shared/extensions/    # shared tools/extensions
 ~/local_code/pi-shared/prompts/       # shared prompt templates
 ~/local_code/pi-shared/themes/        # shared themes
-~/local_code/pi-shared/bin/           # shared helper launchers, including pi-vanilla
+~/local_code/pi-shared/bin/           # shared helper launchers/scripts, including pi-vanilla and pi-omlx-repair
 ```
 
 When you `git add`, `git commit`, and `git push` from `pi-shared`, those resources become available to other machines after they `git pull` and run `/reload` in Pi. Helper launchers in `bin/` also need a local symlink or PATH entry on each machine.
@@ -163,7 +196,8 @@ Project-local setups can instead use `./pi-shared` from `~/local_code/.pi/settin
 5. For `web_search`, run/configure SearXNG on that machine. Recommended endpoint: `http://127.0.0.1:8888`; JSON output must be enabled. Override with `SEARXNG_BASE_URL`, `SEARXNG_URL`, `PI_SEARXNG_BASE_URL`, `PI_RESEARCH_SEARXNG_URL`, or `~/.pi/research/config.json`.
 6. For `app_*`, set `BROWSER_MCP_APP_BASE_URL` when the target app is not `http://127.0.0.1:8100`; optionally add `BROWSER_MCP_APP_ALLOWED_HOSTS` for additional private hosts.
 7. Install the optional `pi-vanilla` recovery launcher if desired.
-8. Run `/reload`.
+8. Run `~/local_code/pi-shared/bin/pi-omlx-repair` on machines that use generated `pi-*` oMLX/cloud launchers.
+9. Run `/reload`.
 
 Example:
 
