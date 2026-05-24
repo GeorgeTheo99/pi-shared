@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Repair the dedicated oMLX Pi profile so it uses shared Pi resources and so
+# local OpenAI-compatible models that report zero token usage still get a sane
+# estimated context percentage.
+
+PI_OMLX_AGENT_DIR="${PI_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
+PI_SHARED_DIR="${PI_SHARED_DIR:-$HOME/local_code/pi-shared}"
+PI_LOCAL_EXTENSIONS_DIR="${PI_LOCAL_EXTENSIONS_DIR:-$HOME/local_code/pi-local/extensions}"
+PI_INSTALL_DIR="${PI_INSTALL_DIR:-/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent}"
+
+mkdir -p "$PI_OMLX_AGENT_DIR"
+
+python3 - "$PI_OMLX_AGENT_DIR/settings.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+settings = {}
+if path.exists():
+    try:
+        settings = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON in {path}: {exc}")
+
+settings["packages"] = ["../../local_code/pi-shared"]
+settings["extensions"] = ["../../local_code/pi-local/extensions"]
+settings["skills"] = ["~/.codex/skills"]
+settings["enableSkillCommands"] = True
+
+path.write_text(json.dumps(settings, indent=2) + "\n")
+PY
+
+ln -sfn "$PI_SHARED_DIR/AGENTS.md" "$PI_OMLX_AGENT_DIR/AGENTS.md"
+
+COMPACTION_JS="$PI_INSTALL_DIR/dist/core/compaction/compaction.js"
+if [[ -f "$COMPACTION_JS" ]]; then
+  python3 - "$COMPACTION_JS" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+old = '''function getAssistantUsage(msg) {
+    if (msg.role === "assistant" && "usage" in msg) {
+        const assistantMsg = msg;
+        if (assistantMsg.stopReason !== "aborted" && assistantMsg.stopReason !== "error" && assistantMsg.usage) {
+            return assistantMsg.usage;
+        }
+    }
+    return undefined;
+}
+'''
+new = '''function getAssistantUsage(msg) {
+    if (msg.role === "assistant" && "usage" in msg) {
+        const assistantMsg = msg;
+        if (assistantMsg.stopReason !== "aborted" && assistantMsg.stopReason !== "error" && assistantMsg.usage) {
+            const contextTokens = calculateContextTokens(assistantMsg.usage);
+            if (contextTokens > 0) {
+                return assistantMsg.usage;
+            }
+        }
+    }
+    return undefined;
+}
+'''
+if new in text:
+    raise SystemExit(0)
+if old not in text:
+    raise SystemExit(f"Expected getAssistantUsage block not found in {path}; Pi version may have changed")
+backup = path.with_suffix(path.suffix + ".pre-zero-usage-fallback.bak")
+if not backup.exists():
+    backup.write_text(text)
+path.write_text(text.replace(old, new))
+PY
+else
+  echo "warning: Pi compaction file not found: $COMPACTION_JS" >&2
+fi
+
+printf 'Repaired oMLX Pi profile at %s\n' "$PI_OMLX_AGENT_DIR"

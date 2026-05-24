@@ -12,6 +12,7 @@ git/
 npm/
 bin/*
 !bin/pi-vanilla
+!bin/pi-omlx-repair
 
 # Per-project Pi config (e.g. .pi/enterprise-tools.json) is local-only;
 # pi-shared travels by git and should not carry per-machine activation state.
