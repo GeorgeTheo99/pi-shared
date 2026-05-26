@@ -330,6 +330,20 @@ if "appendTextDelta(dsmlTextFilter.flush());\n            finishCurrentBlock(cur
         raise SystemExit(f"Expected final finishCurrentBlock block not found in {path}")
     text = text.replace(old4, new4, 1)
 
+old5 = '''        sendSessionAffinityHeaders: model.compat.sendSessionAffinityHeaders ?? detected.sendSessionAffinityHeaders,
+        supportsLongCacheRetention: model.compat.supportsLongCacheRetention ?? detected.supportsLongCacheRetention,
+    };
+'''
+new5 = '''        sendSessionAffinityHeaders: model.compat.sendSessionAffinityHeaders ?? detected.sendSessionAffinityHeaders,
+        supportsLongCacheRetention: model.compat.supportsLongCacheRetention ?? detected.supportsLongCacheRetention,
+        stripDsmlToolMarkup: model.compat.stripDsmlToolMarkup ?? false,
+    };
+'''
+if "stripDsmlToolMarkup: model.compat.stripDsmlToolMarkup" not in text:
+    if old5 not in text:
+        raise SystemExit(f"Expected getCompat tail block not found in {path}")
+    text = text.replace(old5, new5, 1)
+
 if text != original:
     backup = path.with_suffix(path.suffix + ".pre-dsml-filter.bak")
     if not backup.exists():
