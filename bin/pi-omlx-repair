@@ -29,6 +29,13 @@ settings["packages"] = ["../../local_code/pi-shared"]
 settings["extensions"] = ["../../local_code/pi-local/extensions"]
 settings["skills"] = ["~/.codex/skills"]
 settings["enableSkillCommands"] = True
+# Default thinking on for every reasoning model in this profile. Local
+# Qwen/GLM/Gemma/DeepSeek-V4 chat-template models only expose "high" in
+# their thinkingLevelMap (the boolean enable_thinking toggle); cloud graded
+# reasoning models also accept "high". Picking "high" is therefore valid
+# for every model and keeps thinking on by default. Override per-session
+# with /thinking off when needed.
+settings.setdefault("defaultThinkingLevel", "high")
 
 path.write_text(json.dumps(settings, indent=2) + "\n")
 PY
@@ -77,6 +84,260 @@ path.write_text(text.replace(old, new))
 PY
 else
   echo "warning: Pi compaction file not found: $COMPACTION_JS" >&2
+fi
+
+OPENAI_COMPLETIONS_JS="$PI_INSTALL_DIR/node_modules/@mariozechner/pi-ai/dist/providers/openai-completions.js"
+if [[ -f "$OPENAI_COMPLETIONS_JS" ]]; then
+  python3 - "$OPENAI_COMPLETIONS_JS" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+original = text
+
+old1 = '''function hasToolHistory(messages) {
+    for (const msg of messages) {
+        if (msg.role === "toolResult") {
+            return true;
+        }
+        if (msg.role === "assistant") {
+            if (msg.content.some((block) => block.type === "toolCall")) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+function isTextContentBlock(block) {
+'''
+new1 = '''function hasToolHistory(messages) {
+    for (const msg of messages) {
+        if (msg.role === "toolResult") {
+            return true;
+        }
+        if (msg.role === "assistant") {
+            if (msg.content.some((block) => block.type === "toolCall")) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+function createDsmlToolMarkupFilter(enabled) {
+    let pending = "";
+    let suppressing = false;
+    const markers = ["<｜DSML｜", "</｜DSML｜"];
+    const keepChars = 16;
+    const findMarker = (text) => {
+        let index = -1;
+        for (const marker of markers) {
+            const found = text.indexOf(marker);
+            if (found !== -1 && (index === -1 || found < index)) {
+                index = found;
+            }
+        }
+        return index;
+    };
+    return {
+        filter(delta) {
+            if (!enabled || !delta) {
+                return delta || "";
+            }
+            if (suppressing) {
+                return "";
+            }
+            const combined = pending + delta;
+            const markerIndex = findMarker(combined);
+            if (markerIndex !== -1) {
+                suppressing = true;
+                pending = "";
+                return combined.slice(0, markerIndex);
+            }
+            if (combined.length <= keepChars) {
+                pending = combined;
+                return "";
+            }
+            pending = combined.slice(-keepChars);
+            return combined.slice(0, -keepChars);
+        },
+        flush() {
+            if (!enabled || suppressing) {
+                pending = "";
+                return "";
+            }
+            const text = pending;
+            pending = "";
+            return text;
+        },
+    };
+}
+function isTextContentBlock(block) {
+'''
+if "function createDsmlToolMarkupFilter" not in text:
+    if old1 not in text:
+        raise SystemExit(f"Expected hasToolHistory insertion point not found in {path}")
+    text = text.replace(old1, new1, 1)
+
+old2 = '''            const finishCurrentBlock = (block) => {
+                if (block) {
+                    const contentIndex = getContentIndex(block);
+                    if (contentIndex === -1) {
+                        return;
+                    }
+                    if (block.type === "text") {
+                        stream.push({
+                            type: "text_end",
+                            contentIndex,
+                            content: block.text,
+                            partial: output,
+                        });
+                    }
+                    else if (block.type === "thinking") {
+                        stream.push({
+                            type: "thinking_end",
+                            contentIndex,
+                            content: block.thinking,
+                            partial: output,
+                        });
+                    }
+                    else if (block.type === "toolCall") {
+                        block.arguments = parseStreamingJson(block.partialArgs);
+                        // Finalize in-place and strip the scratch buffers so replay only
+                        // carries parsed arguments.
+                        delete block.partialArgs;
+                        delete block.streamIndex;
+                        stream.push({
+                            type: "toolcall_end",
+                            contentIndex,
+                            toolCall: block,
+                            partial: output,
+                        });
+                    }
+                }
+            };
+'''
+new2 = '''            const finishCurrentBlock = (block) => {
+                if (block) {
+                    const contentIndex = getContentIndex(block);
+                    if (contentIndex === -1) {
+                        return;
+                    }
+                    if (block.type === "text") {
+                        stream.push({
+                            type: "text_end",
+                            contentIndex,
+                            content: block.text,
+                            partial: output,
+                        });
+                    }
+                    else if (block.type === "thinking") {
+                        stream.push({
+                            type: "thinking_end",
+                            contentIndex,
+                            content: block.thinking,
+                            partial: output,
+                        });
+                    }
+                    else if (block.type === "toolCall") {
+                        block.arguments = parseStreamingJson(block.partialArgs);
+                        // Finalize in-place and strip the scratch buffers so replay only
+                        // carries parsed arguments.
+                        delete block.partialArgs;
+                        delete block.streamIndex;
+                        stream.push({
+                            type: "toolcall_end",
+                            contentIndex,
+                            toolCall: block,
+                            partial: output,
+                        });
+                    }
+                }
+            };
+            const appendTextDelta = (delta) => {
+                if (!delta) {
+                    return;
+                }
+                if (!currentBlock || currentBlock.type !== "text") {
+                    finishCurrentBlock(currentBlock);
+                    currentBlock = { type: "text", text: "" };
+                    output.content.push(currentBlock);
+                    stream.push({ type: "text_start", contentIndex: currentContentIndex(), partial: output });
+                }
+                if (currentBlock.type === "text") {
+                    currentBlock.text += delta;
+                    stream.push({
+                        type: "text_delta",
+                        contentIndex: currentContentIndex(),
+                        delta,
+                        partial: output,
+                    });
+                }
+            };
+            const dsmlTextFilter = createDsmlToolMarkupFilter(!!compat.stripDsmlToolMarkup);
+'''
+if "const dsmlTextFilter = createDsmlToolMarkupFilter" not in text:
+    if old2 not in text:
+        raise SystemExit(f"Expected finishCurrentBlock block not found in {path}")
+    text = text.replace(old2, new2, 1)
+
+old3 = '''                    if (choice.delta.content !== null &&
+                        choice.delta.content !== undefined &&
+                        choice.delta.content.length > 0) {
+                        if (!currentBlock || currentBlock.type !== "text") {
+                            finishCurrentBlock(currentBlock);
+                            currentBlock = { type: "text", text: "" };
+                            output.content.push(currentBlock);
+                            stream.push({ type: "text_start", contentIndex: currentContentIndex(), partial: output });
+                        }
+                        if (currentBlock.type === "text") {
+                            currentBlock.text += choice.delta.content;
+                            stream.push({
+                                type: "text_delta",
+                                contentIndex: currentContentIndex(),
+                                delta: choice.delta.content,
+                                partial: output,
+                            });
+                        }
+                    }
+'''
+new3 = '''                    let contentDelta = choice.delta.content;
+                    if (contentDelta !== null &&
+                        contentDelta !== undefined &&
+                        contentDelta.length > 0) {
+                        contentDelta = dsmlTextFilter.filter(contentDelta);
+                        appendTextDelta(contentDelta);
+                    }
+'''
+if "let contentDelta = choice.delta.content;" not in text:
+    if old3 not in text:
+        raise SystemExit(f"Expected content delta block not found in {path}")
+    text = text.replace(old3, new3, 1)
+
+old4 = '''                }
+            }
+            finishCurrentBlock(currentBlock);
+            if (options?.signal?.aborted) {
+'''
+new4 = '''                }
+            }
+            appendTextDelta(dsmlTextFilter.flush());
+            finishCurrentBlock(currentBlock);
+            if (options?.signal?.aborted) {
+'''
+if "appendTextDelta(dsmlTextFilter.flush());\n            finishCurrentBlock(currentBlock);" not in text:
+    if old4 not in text:
+        raise SystemExit(f"Expected final finishCurrentBlock block not found in {path}")
+    text = text.replace(old4, new4, 1)
+
+if text != original:
+    backup = path.with_suffix(path.suffix + ".pre-dsml-filter.bak")
+    if not backup.exists():
+        backup.write_text(original)
+    path.write_text(text)
+PY
+else
+  echo "warning: Pi OpenAI completions provider not found: $OPENAI_COMPLETIONS_JS" >&2
 fi
 
 printf 'Repaired oMLX Pi profile at %s\n' "$PI_OMLX_AGENT_DIR"
