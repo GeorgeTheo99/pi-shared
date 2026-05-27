@@ -677,6 +677,8 @@ const ROUTING_TABLE = `Task routing (pick the most specific match):
 - Long-running delegations while main chat continues      → spawn_subagent background=true, then jobAction=status
 - Multi-step pipeline (scout→planner→worker)             → spawn_subagent chain
 - Multi-step durable work with autopilot                 → start_goal + work_plan
+- Structured data queries (SQL, CRM, analytics)          → spawn_subagent specialist data agent if available (parallel for multi-entity)
+- Multi-entity data gathering (accounts, metrics, etc.)   → spawn_subagent parallel with specialist data agents
 
 Delegation gates (prefer spawn_subagent when one applies):
 - Recon gate: unfamiliar area + likely 5+ sequential read/grep/find calls; delegate read-only reconnaissance to scout before editing
@@ -717,7 +719,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
     if (!selectedTools.includes("spawn_subagent")) return;
 
     const cwd = event.systemPromptOptions?.cwd ?? process.cwd();
-    const discovery = discoverAgents(cwd, "shared");
+    const discovery = discoverAgents(cwd, "all");
     if (discovery.agents.length === 0) return;
 
     const roster = discovery.agents

@@ -58,8 +58,17 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 
   const agents: AgentConfig[] = [];
   for (const entry of entries) {
-    if (!entry.name.endsWith(".md")) continue;
     if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+    // Accept .md files directly, or symlinks whose target ends in .md
+    if (!entry.name.endsWith(".md")) {
+      if (!entry.isSymbolicLink()) continue;
+      try {
+        const target = fs.readlinkSync(path.join(dir, entry.name));
+        if (!target.endsWith(".md")) continue;
+      } catch {
+        continue;
+      }
+    }
 
     const filePath = path.join(dir, entry.name);
     let content: string;
