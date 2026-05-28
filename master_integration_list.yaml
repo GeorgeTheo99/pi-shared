@@ -1,0 +1,314 @@
+# Master Integration List for pi (lazy tool bundles)
+#
+# This file is the single source of truth for which enterprise tool bundles
+# exist, what each one does, and how the agent should decide to load them.
+#
+# It is consumed by the `pi-enterprise-lazy` extension which:
+#   1. Registers every bundle's tools up-front with `pi.registerTool` (idempotent).
+#   2. Keeps only the tools listed in `defaults.always_load` ACTIVE at startup
+#      (others are registered but hidden via `pi.setActiveTools`).
+#   3. Injects an <available_bundles> block into the system prompt with the
+#      `description` text below so the model can decide when to load each one.
+#   4. Exposes `enterprise_load_bundle(name)` and `enterprise_unload_bundle(name)`
+#      as always-on tools the model can call mid-session to expand its toolkit.
+#   5. Auto-loads bundles whose `triggers` regex match the current user message.
+#   6. Enforces `defaults.model_overrides[<glob>].max_tools` by pruning the
+#      active set in `before_agent_start` for that model (e.g. ≤120 for gpt-*
+#      to stay safely under OpenAI's 128-tool API limit).
+#
+# Tool name patterns support `*` glob. They match against names already
+# registered by the underlying `pi-enterprise` extension (which must still be
+# loaded — `pi-enterprise-lazy` wraps it, not replaces it).
+
+version: 1
+
+bundles:
+
+  databricks-aidk:
+    summary: Databricks AI Dev Kit (SQL, jobs, UC, vector search, dashboards)
+    description: >-
+      Use when the user wants to query, manage, or build on Databricks. Covers
+      running SQL on warehouses, inspecting and managing Unity Catalog
+      (catalogs, schemas, tables, volumes, grants, tags, security policies,
+      monitors, sharing, connections, storage credentials), managing jobs,
+      job runs, pipelines, clusters, SQL warehouses, workspace files,
+      Vector Search endpoints/indexes, model serving endpoints, AI/BI
+      dashboards, metric views, Genie spaces, Knowledge Assistants, Supervisor
+      Agents, Lakebase databases/branches/sync, Databricks Apps, and the
+      org-lookup helper. Also use for executing arbitrary code on a cluster
+      and for generating PDFs into UC volumes.
+    tools:
+      - "enterprise_databricks_*"
+      - "fev_databricks_*"
+    triggers:
+      - "(?i)\\bdatabricks\\b"
+      - "(?i)\\bunity catalog\\b|\\buc\\.[a-z]"
+      - "(?i)\\bgenie\\b"
+      - "(?i)\\blakebase\\b"
+      - "(?i)\\bwarehouse\\b"
+      - "(?i)\\bdelta\\b"
+      - "(?i)\\bspark\\b"
+      - "(?i)\\bnotebook\\b"
+
+  genie-rooms:
+    summary: Databricks Genie Rooms helper
+    description: >-
+      Use when the user wants to query a known Databricks Genie Room by name
+      or room ID with natural language, separate from creating/managing Genie
+      spaces (which lives in databricks-aidk).
+    tools:
+      - "enterprise_genie_rooms"
+    triggers:
+      - "(?i)\\bgenie room\\b"
+
+  quicksizer:
+    summary: Databricks workload sizing / cost estimates
+    description: >-
+      Use when the user asks for a Databricks cost or sizing estimate for ETL,
+      Data Warehousing, ML, Interactive, Lakebase, Lakeflow Connect, or Apps
+      workloads.
+    tools:
+      - "enterprise_quicksizer"
+    triggers:
+      - "(?i)\\bquicksiz"
+      - "(?i)\\bcost estimate\\b|\\bsizing\\b"
+
+  slack:
+    summary: Slack search, read, post
+    description: >-
+      Use when the user wants to search Slack messages, list channels, read
+      channel history or threads, look up Slack users, or post a message to a
+      Slack channel or thread. Also covers low-level Slack read/write API
+      bridge calls.
+    tools:
+      - "enterprise_slack_*"
+    triggers:
+      - "(?i)\\bslack\\b"
+      - "(?i)channel\\b"
+      - "(?i)\\bdm\\b"
+
+  jira:
+    summary: JIRA / Atlassian tickets
+    description: >-
+      Use when the user references a JIRA / engineering-support ticket
+      (especially keys like ES-123456), or asks to search, view, comment,
+      update, or create JIRA issues. Also covers JIRA create-metadata lookup
+      and the low-level JIRA read/write API bridge.
+    tools:
+      - "enterprise_jira_*"
+    triggers:
+      - "\\bES-\\d{2,7}\\b"
+      - "(?i)\\bjira\\b"
+      - "(?i)\\bticket\\b"
+      - "(?i)\\bissue key\\b"
+
+  confluence:
+    summary: Confluence search and pages
+    description: >-
+      Use when the user wants to search Confluence, fetch a Confluence page by
+      ID, or call the low-level Confluence read API bridge.
+    tools:
+      - "enterprise_confluence_*"
+    triggers:
+      - "(?i)\\bconfluence\\b"
+      - "(?i)\\bwiki page\\b"
+
+  glean:
+    summary: Glean internal search (docs, runbooks, people)
+    description: >-
+      Use when the user wants to search internal Databricks knowledge —
+      design docs, runbooks, internal Confluence/Drive content surfaced via
+      Glean — or to look up an internal person via Glean's people search. Also
+      covers the low-level Glean read API and a text-only renderer-debug
+      variant.
+    tools:
+      - "enterprise_glean_*"
+    triggers:
+      - "(?i)\\bglean\\b"
+      - "(?i)internal search\\b"
+      - "(?i)find someone at databricks\\b"
+
+  google-workspace:
+    summary: Google Workspace — Gmail, Docs, Sheets, Slides, Calendar, Tasks, Forms
+    description: >-
+      Use when the user wants to read, send, draft, search, or organize Gmail,
+      create or edit Google Docs, build Google Sheets with formulas/charts,
+      build Google Slides decks, manage Google Calendar events or check
+      availability, manage Google Tasks/todo lists, or create/edit Google
+      Forms surveys and quizzes. Also covers Google auth status / login.
+    tools:
+      - "enterprise_google_*"
+      - "fev_gmail_*"
+      - "fev_google_auth_*"
+    triggers:
+      - "(?i)\\bgmail\\b|\\bemail\\b"
+      - "(?i)\\bgoogle (doc|sheet|slide|calendar|task|form)"
+      - "(?i)docs\\.google\\.com|sheets\\.google\\.com|slides\\.google\\.com"
+      - "(?i)\\bcalendar\\b|\\bmeeting\\b"
+
+  salesforce:
+    summary: Salesforce / SOQL (UCOs, Accounts, Opportunities, ASQs)
+    description: >-
+      Use when the user wants to query or update Salesforce — Use Cases
+      (UCOs and stages U1–U6), Accounts, Opportunities, Blockers, ASQs,
+      Specialist Requests, Preview Feature Requests — or run raw SOQL, fetch
+      a record by ID, or read bundled Salesforce skill resource docs.
+    tools:
+      - "enterprise_salesforce_*"
+    triggers:
+      - "(?i)\\bsalesforce\\b|\\bsfdc\\b"
+      - "(?i)\\bsoql\\b"
+      - "(?i)\\buco\\b|\\bopportunity\\b|\\baccount\\b"
+      - "(?i)\\bblocker\\b|\\bASQ\\b"
+
+  uco-updates:
+    summary: UCO transcript updates helper
+    description: >-
+      Use when the user wants to apply UCO (Use Case Object) transcript
+      updates / status updates via the dedicated helper. For broader
+      Salesforce reads/writes use the salesforce bundle instead.
+    tools:
+      - "enterprise_uco_updates"
+    triggers:
+      - "(?i)update uco\\b|uco update\\b|uco transcript\\b"
+
+  emburse:
+    summary: Emburse / ChromeRiver receipt uploader
+    description: >-
+      Use when the user wants to upload receipts to Emburse ChromeRiver or
+      file expenses with that pipeline.
+    tools:
+      - "enterprise_receipt_uploader"
+    triggers:
+      - "(?i)\\bemburse\\b|chromeriver\\b|\\breceipt\\b|\\bexpense report\\b"
+
+  macos-scheduler:
+    summary: Local macOS launchd scheduler
+    description: >-
+      Use when the user wants to schedule, list, run, or remove a recurring
+      LOCAL launchd task on this Mac (NOT Databricks jobs). Covers cron-like
+      schedules, file-change watchers, and other local automations.
+    tools:
+      - "enterprise_macos_scheduler"
+    triggers:
+      - "(?i)\\blaunchd\\b|\\bcron\\b|scheduled task\\b|file watcher\\b"
+      - "(?i)recurring (task|job) on (this )?(mac|laptop)"
+
+  connections-status:
+    summary: Enterprise connection status (Slack, Glean, JIRA, Confluence)
+    description: >-
+      Use when the user wants to verify enterprise MCP-backed connectivity to
+      Slack / Glean / JIRA / Confluence. Lightweight diagnostic tool, useful
+      before invoking other enterprise bundles.
+    tools:
+      - "enterprise_connection_status"
+
+defaults:
+  # Bundles whose tools are visible at startup regardless of model. Keep this
+  # SMALL — the larger this list the less headroom you leave for triggered or
+  # model-driven loads under the per-model cap. Other bundles register but
+  # stay hidden until loaded on demand (via trigger, /bundles load, or
+  # `enterprise_load_bundle`). For GPT (cap 120) the realistic ceiling is
+  # ~3 small bundles or 1 large one (databricks-aidk = 48 tools).
+  always_load:
+    - connections-status     # 1 tool — diagnostic, useful before invoking anything
+
+  # Override per-model: if you want a different default loadout for Claude
+  # (which has no cap), use `model_overrides[<glob>].always_load`.
+  model_always_load:
+    "*claude*":
+      - databricks-aidk
+      - slack
+      - jira
+      - glean
+      - confluence
+      - google-workspace
+      - salesforce
+      - genie-rooms
+      - quicksizer
+      - uco-updates
+      - emburse
+      - macos-scheduler
+    "*opus*":
+      - databricks-aidk
+      - slack
+      - jira
+      - glean
+      - confluence
+      - google-workspace
+      - salesforce
+      - genie-rooms
+      - quicksizer
+      - uco-updates
+      - emburse
+      - macos-scheduler
+    "*sonnet*":
+      - databricks-aidk
+      - slack
+      - jira
+      - glean
+      - confluence
+      - google-workspace
+      - salesforce
+      - genie-rooms
+      - quicksizer
+      - uco-updates
+      - emburse
+      - macos-scheduler
+    "*gemini*":
+      - databricks-aidk
+      - slack
+      - jira
+      - glean
+      - confluence
+      - google-workspace
+      - salesforce
+      - genie-rooms
+      - quicksizer
+      - uco-updates
+      - emburse
+      - macos-scheduler
+
+  # The router tools below are registered as ALWAYS-ON regardless of bundle
+  # state, so the model can self-discover and load more bundles on demand.
+  router_tools:
+    - enterprise_load_bundle
+    - enterprise_unload_bundle
+    - enterprise_list_bundles
+
+  # Tool count budgets per model glob. The cap is enforced in
+  # `before_agent_start` by pruning the active set down to:
+  #   built-ins  +  router tools  +  highest-priority loaded bundles
+  # If a load would exceed the cap, the LRU loaded bundle is unloaded first.
+  #
+  # Globs are matched against the resolved model id, which on Databricks
+  # looks like `databricks-gpt-5-5` or `databricks-claude-sonnet-4-6`. Use
+  # substring globs (`*gpt*`) to catch both raw and Databricks-prefixed names.
+  model_overrides:
+    "*gpt*":
+      max_tools: 120        # OpenAI Responses/Chat hard limit is 128
+      strategy: trigger-based
+    "o1*":
+      max_tools: 120
+      strategy: trigger-based
+    "o3*":
+      max_tools: 120
+      strategy: trigger-based
+    "o4*":
+      max_tools: 120
+      strategy: trigger-based
+    "*claude*":
+      max_tools: null       # no cap; Claude has a much higher tool ceiling
+      strategy: all
+    "*opus*":
+      max_tools: null
+      strategy: all
+    "*sonnet*":
+      max_tools: null
+      strategy: all
+    "*gemini*":
+      max_tools: null       # Gemini also handles many tools fine
+      strategy: all
+    "*":
+      max_tools: 200        # generous default for unknown providers
+      strategy: trigger-based
