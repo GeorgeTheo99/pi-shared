@@ -220,6 +220,7 @@ cat > ~/local_code/.pi/settings.json <<'JSON'
 }
 JSON
 cd ~/local_code/pi-shared/extensions/pi-browser-capture && npm install
+cd ~/local_code/pi-shared/extensions/integration-bundles && npm install
 
 # Optional recovery launcher that bypasses shared/local Pi resources
 mkdir -p ~/.local/bin
