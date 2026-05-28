@@ -91,6 +91,14 @@ Current generated `pi-*` shell launchers call this automatically before writing 
   - bundled shared agents: `scout`, `planner`, `reviewer`, `worker`
   - `/subagents [shared|user|project|all]` lists available agents
   - project-local `.pi/agents` are disabled by default unless `agentScope` is `project` or `all` and confirmed in UI
+- `extensions/integration-bundles` — lazy enterprise tool-bundle loader driven by `master_integration_list.yaml`:
+  - keeps GPT / o-series safely under OpenAI's 128-tool API limit by exposing only a router toolset by default and loading bundles (jira, slack, glean, salesforce, google-workspace, databricks-aidk, ...) on demand
+  - injects an `<available_bundles>` block into the system prompt with NL `description` text so the model can self-discover when to load each bundle
+  - regex `triggers` auto-load high-confidence bundles (e.g. `ES-12345` → `jira`) before the first turn
+  - LRU-evicts non-default bundles when a new load would exceed the per-model cap; Claude / Sonnet / Opus / Gemini have `max_tools: null` and load everything eagerly
+  - exposes `enterprise_load_bundle`, `enterprise_unload_bundle`, `enterprise_list_bundles` tools and a `/bundles` slash command
+  - skill-driven loading: any skill `SKILL.md` whose YAML front-matter declares `requires_bundles: [...]` will pre-load those bundles when the skill name is mentioned in the user message
+  - configuration lives in [`master_integration_list.yaml`](./master_integration_list.yaml) at the repo root — single source of truth
 
 ## Included shared skills
 
