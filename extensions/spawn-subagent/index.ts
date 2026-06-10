@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { StringEnum, type Message } from "@mariozechner/pi-ai";
 import { type AgentToolResult, type ExtensionAPI, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList } from "./agents.js";
 
@@ -28,6 +29,8 @@ interface UsageStats {
   turns: number;
 }
 
+type SingleResultStatus = "queued" | "starting" | "running" | "completed" | "failed" | "canceled";
+
 interface SingleResult {
   agent: string;
   agentSource: AgentConfig["source"] | "unknown";
@@ -40,6 +43,14 @@ interface SingleResult {
   stopReason?: string;
   errorMessage?: string;
   step?: number;
+  status?: SingleResultStatus;
+  startedAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
+  activeTool?: string;
+  activeToolCallId?: string;
+  lastEvent?: string;
+  lastText?: string;
 }
 
 interface SpawnSubagentDetails {
@@ -82,6 +93,14 @@ interface PersistedSingleResult {
   errorMessage?: string;
   step?: number;
   output: string;
+  status?: SingleResultStatus;
+  startedAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
+  activeTool?: string;
+  activeToolCallId?: string;
+  lastEvent?: string;
+  lastText?: string;
 }
 
 interface PersistedSpawnSubagentResult {
@@ -133,6 +152,81 @@ function formatUsage(usage: UsageStats, model?: string): string {
 function limitText(text: string, maxChars = MAX_RETURN_CHARS): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n\n[spawn_subagent output truncated at ${maxChars} chars]`;
+}
+
+function compactLine(text: string, maxChars = 140): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxChars) return compact;
+  return `${compact.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function statusIcon(status: SingleResultStatus): string {
+  switch (status) {
+    case "queued":
+      return "◻";
+    case "starting":
+      return "◌";
+    case "running":
+      return "◼";
+    case "completed":
+      return "✔";
+    case "failed":
+      return "✖";
+    case "canceled":
+      return "⊘";
+  }
+}
+
+function resultStatus(result: SingleResult): SingleResultStatus {
+  if (result.status) return result.status;
+  if (result.exitCode === -1) return "queued";
+  if (result.stopReason === "aborted") return "canceled";
+  return isFailure(result) ? "failed" : "completed";
+}
+
+function updateResultProgress(result: SingleResult, patch: Partial<SingleResult>): void {
+  Object.assign(result, patch, { updatedAt: new Date().toISOString() });
+}
+
+function extractMessageText(message: Message | undefined): string {
+  if (!message) return "";
+  const parts = Array.isArray(message.content) ? message.content : [];
+  return parts
+    .map((part: any) => (part?.type === "text" && typeof part.text === "string" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function extractToolResultText(result: any): string {
+  const content = Array.isArray(result?.content) ? result.content : [];
+  return content
+    .map((part: any) => (part?.type === "text" && typeof part.text === "string" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatResultProgressLine(result: SingleResult, index?: number): string {
+  const status = resultStatus(result);
+  const prefix = index === undefined ? "" : `${index + 1}. `;
+  const step = result.step ? ` step ${result.step}` : "";
+  const active = result.activeTool ? ` tool:${result.activeTool}` : "";
+  const event = result.lastEvent ? ` — ${compactLine(result.lastEvent, 90)}` : "";
+  const task = result.task ? ` — ${compactLine(result.task, 90)}` : "";
+  return `${prefix}${statusIcon(status)} ${result.agent}${step} — ${status}${active}${event}${task}`;
+}
+
+function formatProgressContent(mode: SpawnSubagentDetails["mode"], results: SingleResult[]): string {
+  if (results.length === 0) return "Subagents: preparing...";
+  const done = results.filter((result) => ["completed", "failed", "canceled"].includes(resultStatus(result))).length;
+  const header = mode === "parallel" ? `Parallel subagents: ${done}/${results.length} done` : `Subagent ${mode}: ${done}/${results.length} done`;
+  const lines = results.map((result, index) => formatResultProgressLine(result, mode === "single" ? undefined : index));
+  const previews = results
+    .map((result, index) => {
+      const preview = compactLine(result.lastText || getFinalOutput(result.messages), 220);
+      return preview ? `${mode === "single" ? "" : `${index + 1}. `}${result.agent} output: ${preview}` : "";
+    })
+    .filter(Boolean);
+  return limitText([header, ...lines, ...previews.slice(-3)].join("\n"), 4000);
 }
 
 function sanitizePersistedText(text: string, maxChars = MAX_PERSISTED_TEXT_CHARS): string {
@@ -212,6 +306,14 @@ function persistResult(result?: SpawnSubagentResult): PersistedSpawnSubagentResu
         errorMessage: item.errorMessage ? sanitizePersistedText(item.errorMessage, 2000) : undefined,
         step: item.step,
         output: sanitizePersistedText(getFinalOutput(item.messages)),
+        status: item.status,
+        startedAt: item.startedAt,
+        updatedAt: item.updatedAt,
+        completedAt: item.completedAt,
+        activeTool: item.activeTool ? sanitizePersistedText(item.activeTool, 200) : undefined,
+        activeToolCallId: item.activeToolCallId ? sanitizePersistedText(item.activeToolCallId, 200) : undefined,
+        lastEvent: item.lastEvent ? sanitizePersistedText(item.lastEvent, 500) : undefined,
+        lastText: item.lastText ? sanitizePersistedText(item.lastText, 2000) : undefined,
       })),
     },
   };
@@ -254,6 +356,14 @@ function hydrateResult(result?: PersistedSpawnSubagentResult): SpawnSubagentResu
           stopReason: item.stopReason,
           errorMessage: item.errorMessage,
           step: item.step,
+          status: item.status,
+          startedAt: item.startedAt,
+          updatedAt: item.updatedAt,
+          completedAt: item.completedAt,
+          activeTool: item.activeTool,
+          activeToolCallId: item.activeToolCallId,
+          lastEvent: item.lastEvent,
+          lastText: item.lastText,
         })),
       },
     };
@@ -317,6 +427,21 @@ function queueSaveBackgroundJobStore(): void {
   void saveBackgroundJobStore().catch(() => undefined);
 }
 
+function markUnfinishedResults(result: SpawnSubagentResult | undefined, status: Extract<SingleResultStatus, "failed" | "canceled">, lastEvent: string): void {
+  if (!result) return;
+  const now = new Date().toISOString();
+  for (const item of result.details.results) {
+    if (["completed", "failed", "canceled"].includes(resultStatus(item))) continue;
+    updateResultProgress(item, {
+      status,
+      completedAt: now,
+      activeTool: undefined,
+      activeToolCallId: undefined,
+      lastEvent,
+    });
+  }
+}
+
 function restorePersistedBackgroundJobs(): void {
   if (persistedJobsRestored) return;
   persistedJobsRestored = true;
@@ -343,6 +468,7 @@ function restorePersistedBackgroundJobs(): void {
       job.status = "failed";
       job.updatedAt = now;
       job.error = "Background job was still running when Pi reloaded or restarted; child process state cannot be restored.";
+      markUnfinishedResults(job.result, "failed", "background job failed because Pi restarted");
       changed = true;
     }
     backgroundJobs.set(job.id, job);
@@ -492,6 +618,9 @@ async function runSingleAgent(options: {
       stderr: `Unknown agent: "${options.agentName}". Available agents: ${available}.`,
       usage: emptyUsage(),
       step: options.step,
+      status: "failed",
+      completedAt: new Date().toISOString(),
+      lastEvent: "unknown agent",
     };
   }
 
@@ -511,20 +640,30 @@ async function runSingleAgent(options: {
     agent: agent.name,
     agentSource: agent.source,
     task: options.task,
-    exitCode: 0,
+    exitCode: -1,
     messages: [],
     stderr: "",
     usage: emptyUsage(),
     model,
     step: options.step,
+    status: "starting",
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    lastEvent: "preparing subagent process",
   };
 
-  const emitUpdate = () => {
+  let lastEmitMs = 0;
+  const emitUpdate = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastEmitMs < 250) return;
+    lastEmitMs = now;
     options.onUpdate?.({
-      content: [{ type: "text", text: limitText(getFinalOutput(currentResult.messages) || "(running...)" )}],
+      content: [{ type: "text", text: formatProgressContent("single", [currentResult]) }],
       details: options.makeDetails([currentResult]),
     });
   };
+
+  emitUpdate(true);
 
   try {
     if (agent.systemPrompt.trim()) {
@@ -545,6 +684,11 @@ async function runSingleAgent(options: {
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
       });
+      updateResultProgress(currentResult, {
+        status: "running",
+        lastEvent: proc.pid ? `started child process pid ${proc.pid}` : "started child process",
+      });
+      emitUpdate(true);
       let buffer = "";
 
       const processLine = (line: string) => {
@@ -554,6 +698,50 @@ async function runSingleAgent(options: {
           event = JSON.parse(line);
         } catch {
           return;
+        }
+
+        if (event.type === "message_update" && event.message) {
+          const text = extractMessageText(event.message as Message);
+          updateResultProgress(currentResult, {
+            status: "running",
+            lastEvent: "streaming assistant response",
+            lastText: text || currentResult.lastText,
+          });
+          emitUpdate();
+        }
+
+        if (event.type === "tool_execution_start") {
+          updateResultProgress(currentResult, {
+            status: "running",
+            activeTool: String(event.toolName ?? "unknown"),
+            activeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
+            lastEvent: `running tool ${String(event.toolName ?? "unknown")}`,
+          });
+          emitUpdate(true);
+        }
+
+        if (event.type === "tool_execution_update") {
+          const text = extractToolResultText(event.partialResult);
+          updateResultProgress(currentResult, {
+            status: "running",
+            activeTool: String(event.toolName ?? currentResult.activeTool ?? "unknown"),
+            activeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : currentResult.activeToolCallId,
+            lastEvent: `tool ${String(event.toolName ?? currentResult.activeTool ?? "unknown")} update`,
+            lastText: text || currentResult.lastText,
+          });
+          emitUpdate();
+        }
+
+        if (event.type === "tool_execution_end") {
+          const text = extractToolResultText(event.result);
+          updateResultProgress(currentResult, {
+            status: "running",
+            activeTool: undefined,
+            activeToolCallId: undefined,
+            lastEvent: `tool ${String(event.toolName ?? "unknown")} ${event.isError ? "failed" : "completed"}`,
+            lastText: text || currentResult.lastText,
+          });
+          emitUpdate(true);
         }
 
         if (event.type === "message_end" && event.message) {
@@ -573,13 +761,23 @@ async function runSingleAgent(options: {
             if (!currentResult.model && message.model) currentResult.model = message.model;
             if (message.stopReason) currentResult.stopReason = message.stopReason;
             if (message.errorMessage) currentResult.errorMessage = message.errorMessage;
+            updateResultProgress(currentResult, {
+              status: "running",
+              lastEvent: "assistant turn completed",
+              lastText: extractMessageText(message) || currentResult.lastText,
+            });
           }
-          emitUpdate();
+          emitUpdate(true);
         }
 
         if (event.type === "tool_result_end" && event.message) {
           currentResult.messages.push(event.message as Message);
-          emitUpdate();
+          updateResultProgress(currentResult, {
+            status: "running",
+            lastEvent: "tool result captured",
+            lastText: extractMessageText(event.message as Message) || currentResult.lastText,
+          });
+          emitUpdate(true);
         }
       };
 
@@ -592,6 +790,12 @@ async function runSingleAgent(options: {
 
       proc.stderr.on("data", (data) => {
         currentResult.stderr += data.toString();
+        updateResultProgress(currentResult, {
+          status: "running",
+          lastEvent: "stderr output received",
+          lastText: compactLine(currentResult.stderr, 500),
+        });
+        emitUpdate();
       });
 
       proc.on("close", (code) => {
@@ -599,11 +803,21 @@ async function runSingleAgent(options: {
         resolve(code ?? 0);
       });
 
-      proc.on("error", () => resolve(1));
+      proc.on("error", (error) => {
+        updateResultProgress(currentResult, {
+          status: "failed",
+          errorMessage: error.message,
+          lastEvent: `failed to start child process: ${error.message}`,
+        });
+        emitUpdate(true);
+        resolve(1);
+      });
 
       if (options.signal) {
         const killProc = () => {
           wasAborted = true;
+          updateResultProgress(currentResult, { status: "canceled", stopReason: "aborted", lastEvent: "abort requested" });
+          emitUpdate(true);
           proc.kill("SIGTERM");
           setTimeout(() => {
             if (!proc.killed) proc.kill("SIGKILL");
@@ -616,6 +830,14 @@ async function runSingleAgent(options: {
 
     currentResult.exitCode = exitCode;
     if (wasAborted) currentResult.stopReason = "aborted";
+    updateResultProgress(currentResult, {
+      status: wasAborted ? "canceled" : exitCode === 0 ? "completed" : "failed",
+      completedAt: new Date().toISOString(),
+      activeTool: undefined,
+      activeToolCallId: undefined,
+      lastEvent: wasAborted ? "subagent aborted" : exitCode === 0 ? "subagent completed" : `subagent exited with code ${exitCode}`,
+    });
+    emitUpdate(true);
     return currentResult;
   } finally {
     if (tmpPromptPath) await fs.promises.unlink(tmpPromptPath).catch(() => undefined);
@@ -711,6 +933,60 @@ function send(pi: ExtensionAPI, content: string) {
   pi.sendMessage({ customType: "spawn-subagent", content, display: true });
 }
 
+function summarizeCallArgs(args: any): string {
+  if (args?.jobAction) return `${args.jobAction}${args.jobId ? ` ${compactLine(String(args.jobId), 40)}` : ""}`;
+  const suffix = args?.background ? " background" : "";
+  if (Array.isArray(args?.tasks) && args.tasks.length > 0) {
+    const agents = args.tasks.map((task: any) => task?.agent).filter(Boolean).join(", ");
+    return `parallel${suffix}: ${args.tasks.length} task(s)${agents ? ` (${compactLine(agents, 80)})` : ""}`;
+  }
+  if (Array.isArray(args?.chain) && args.chain.length > 0) {
+    const agents = args.chain.map((step: any) => step?.agent).filter(Boolean).join(" → ");
+    return `chain${suffix}: ${args.chain.length} step(s)${agents ? ` (${compactLine(agents, 80)})` : ""}`;
+  }
+  if (args?.agent) return `single${suffix}: ${args.agent}${args.task ? ` — ${compactLine(String(args.task), 100)}` : ""}`;
+  return "prepare";
+}
+
+function styleProgressLine(line: string, status: SingleResultStatus, theme: any): string {
+  if (status === "completed") return theme.fg("success", line);
+  if (status === "failed" || status === "canceled") return theme.fg("error", line);
+  if (status === "running" || status === "starting") return theme.fg("warning", line);
+  return theme.fg("muted", line);
+}
+
+function renderSpawnSubagentCall(args: any, theme: any) {
+  return new Text(`${theme.fg("toolTitle", theme.bold("spawn_subagent"))} ${theme.fg("muted", summarizeCallArgs(args))}`, 0, 0);
+}
+
+function renderSpawnSubagentResult(result: SpawnSubagentResult, options: { expanded?: boolean; isPartial?: boolean }, theme: any) {
+  const details = result.details;
+  const output = extractResultText(result);
+  if (!details || details.results.length === 0) {
+    return new Text(theme.fg(options.isPartial ? "warning" : "toolOutput", output || (options.isPartial ? "Starting subagent..." : "No subagent output.")), 0, 0);
+  }
+
+  const completed = details.results.filter((item) => ["completed", "failed", "canceled"].includes(resultStatus(item))).length;
+  const failed = details.results.filter((item) => resultStatus(item) === "failed" || resultStatus(item) === "canceled").length;
+  const headerColor = failed ? "error" : completed === details.results.length ? "success" : "warning";
+  const lines = [theme.fg(headerColor, `${details.mode} subagents: ${completed}/${details.results.length} done${failed ? `, ${failed} failed/canceled` : ""}`)];
+
+  for (let i = 0; i < details.results.length; i++) {
+    const item = details.results[i];
+    const status = resultStatus(item);
+    lines.push(styleProgressLine(formatResultProgressLine(item, details.mode === "single" ? undefined : i), status, theme));
+    const preview = compactLine(item.lastText || getFinalOutput(item.messages), 180);
+    if (preview && (options.isPartial || options.expanded)) lines.push(theme.fg("dim", `   ${preview}`));
+  }
+
+  if (output && !options.isPartial) {
+    lines.push("");
+    lines.push(theme.fg("toolOutput", options.expanded ? limitText(output, 12000) : compactLine(output, 800)));
+  }
+
+  return new Text(lines.join("\n"), 0, 0);
+}
+
 export default function spawnSubagentExtension(pi: ExtensionAPI) {
   restorePersistedBackgroundJobs();
 
@@ -773,6 +1049,8 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
       "When using spawn_subagent with project-local agents, set agentScope to project or all only for trusted repositories.",
     ],
     parameters: SpawnSubagentParams,
+    renderCall: renderSpawnSubagentCall,
+    renderResult: renderSpawnSubagentResult,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const agentScope: AgentScope = params.agentScope ?? "shared";
@@ -803,6 +1081,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
             job.status = "canceled";
             job.error = job.error ?? "Canceled by request.";
             job.updatedAt = new Date().toISOString();
+            markUnfinishedResults(job.result, "canceled", "background job canceled by request");
             job.abortController.abort();
             notifyJobFinished(pi, job);
           } else {
@@ -875,7 +1154,8 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
                 ? (partial) => {
                     const current = partial.details?.results[0];
                     if (current) {
-                      runOnUpdate({ content: partial.content, details: makeDetails([...results, current]) });
+                      const live = [...results, current];
+                      runOnUpdate({ content: [{ type: "text", text: formatProgressContent("chain", live) }], details: makeDetails(live) });
                     }
                   }
                 : undefined,
@@ -906,6 +1186,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
             };
           }
 
+          const now = new Date().toISOString();
           const liveResults: SingleResult[] = params.tasks.map((task) => ({
             agent: task.agent,
             agentSource: "unknown",
@@ -914,16 +1195,23 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
             messages: [],
             stderr: "",
             usage: emptyUsage(),
+            status: "queued",
+            updatedAt: now,
+            lastEvent: "queued",
           }));
 
-          const emitParallelUpdate = () => {
-            const done = liveResults.filter((result) => result.exitCode !== -1).length;
-            const running = liveResults.length - done;
+          let lastParallelEmitMs = 0;
+          const emitParallelUpdate = (force = false) => {
+            const emitNow = Date.now();
+            if (!force && emitNow - lastParallelEmitMs < 250) return;
+            lastParallelEmitMs = emitNow;
             runOnUpdate?.({
-              content: [{ type: "text", text: `Parallel subagents: ${done}/${liveResults.length} done, ${running} running.` }],
+              content: [{ type: "text", text: formatProgressContent("parallel", liveResults) }],
               details: makeDetails([...liveResults]),
             });
           };
+
+          emitParallelUpdate(true);
 
           const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (task, index) => {
             const result = await runSingleAgent({
@@ -944,7 +1232,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
               makeDetails,
             });
             liveResults[index] = result;
-            emitParallelUpdate();
+            emitParallelUpdate(true);
             return result;
           });
 
@@ -1014,8 +1302,18 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
         };
         backgroundJobs.set(job.id, job);
         const persistenceWarning = await trySaveBackgroundJobStore();
+        let lastBackgroundProgressSaveMs = 0;
+        const updateBackgroundProgress = (partial: SpawnSubagentResult) => {
+          job.result = partial;
+          job.updatedAt = new Date().toISOString();
+          const nowMs = Date.now();
+          if (nowMs - lastBackgroundProgressSaveMs >= 5000) {
+            lastBackgroundProgressSaveMs = nowMs;
+            queueSaveBackgroundJobStore();
+          }
+        };
 
-        void runRequest(job.abortController.signal)
+        void runRequest(job.abortController.signal, updateBackgroundProgress)
           .then((result) => {
             job.result = result;
             if (job.status !== "canceled") {
@@ -1027,7 +1325,10 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
           })
           .catch((error: unknown) => {
             job.error = error instanceof Error ? error.message : String(error);
-            if (job.status !== "canceled") job.status = "failed";
+            if (job.status !== "canceled") {
+              job.status = "failed";
+              markUnfinishedResults(job.result, "failed", "background job failed");
+            }
             job.updatedAt = new Date().toISOString();
             notifyJobFinished(pi, job);
             queueSaveBackgroundJobStore();

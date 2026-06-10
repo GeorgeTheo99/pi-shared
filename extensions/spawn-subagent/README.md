@@ -57,8 +57,10 @@ Lists available agents for the selected scope.
 
 - Spawns a separate `pi --mode json -p --no-session` process per task.
 - Model precedence per spawn: explicit `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.provider/ctx.model.id`). The parent's provider-qualified model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
-- Streams partial updates back into the tool result for foreground jobs.
+- Streams live partial updates back into the tool result for foreground jobs, including queued/running/completed status, active child tool, last event, and output preview for each subagent.
+- Renders custom TUI rows for `spawn_subagent` calls so the visible tool card shows mode, agent/task summary, per-agent progress, active tools, and final output previews instead of only the generic tool name.
 - Background jobs return a job id immediately and keep running in the current Pi extension process; poll with `jobAction=status`, list with `jobAction=list`, and cancel with `jobAction=cancel`.
+- Background job status polling includes the latest live partial result while the job is still running.
 - Background jobs emit a visible completion message when they transition to `completed`, `failed`, or `canceled`; the message includes the job id, mode/label, success count, and a truncated preview.
 - Background job metadata and truncated/redacted result summaries persist to `~/.pi/agent/spawn-subagent/jobs.json` by default (`PI_SPAWN_SUBAGENT_DIR` overrides the directory), capped to the most recent 100 jobs and jobs updated in the last 30 days.
 - Persisted `running` jobs from a previous Pi process are marked `failed` on reload/restart because child process state cannot be restored.
