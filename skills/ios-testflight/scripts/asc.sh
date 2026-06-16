@@ -39,11 +39,14 @@ asc_jwt() {
 asc() {
   local method="$1" path="$2" body="${3:-}" jwt
   jwt=$(asc_jwt) || return 1
+  # --globoff: App Store Connect filter params use [brackets] (e.g.
+  # filter[app]=..., fields[builds]=...) which curl otherwise treats as glob
+  # ranges and rejects with "bad range in URL".
   if [ -n "$body" ]; then
-    curl -s -X "$method" "https://api.appstoreconnect.apple.com${path}" \
+    curl -s --globoff -X "$method" "https://api.appstoreconnect.apple.com${path}" \
       -H "Authorization: Bearer $jwt" -H "Content-Type: application/json" -d "$body"
   else
-    curl -s -X "$method" "https://api.appstoreconnect.apple.com${path}" \
+    curl -s --globoff -X "$method" "https://api.appstoreconnect.apple.com${path}" \
       -H "Authorization: Bearer $jwt"
   fi
 }
