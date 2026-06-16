@@ -7,7 +7,7 @@ Shared pi instructions and explicitly shareable pi resources.
 ## Contents
 
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
-- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), SearXNG-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
+- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), SearXNG-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
 - `knowledge/software-engineering/` — curated software engineering classics source catalog and local searchable corpus. Future state: ingest public/open texts and user-supplied lawful private copies for copyrighted books; metadata-only until then.
 - `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-local/skills`.
 - `prompts/` — shared prompt templates.
@@ -88,9 +88,15 @@ Current generated `pi-*` shell launchers call this automatically before writing 
   - `browser_*` private hosts are blocked by default; use `app_*` tools for local app testing or set `BROWSER_MCP_WEB_ALLOW_PRIVATE_HOSTS=true`
 - `extensions/spawn-subagent` — native subagent delegation:
   - `spawn_subagent` spawns isolated `pi --mode json -p --no-session` subprocesses for single, parallel, or chained specialist work
-  - bundled shared agents: `scout`, `planner`, `reviewer`, `worker`
+  - parallel tasks and chain steps may specify task-level `model` and `agentDir` overrides for multi-model/multi-profile workflows
+  - bundled shared agents: `scout`, `planner`, `reviewer`, `worker`, `panelist`
   - `/subagents [shared|user|project|all]` lists available agents
   - project-local `.pi/agents` are disabled by default unless `agentScope` is `project` or `all` and confirmed in UI
+- `extensions/panel` — user-invoked alternate-model second opinions:
+  - `/panel` asks a runtime-selected alternate model for a second opinion on the current conversation or an explicit task
+  - `/panel --compare` runs multiple model families through `spawn_subagent` in parallel and asks the main session to synthesize
+  - `/panel --list [search]`, `panel_models`, and `panel_select` use Pi model registries for portable runtime model discovery, including the alternate `~/.pi-omlx/agent` profile by default
+  - optional model preferences/exclusions live in `~/.pi/panel-config.json` or project `.pi/panel-config.json`; trusted `modelProfileDirs` overrides are honored only from `~/.pi/panel-config.json`
 - `extensions/integration-bundles` — lazy enterprise tool-bundle loader driven by `master_integration_list.yaml`:
   - keeps GPT / o-series safely under OpenAI's 128-tool API limit by exposing only a router toolset by default and loading bundles (jira, slack, glean, salesforce, google-workspace, databricks-aidk, ...) on demand
   - injects an `<available_bundles>` block into the system prompt with NL `description` text so the model can self-discover when to load each bundle
@@ -104,6 +110,7 @@ Current generated `pi-*` shell launchers call this automatically before writing 
 
 - `skills/frontend-design` — high-quality frontend/UI design skill for building polished, distinctive web interfaces
 - `skills/handoff` — writes a structured continuation handoff for a fresh pi, Claude Code, or Codex CLI session
+- `skills/panel` — orchestrates `/panel` second-opinion and multi-model compare workflows using `panel_select` plus `spawn_subagent panelist`
 - `skills/resume-handoff` — resumes from the most recent handoff file and verifies current repo state before continuing
 
 ## Shared vs local-only setup

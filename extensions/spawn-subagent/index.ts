@@ -210,9 +210,10 @@ function formatResultProgressLine(result: SingleResult, index?: number): string 
   const prefix = index === undefined ? "" : `${index + 1}. `;
   const step = result.step ? ` step ${result.step}` : "";
   const active = result.activeTool ? ` tool:${result.activeTool}` : "";
+  const model = result.model ? ` model:${compactLine(result.model, 60)}` : "";
   const event = result.lastEvent ? ` — ${compactLine(result.lastEvent, 90)}` : "";
   const task = result.task ? ` — ${compactLine(result.task, 90)}` : "";
-  return `${prefix}${statusIcon(status)} ${result.agent}${step} — ${status}${active}${event}${task}`;
+  return `${prefix}${statusIcon(status)} ${result.agent}${step} — ${status}${active}${model}${event}${task}`;
 }
 
 function formatProgressContent(mode: SpawnSubagentDetails["mode"], results: SingleResult[]): string {
@@ -544,10 +545,51 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
   return { command: "pi", args };
 }
 
+function expandTilde(input: string): string {
+  if (input === "~") return os.homedir();
+  if (input.startsWith("~/")) return path.join(os.homedir(), input.slice(2));
+  return input;
+}
+
 function resolveCwd(defaultCwd: string, cwd?: string): string {
   if (!cwd) return defaultCwd;
-  const expanded = cwd === "~" ? os.homedir() : cwd.startsWith("~/") ? path.join(os.homedir(), cwd.slice(2)) : cwd;
+  const expanded = expandTilde(cwd);
   return path.isAbsolute(expanded) ? expanded : path.resolve(defaultCwd, expanded);
+}
+
+function canonicalAgentDir(agentDir: string): string {
+  const expanded = path.resolve(expandTilde(agentDir));
+  try {
+    return fs.realpathSync.native(expanded);
+  } catch {
+    return expanded;
+  }
+}
+
+function resolveAgentDir(agentDir?: string): string | undefined {
+  if (!agentDir) return undefined;
+  return canonicalAgentDir(agentDir);
+}
+
+function allowedAgentDirs(): Set<string> {
+  const dirs = [path.join(os.homedir(), ".pi-omlx", "agent")];
+  if (process.env.PI_CODING_AGENT_DIR) dirs.push(process.env.PI_CODING_AGENT_DIR);
+  dirs.push(...(process.env.PI_SPAWN_SUBAGENT_ALLOWED_AGENT_DIRS ?? "").split(",").map((item) => item.trim()).filter(Boolean));
+  return new Set(dirs.map(canonicalAgentDir));
+}
+
+function untrustedAgentDirs(agentDirs: Array<string | undefined>): string[] {
+  const allowed = allowedAgentDirs();
+  const seen = new Set<string>();
+  const untrusted: string[] = [];
+  for (const agentDir of agentDirs) {
+    if (!agentDir) continue;
+    const canonical = canonicalAgentDir(agentDir);
+    if (allowed.has(canonical) || seen.has(canonical)) continue;
+    seen.add(canonical);
+    untrusted.push(canonical);
+  }
+  return untrusted;
 }
 
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
@@ -601,6 +643,7 @@ async function runSingleAgent(options: {
   cwd?: string;
   model?: string;
   parentModel?: string;
+  agentDir?: string;
   step?: number;
   signal?: AbortSignal;
   onUpdate?: OnUpdateCallback;
@@ -675,12 +718,14 @@ async function runSingleAgent(options: {
 
     args.push(`Task: ${options.task}`);
     const cwd = resolveCwd(options.defaultCwd, options.cwd);
+    const agentDir = resolveAgentDir(options.agentDir);
     let wasAborted = false;
 
     const exitCode = await new Promise<number>((resolve) => {
       const invocation = getPiInvocation(args);
       const proc = spawn(invocation.command, invocation.args, {
         cwd,
+        env: agentDir ? { ...process.env, PI_CODING_AGENT_DIR: agentDir } : process.env,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -869,12 +914,16 @@ const TaskItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task to delegate to that agent" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for this subagent process" })),
+  model: Type.Optional(Type.String({ description: "Optional model override for this specific subagent task" })),
+  agentDir: Type.Optional(Type.String({ description: "Optional PI_CODING_AGENT_DIR/profile for this specific subagent task" })),
 });
 
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task with optional {previous} placeholder for the prior step output" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for this subagent process" })),
+  model: Type.Optional(Type.String({ description: "Optional model override for this specific chain step" })),
+  agentDir: Type.Optional(Type.String({ description: "Optional PI_CODING_AGENT_DIR/profile for this specific chain step" })),
 });
 
 const AgentScopeSchema = StringEnum(["shared", "user", "project", "all"] as const, {
@@ -916,13 +965,14 @@ const JobActionSchema = StringEnum(["list", "status", "cancel"] as const, {
 const SpawnSubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (single mode)" })),
   task: Type.Optional(Type.String({ description: "Task to delegate (single mode)" })),
-  tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel mode: array of {agent, task, cwd?}" })),
-  chain: Type.Optional(Type.Array(ChainItem, { description: "Chain mode: sequential steps; use {previous} in later tasks" })),
+  tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel mode: array of {agent, task, cwd?, model?, agentDir?}" })),
+  chain: Type.Optional(Type.Array(ChainItem, { description: "Chain mode: sequential steps; use {previous} in later tasks; each step may specify model/agentDir" })),
   background: Type.Optional(Type.Boolean({ description: "Start the subagent job in the background and return a job id immediately. Poll later with jobAction=status.", default: false })),
   jobAction: Type.Optional(JobActionSchema),
   jobId: Type.Optional(Type.String({ description: "Background subagent job id for status or cancel." })),
   agentScope: Type.Optional(AgentScopeSchema),
   model: Type.Optional(Type.String({ description: "Optional pi model pattern/id override for this invocation" })),
+  agentDir: Type.Optional(Type.String({ description: "Optional PI_CODING_AGENT_DIR/profile for spawned subagent process(es)" })),
   cwd: Type.Optional(Type.String({ description: "Working directory for the subagent process (single mode)" })),
   confirmProjectAgents: Type.Optional(
     Type.Boolean({ description: "Prompt before running project-local .pi/agents. Default: true.", default: true }),
@@ -1132,6 +1182,22 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
         }
       }
 
+      const requestedAgentDirs = [params.agentDir, ...(params.tasks ?? []).map((task) => task.agentDir), ...(params.chain ?? []).map((step) => step.agentDir)];
+      const untrustedDirs = untrustedAgentDirs(requestedAgentDirs);
+      if (untrustedDirs.length > 0) {
+        const message = `Subagent agentDir profile(s) are not allowlisted:\n${untrustedDirs.map((dir) => `- ${dir}`).join("\n")}\n\nA Pi profile can load its own settings/extensions. Continue only for trusted profiles.`;
+        if (!ctx.hasUI) {
+          return {
+            content: [{ type: "text", text: `Blocked: ${message}\n\nAllowlist trusted profiles with PI_SPAWN_SUBAGENT_ALLOWED_AGENT_DIRS or use ~/.pi-omlx/agent.` }],
+            details: makeDetails([]),
+          };
+        }
+        const ok = await ctx.ui.confirm("Run subagents with non-allowlisted Pi profile?", message);
+        if (!ok) {
+          return { content: [{ type: "text", text: "Canceled: non-allowlisted subagent profile was not approved." }], details: makeDetails([]) };
+        }
+      }
+
       const runRequest = async (runSignal: AbortSignal, runOnUpdate?: OnUpdateCallback): Promise<SpawnSubagentResult> => {
         if (params.chain && params.chain.length > 0) {
           const results: SingleResult[] = [];
@@ -1146,8 +1212,9 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
               agentName: step.agent,
               task,
               cwd: step.cwd,
-              model: params.model,
+              model: step.model ?? params.model,
               parentModel,
+              agentDir: step.agentDir ?? params.agentDir,
               step: i + 1,
               signal: runSignal,
               onUpdate: runOnUpdate
@@ -1198,6 +1265,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
             status: "queued",
             updatedAt: now,
             lastEvent: "queued",
+            model: task.model ?? params.model,
           }));
 
           let lastParallelEmitMs = 0;
@@ -1220,8 +1288,9 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
               agentName: task.agent,
               task: task.task,
               cwd: task.cwd,
-              model: params.model,
+              model: task.model ?? params.model,
               parentModel,
+              agentDir: task.agentDir ?? params.agentDir,
               signal: runSignal,
               onUpdate: (partial) => {
                 if (partial.details?.results[0]) {
@@ -1264,6 +1333,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
             cwd: params.cwd,
             model: params.model,
             parentModel,
+            agentDir: params.agentDir,
             signal: runSignal,
             onUpdate: runOnUpdate,
             makeDetails,

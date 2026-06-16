@@ -12,6 +12,7 @@ Modes:
 
 - Single: `{ "agent": "scout", "task": "find auth entry points" }`
 - Parallel: `{ "tasks": [{ "agent": "scout", "task": "find models" }, { "agent": "scout", "task": "find routes" }] }`
+- Parallel with per-task models/profiles: `{ "tasks": [{ "agent": "panelist", "task": "review X", "model": "provider/model-a", "agentDir": "~/.pi-omlx/agent" }, { "agent": "panelist", "task": "review X", "model": "provider/model-b" }] }`
 - Chain: `{ "chain": [{ "agent": "scout", "task": "inspect X" }, { "agent": "planner", "task": "plan from this: {previous}" }] }`
 - Background start: `{ "background": true, "tasks": [{ "agent": "scout", "task": "find models" }, { "agent": "scout", "task": "find routes" }] }`
 - Background status/list/cancel: `{ "jobAction": "status", "jobId": "sub_..." }`, `{ "jobAction": "list" }`, `{ "jobAction": "cancel", "jobId": "sub_..." }`
@@ -56,7 +57,9 @@ Lists available agents for the selected scope.
 ## Behavior
 
 - Spawns a separate `pi --mode json -p --no-session` process per task.
-- Model precedence per spawn: explicit `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.provider/ctx.model.id`). The parent's provider-qualified model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
+- Model precedence per spawn: task/chain-step `model` > explicit top-level `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.provider/ctx.model.id`). The parent's provider-qualified model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
+- Optional `agentDir` / `tasks[].agentDir` / `chain[].agentDir` sets `PI_CODING_AGENT_DIR` for the child Pi process, enabling cross-profile model runs such as launching `ls99-cloud/*` models from `~/.pi-omlx/agent` while the parent session uses a narrower profile.
+- `agentDir` is a trust boundary because a Pi profile can load its own settings and extensions. `~/.pi-omlx/agent`, the current `PI_CODING_AGENT_DIR`, and comma-separated `PI_SPAWN_SUBAGENT_ALLOWED_AGENT_DIRS` are allowlisted; other profiles require UI confirmation or are blocked in non-interactive mode.
 - Streams live partial updates back into the tool result for foreground jobs, including queued/running/completed status, active child tool, last event, and output preview for each subagent.
 - Renders custom TUI rows for `spawn_subagent` calls so the visible tool card shows mode, agent/task summary, per-agent progress, active tools, and final output previews instead of only the generic tool name.
 - Background jobs return a job id immediately and keep running in the current Pi extension process; poll with `jobAction=status`, list with `jobAction=list`, and cancel with `jobAction=cancel`.
