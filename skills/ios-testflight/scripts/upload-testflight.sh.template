@@ -1,0 +1,70 @@
+#!/bin/bash
+# TestFlight upload — archive (unsigned) + export-sign for App Store distribution.
+# Copy to your app's scripts/ dir and adjust the CONFIG block. Requires full Xcode
+# + xcodegen. Reuses an App Store Connect API key (.p8) referenced by env/path only.
+set -euo pipefail
+
+# ---- CONFIG: adjust per app ------------------------------------------------
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SCHEME="MyApp_iOS"                     # multiplatform target -> _iOS suffix
+BUNDLE_ID="com.example.MyApp"
+TEAM_ID="TEAMID10"
+# Reuse an existing App Store Connect env (same team) or point at your own:
+ENV_FILE="${APPSTORE_CONFIG_FILE:-$HOME/.appstoreconnect.env}"
+# ---------------------------------------------------------------------------
+
+PROJECT_PATH="$ROOT_DIR/MyApp.xcodeproj"
+MARKETING_VERSION="${MARKETING_VERSION:-0.1}"
+BUILD_NUMBER="${BUILD_NUMBER:-$(date +%Y%m%d%H%M)}"
+ARCHIVE_PATH="$ROOT_DIR/build/MyApp.xcarchive"
+EXPORT_PATH="$ROOT_DIR/build/upload"
+EXPORT_OPTIONS_PATH="$ROOT_DIR/build/ExportOptions-upload.plist"
+# destination=export -> dry run (signs to local .ipa, no upload). =upload -> TestFlight.
+EXPORT_DESTINATION="${EXPORT_DESTINATION:-upload}"
+
+command -v xcodegen >/dev/null || { echo "ERROR: xcodegen not found (need full Xcode machine)" >&2; exit 1; }
+[ -f "$ENV_FILE" ] || { echo "Missing App Store Connect env: $ENV_FILE" >&2; exit 1; }
+set -a; source "$ENV_FILE"; set +a
+for k in APPSTORE_API_KEY_ID APPSTORE_ISSUER_ID APPSTORE_API_PRIVATE_KEY_PATH; do
+  [ -n "${!k:-}" ] && [[ "${!k}" != REPLACE_WITH_* ]] || { echo "Missing $k" >&2; exit 1; }
+done
+[ -f "$APPSTORE_API_PRIVATE_KEY_PATH" ] || { echo ".p8 not found: $APPSTORE_API_PRIVATE_KEY_PATH" >&2; exit 1; }
+
+echo "==> xcodegen generate"
+( cd "$ROOT_DIR" && xcodegen generate )
+mkdir -p "$(dirname "$ARCHIVE_PATH")" "$EXPORT_PATH"
+
+cat > "$EXPORT_OPTIONS_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>destination</key><string>$EXPORT_DESTINATION</string>
+  <key>method</key><string>app-store-connect</string>
+  <key>signingStyle</key><string>automatic</string>
+  <key>teamID</key><string>$TEAM_ID</string>
+  <key>testFlightInternalTestingOnly</key><true/>
+  <key>manageAppVersionAndBuildNumber</key><false/>
+  <key>stripSwiftSymbols</key><true/>
+  <key>uploadSymbols</key><true/>
+</dict></plist>
+EOF
+
+echo "==> Archiving $SCHEME ($BUNDLE_ID) v$MARKETING_VERSION ($BUILD_NUMBER) — UNSIGNED"
+xcodebuild -project "$PROJECT_PATH" -scheme "$SCHEME" -configuration Release \
+  -destination "generic/platform=iOS" -archivePath "$ARCHIVE_PATH" \
+  -allowProvisioningUpdates \
+  -authenticationKeyPath "$APPSTORE_API_PRIVATE_KEY_PATH" \
+  -authenticationKeyID "$APPSTORE_API_KEY_ID" \
+  -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID" \
+  MARKETING_VERSION="$MARKETING_VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  CODE_SIGNING_ALLOWED=NO archive
+
+echo "==> Export ($EXPORT_DESTINATION) — distribution signing applied here"
+xcodebuild -exportArchive -archivePath "$ARCHIVE_PATH" -exportPath "$EXPORT_PATH" \
+  -exportOptionsPlist "$EXPORT_OPTIONS_PATH" -allowProvisioningUpdates \
+  -authenticationKeyPath "$APPSTORE_API_PRIVATE_KEY_PATH" \
+  -authenticationKeyID "$APPSTORE_API_KEY_ID" \
+  -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID"
+
+echo "==> Done. Bundle=$BUNDLE_ID Version=$MARKETING_VERSION Build=$BUILD_NUMBER"
+[ "$EXPORT_DESTINATION" = upload ] && echo "TestFlight processing ~5-15 min; then assign the build to an internal group + add testers (see SKILL.md Step 5)."
