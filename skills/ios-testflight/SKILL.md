@@ -54,7 +54,10 @@ targets:
       path: MyApp/Info.generated.plist
       properties:
         # If the backend is plain HTTP on the LAN, you MUST allow it or every
-        # request fails on-device:
+        # request fails on-device. NSAllowsLocalNetworking covers
+        # .local/link-local/RFC1918 but NOT Tailscale 100.64/10 — if you reach
+        # the backend over Tailscale add NSAllowsArbitraryLoads: true too
+        # (internal builds) or front it with TLS (see Gotcha #10):
         NSAppTransportSecurity: { NSAllowsLocalNetworking: true }
         NSLocalNetworkUsageDescription: "Connects to your server on the local network."
         ITSAppUsesNonExemptEncryption: false   # auto-satisfies export compliance for HTTPS-only apps
@@ -148,12 +151,25 @@ A `VALID` build is invisible to testers until it's in a beta group that includes
 them. Do all of this via the App Store Connect API (`scripts/asc.sh`) or web UI:
 
 1. Confirm the build processed: poll builds until `processingState == VALID`.
-2. Create an **internal** beta group (`isInternalGroup: true`) — internal needs
-   NO Beta App Review, so it's installable immediately.
-3. **Assign the build to the group** (`POST /v1/betaGroups/{id}/relationships/builds`).
-4. **Add the tester** by email (`POST /v1/betaTesters` with the group relationship).
+2. Create an **internal** beta group **with `hasAccessToAllBuilds: true` set AT
+   CREATION** (`isInternalGroup: true`). This is the critical bit — see
+   Gotcha #9. With this flag, every future `VALID` build auto-distributes to the
+   group; you never assign builds manually again. Internal groups need NO Beta
+   App Review, so builds are installable immediately.
+3. **Add the tester** by email (`POST /v1/betaTesters` with the group relationship).
    The email MUST match the Apple ID used in the tester's TestFlight app.
-5. Tester installs the **TestFlight** app → the app appears → Install.
+4. Tester installs the **TestFlight** app → the app appears → Install.
+
+> Do **NOT** rely on `POST /v1/betaGroups/{id}/relationships/builds` to make a
+> build appear in an internal group — it returns `204` but is a **silent no-op**
+> for internal groups (Gotcha #9). The `hasAccessToAllBuilds` flag at creation is
+> the mechanism that works.
+>
+> Authoritative "this build is live for testers" signal: the build's
+> `buildBetaDetail.internalBuildState == IN_BETA_TESTING` (it sits at
+> `READY_FOR_BETA_TESTING` until it's actually distributed). Note the group's
+> `/builds` list may read **empty** when `hasAccessToAllBuilds=true` — that's
+> expected, not a problem; trust `internalBuildState` instead.
 
 ## App Store Connect API without dependencies
 
@@ -166,10 +182,17 @@ Common calls:
 source scripts/asc.sh           # needs APPSTORE_* env vars exported first
 asc GET  "/v1/apps?filter[bundleId]=com.example.MyApp"
 asc GET  "/v1/builds?filter[app]=APPID&fields[builds]=version,processingState"
-asc POST "/v1/betaGroups" '{"data":{"type":"betaGroups","attributes":{"name":"Internal","isInternalGroup":true},"relationships":{"app":{"data":{"type":"apps","id":"APPID"}}}}}'
-asc POST "/v1/betaGroups/GROUPID/relationships/builds" '{"data":[{"type":"builds","id":"BUILDID"}]}'
+# Internal group — set hasAccessToAllBuilds=true AT CREATION (cannot be PATCHed later, Gotcha #9):
+asc POST "/v1/betaGroups" '{"data":{"type":"betaGroups","attributes":{"name":"Internal","isInternalGroup":true,"hasAccessToAllBuilds":true},"relationships":{"app":{"data":{"type":"apps","id":"APPID"}}}}}'
+# Add tester (no per-build assignment needed once hasAccessToAllBuilds=true):
 asc POST "/v1/betaTesters" '{"data":{"type":"betaTesters","attributes":{"email":"x@y.com","firstName":"A","lastName":"B"},"relationships":{"betaGroups":{"data":[{"type":"betaGroups","id":"GROUPID"}]}}}}'
+# Confirm a build is actually live for testers:
+asc GET  "/v1/builds/BUILDID/buildBetaDetail"   # internalBuildState should be IN_BETA_TESTING
 ```
+
+> `asc.sh` passes `curl --globoff` so App Store Connect's bracketed query params
+> (`filter[app]=...`, `fields[builds]=...`) work — without it curl rejects them
+> with `bad range in URL` (Gotcha #11).
 
 ## Gotchas (the ones that actually cost time)
 
@@ -182,8 +205,12 @@ asc POST "/v1/betaTesters" '{"data":{"type":"betaTesters","attributes":{"email":
    `AppIcon` asset catalog (Step 2) and the two icon build settings.
 3. **Multiplatform scheme name.** `platform: [iOS, macOS]` generates
    `MyApp_iOS` / `MyApp_macOS`, NOT `MyApp`. Use the suffixed scheme.
-4. **Build is VALID but not in TestFlight.** Almost always: no beta group, build
-   not assigned to a group, or the tester isn't in the group. See Step 5.
+4. **Build is VALID but not in TestFlight.** Almost always one of: no beta group,
+   the tester isn't in the group, the tester's TestFlight Apple ID ≠ the invited
+   email, or — the silent killer — the internal group lacks
+   `hasAccessToAllBuilds` (Gotcha #9). See Step 5. Verify with the build's
+   `internalBuildState` (should be `IN_BETA_TESTING`), not the group's `/builds`
+   list.
 5. **Export compliance prompt.** Set `ITSAppUsesNonExemptEncryption: false` for
    HTTPS-only apps to auto-satisfy it and avoid a manual "Manage" step.
 6. **macOS in the app record but only iOS uploaded** is fine — the iOS build
@@ -193,6 +220,43 @@ asc POST "/v1/betaTesters" '{"data":{"type":"betaTesters","attributes":{"email":
    `NSLocalNetworkUsageDescription`, or on-device networking silently fails.
 8. **CLT-only build machine** has no `xcodebuild`/simulator. Edit Swift + run
    `swift test` there, but archive/upload on a full-Xcode machine.
+9. **Internal group never shows NEW builds.** The original build appeared but
+   later uploads (all `VALID`) never reach the tester. Cause: the internal group
+   was created **without** `hasAccessToAllBuilds`, and that attribute **can only
+   be set at creation** — `PATCH /v1/betaGroups/{id}` with it returns
+   `409 ENTITY_ERROR.ATTRIBUTE.NOT_ALLOWED`, and
+   `POST .../relationships/builds` is a **silent 204 no-op** for internal groups.
+   **Fix:** delete the group and recreate it with
+   `"hasAccessToAllBuilds": true` in the create payload, then re-add the tester.
+   After that, every `VALID` build auto-distributes. (This is THE most common
+   reason "the new build won't show up in TestFlight.")
+10. **ATS `NSAllowsLocalNetworking` does NOT cover Tailscale.** It permits
+    cleartext to `.local`, link-local, and RFC1918 (192.168/10, 10/8, 172.16/12)
+    — but **not** Tailscale's CGNAT range `100.64.0.0/10`. So a plain-HTTP
+    backend reached over Tailscale (`http://100.x.x.x:8100`) is blocked by ATS
+    at the URLSession layer and surfaces as a generic transport/"cannot reach"
+    error, even though mobile Safari (which ignores app ATS) reaches it fine —
+    that Safari-vs-app split is the fastest way to confirm it's ATS. ATS
+    `NSExceptionDomains` match hostnames, not CIDRs, so a raw `100.x` IP can't be
+    excepted cleanly. For an internal-only build, add `NSAllowsArbitraryLoads:
+    true` (keep `NSAllowsLocalNetworking`); for GA, front the backend with TLS
+    and tighten ATS back. Also: mDNS `.local` does NOT resolve over Tailscale —
+    use the device's stable MagicDNS name (`host.tailnet.ts.net`) or tailnet IP.
+11. **`asc.sh`/curl: `bad range in URL`.** App Store Connect query params use
+    brackets (`filter[app]=`, `fields[builds]=`); curl treats `[...]` as a glob
+    range and rejects them. Pass `curl --globoff` (the bundled `asc.sh` already
+    does).
+12. **Archive rewrites your entitlements file to empty.** The distribution
+    sign/export step can overwrite `<App>/<App>.entitlements` with an empty
+    `<dict/>` (stripping e.g. the macOS `com.apple.security.network.client`
+    sandbox entitlement). Always `git checkout -- <App>/<App>.entitlements`
+    after a build/upload so the strip isn't committed.
+13. **Don't default a phone app's backend URL to `127.0.0.1`.** On a device that
+    points at the phone itself. If the URL is only editable from a screen behind
+    login, a remote user whose default is wrong gets stranded (login fails →
+    can't reach Settings to fix it). Default to the reachable host (e.g. the
+    server's MagicDNS name over Tailscale) and/or expose the URL field on the
+    login screen.
 
 ## Iterating
 
