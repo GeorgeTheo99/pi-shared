@@ -48,6 +48,23 @@ For non-trivial code changes:
 5. If verification fails, diagnose and retry up to 2 times.
 6. Stop and ask if blocked, risk is high, or the next step has irreversible/external side effects.
 
+## Long-Running Tasks: Block, Don't Poll
+
+Pi's agent loop is strictly `LLM → tool → LLM → tool`. There is no native "sleep until an external event" step, so "waiting" by re-checking state each turn is actually **polling** — every check is a full LLM round-trip that re-sends the whole context (cache reads) and burns tokens while nothing is happening. While a tool call is executing, the loop is paused and consumes **zero tokens**.
+
+- For any detached long-running task (download, build, deploy, training, model load), do all parallel prep/wiring work **first**, then gate the dependent step behind a **single blocking call**. Never poll in a loop with repeated `bash` checks.
+- Prefer the shared `wait_for` tool: it blocks the loop (zero tokens) until a shell `condition` is met, streams optional `progress` to the TUI, is abortable (Esc/Ctrl-C), and has a hard `timeout`. Example — wait for an aria2 download's DONE marker:
+  ```
+  wait_for({
+    condition: "grep -q '^DONE ' ~/models/mlx/GLM-5.2-mxfp4.download.log 2>/dev/null",
+    timeout: 3600, poll_interval: 15,
+    progress: "du -sh ~/models/mlx/GLM-5.2-mxfp4.partial 2>/dev/null | cut -f1",
+  })
+  ```
+- The `condition` is `sh -c`: exit 0 = met (resume), non-zero = not yet. `pgrep -f aria2c` is true *while running* — to wait for completion, invert it (`! pgrep -f aria2c >/dev/null 2>&1`) or watch a completion marker / `test -f done.flag`.
+- Plain-`bash` fallback when `wait_for` is unavailable: one blocking call with no/long `timeout`, e.g. `while pgrep -f 'aria2c.*GLM-5.2-mxfp4' >/dev/null 2>&1; do sleep 15; done` (macOS BSD `tail` has no `--pid`, so use a `pgrep`/`until grep` loop). This also pauses the loop for free.
+- `wait_for` is capped at 24h. For genuinely multi-hour/day tasks where even a blocking call is undesirable, use the event-driven resume pattern: write a `handoff` note + keep the durable goal, exit, and let a `macos-scheduler` (launchd) watcher relaunch Pi via `resume-handoff` when the completion signal (process exit / DONE marker / flag file) fires.
+
 ## Response Style
 
 - Default to short answers.
