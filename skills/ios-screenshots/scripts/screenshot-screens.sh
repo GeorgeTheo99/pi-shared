@@ -26,6 +26,18 @@
 #   SIM_NAME     simulator device name. Default: "iPhone 17 Pro"
 #   OUT_DIR      output dir for PNGs. Default: $PROJECT_DIR/build/screenshots
 #   SETTLE       seconds to let a screen render before capture. Default: 2.2
+#   RENDER_MODE  capture strategy:
+#                  viewport      (default) `xcrun simctl io screenshot` — fast,
+#                                but clips anything below the visible window.
+#                  imagerenderer full-content capture: launches with
+#                                RENDER_ARG "<id> <container-path>", the app
+#                                renders the whole (unclipped) screen to a PNG
+#                                in its container via SwiftUI ImageRenderer, and
+#                                this driver copies it out. Requires the app to
+#                                implement the RENDER_ARG contract (see SKILL.md).
+#   RENDER_ARG   launch arg for imagerenderer mode. Default: -screenshotRender
+#   RENDER_NAME  container-relative PNG path the app writes / driver reads.
+#                Default: Documents/shot.png
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -37,6 +49,9 @@ SIM_NAME="${SIM_NAME:-iPhone 17 Pro}"
 OUT_DIR="${OUT_DIR:-$PROJECT_DIR/build/screenshots}"
 DD="${DD:-$PROJECT_DIR/build/dd-shots}"
 SETTLE="${SETTLE:-2.2}"
+RENDER_MODE="${RENDER_MODE:-viewport}"
+RENDER_ARG="${RENDER_ARG:--screenshotRender}"
+RENDER_NAME="${RENDER_NAME:-Documents/shot.png}"
 # Default .app name: scheme minus a trailing _iOS / _macOS suffix.
 APP_NAME="${APP_NAME:-${SCHEME%_iOS}}"
 APP_NAME="${APP_NAME%_macOS}"
@@ -85,14 +100,40 @@ xcrun simctl install "$DEV_UDID" "$APP_PATH"
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_DIR"/*.png 2>/dev/null || true
 
+# Resolve the app's data-container path (for imagerenderer mode). Requires the
+# app to be installed first; done once after install below.
+app_container() { xcrun simctl get_app_container "$DEV_UDID" "$BUNDLE_ID" data 2>/dev/null; }
+
 for id in $IDS; do
   echo "==> $id"
   xcrun simctl terminate "$DEV_UDID" "$BUNDLE_ID" 2>/dev/null || true
-  xcrun simctl launch "$DEV_UDID" "$BUNDLE_ID" "$LAUNCH_ARG" "$id" >/dev/null
-  sleep "$SETTLE"
-  xcrun simctl io "$DEV_UDID" screenshot "$OUT_DIR/$id.png" >/dev/null 2>&1 \
-    && echo "    captured $OUT_DIR/$id.png" \
-    || echo "    WARN: capture failed for $id"
+
+  if [ "$RENDER_MODE" = "imagerenderer" ]; then
+    CONTAINER="$(app_container)"
+    [ -n "$CONTAINER" ] || { echo "    WARN: no app container for $id"; continue; }
+    SHOT="$CONTAINER/$RENDER_NAME"
+    rm -f "$SHOT" 2>/dev/null || true
+    # App renders the full screen to $SHOT (container path) then exits.
+    xcrun simctl launch "$DEV_UDID" "$BUNDLE_ID" "$RENDER_ARG" "$id" "$SHOT" >/dev/null
+    # Wait for the app to write the file (it renders after its own settle).
+    for _ in $(seq 1 40); do [ -f "$SHOT" ] && break; sleep 0.25; done
+    if [ -f "$SHOT" ]; then
+      cp "$SHOT" "$OUT_DIR/$id.png" && echo "    captured $OUT_DIR/$id.png (full-content)"
+    else
+      echo "    WARN: app did not write $RENDER_NAME for $id (falling back to viewport)"
+      xcrun simctl launch "$DEV_UDID" "$BUNDLE_ID" "$LAUNCH_ARG" "$id" >/dev/null
+      sleep "$SETTLE"
+      xcrun simctl io "$DEV_UDID" screenshot "$OUT_DIR/$id.png" >/dev/null 2>&1 \
+        && echo "    captured $OUT_DIR/$id.png (viewport fallback)" \
+        || echo "    WARN: capture failed for $id"
+    fi
+  else
+    xcrun simctl launch "$DEV_UDID" "$BUNDLE_ID" "$LAUNCH_ARG" "$id" >/dev/null
+    sleep "$SETTLE"
+    xcrun simctl io "$DEV_UDID" screenshot "$OUT_DIR/$id.png" >/dev/null 2>&1 \
+      && echo "    captured $OUT_DIR/$id.png" \
+      || echo "    WARN: capture failed for $id"
+  fi
 done
 
 xcrun simctl terminate "$DEV_UDID" "$BUNDLE_ID" 2>/dev/null || true
