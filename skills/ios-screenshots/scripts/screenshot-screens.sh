@@ -116,7 +116,8 @@ for id in $IDS; do
     # App renders the full screen to $SHOT (container path) then exits.
     xcrun simctl launch "$DEV_UDID" "$BUNDLE_ID" "$RENDER_ARG" "$id" "$SHOT" >/dev/null
     # Wait for the app to write the file (it renders after its own settle).
-    for _ in $(seq 1 40); do [ -f "$SHOT" ] && break; sleep 0.25; done
+    # Generous window: first launch after install + settle + render can be slow.
+    for _ in $(seq 1 120); do [ -f "$SHOT" ] && break; sleep 0.25; done
     if [ -f "$SHOT" ]; then
       cp "$SHOT" "$OUT_DIR/$id.png" && echo "    captured $OUT_DIR/$id.png (full-content)"
     else
