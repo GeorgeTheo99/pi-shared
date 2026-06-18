@@ -62,6 +62,7 @@ Pi's agent loop is strictly `LLM → tool → LLM → tool`. There is no native 
   })
   ```
 - The `condition` is `sh -c`: exit 0 = met (resume), non-zero = not yet. `pgrep -f aria2c` is true *while running* — to wait for completion, invert it (`! pgrep -f aria2c >/dev/null 2>&1`) or watch a completion marker / `test -f done.flag`.
+- `wait_for` also blocks until **background subagent jobs** finish: pass `jobs: ["bg_…", …]` (ids from `spawn_subagent({..., background:true})`) and optional `job_mode` (`all` default, `any`, `any_success`, `any_failure`) instead of `condition`. This pauses the loop (zero tokens) while fanned-out subagents run; on resume it returns a per-job status summary and you fetch full output via `spawn_subagent({ jobAction: "status", jobId: "<id>" })`. Use this instead of polling `jobAction: "status"` in a loop.
 - Plain-`bash` fallback when `wait_for` is unavailable: one blocking call with no/long `timeout`, e.g. `while pgrep -f 'aria2c.*GLM-5.2-mxfp4' >/dev/null 2>&1; do sleep 15; done` (macOS BSD `tail` has no `--pid`, so use a `pgrep`/`until grep` loop). This also pauses the loop for free.
 - `wait_for` is capped at 24h. For genuinely multi-hour/day tasks where even a blocking call is undesirable, use the event-driven resume pattern: write a `handoff` note + keep the durable goal, exit, and let a `macos-scheduler` (launchd) watcher relaunch Pi via `resume-handoff` when the completion signal (process exit / DONE marker / flag file) fires.
 

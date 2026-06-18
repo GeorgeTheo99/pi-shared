@@ -30,10 +30,12 @@ wait_for({
 
 | param | type | description |
 |-------|------|-------------|
-| `condition` | string (required) | Shell command run with `sh -c` in the session cwd. Exit 0 = met (resume); non‑zero = not yet. |
+| `condition` | string (optional) | Shell command run with `sh -c` in the session cwd. Exit 0 = met (resume); non‑zero = not yet. Mutually exclusive with `jobs`. |
+| `jobs` | string[] (optional) | Background subagent job ids (from `spawn_subagent` with `background:true`) to wait for. Mutually exclusive with `condition`. Polls the spawn‑subagent job store. |
+| `job_mode` | string (optional) | With `jobs`: `all` (default), `any`, `any_success`, `any_failure`. Only valid with `jobs`. |
 | `timeout` | number (required) | Max seconds to wait. Hard cap 86400 (24h). For longer tasks, chain calls or use launchd + handoff. |
 | `poll_interval` | number (optional) | Seconds between checks. Default 10, clamped to [1, 3600]. |
-| `progress` | string (optional) | Shell command whose stdout shows as live progress on each poll. |
+| `progress` | string (optional) | Shell command whose stdout shows as live progress on each poll. Ignored in `jobs` mode (which shows per‑job status). |
 
 ## Behavior
 
@@ -46,6 +48,36 @@ wait_for({
 ## Choosing the condition
 
 `pgrep -f aria2c` is **true while the process is running**, so to wait for *completion* either invert it (`! pgrep -f aria2c >/dev/null 2>&1`) or — preferably — watch a completion marker your long task writes (e.g. `grep -q '^DONE ' file.download.log`).
+
+## Waiting for background subagent jobs
+
+`wait_for` can also block until fanned‑out `spawn_subagent({..., background:true})` jobs finish, instead of polling `jobAction: "status"` yourself (which burns tokens on every poll). Fan out the jobs, keep orchestrating in the main session, then gate the dependent step behind a single `wait_for`:
+
+```
+# fan out
+spawn_subagent({ agent: "worker",   task: "…", background: true })  → bg_abc
+spawn_subagent({ agent: "reviewer", task: "…", background: true })  → bg_def
+# …main session keeps working…
+wait_for({
+  jobs: ["bg_abc", "bg_def"],
+  job_mode: "all",   // resume when both are terminal (completed/failed/canceled)
+  timeout: 1800,
+  poll_interval: 10,
+})
+# resumes with a per‑job status summary + a pointer to fetch full output:
+# spawn_subagent({ jobAction: "status", jobId: "bg_abc" })
+```
+
+`job_mode` options:
+
+| mode | resume when |
+|------|-------------|
+| `all` (default) | every listed job reaches a terminal status |
+| `any` | the first job reaches any terminal status |
+| `any_success` | the first job reaches `completed` |
+| `any_failure` | the first job reaches `failed` or `canceled` |
+
+Terminal statuses are `completed`, `failed`, `canceled`. While waiting, the TUI shows `N/M terminal` plus a per‑job status block on each poll. `wait_for` reads the same persisted job store (`~/.pi/agent/spawn-subagent/jobs.json`, overridable via `PI_SPAWN_SUBAGENT_DIR`) that `jobAction: "status"` uses, so it works across the main session and survives Pi reloads of the store.
 
 ## Beyond `wait_for`: event‑driven resume (documented pattern, not built)
 

@@ -7,6 +7,12 @@ import { type AgentToolResult, type ExtensionAPI, withFileMutationQueue } from "
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList } from "./agents.js";
+import {
+	JOB_STORE_PATH,
+	JOB_STORE_VERSION,
+	type JobStatus,
+	isJobStatus,
+} from "../_shared/job-store.js";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -15,9 +21,6 @@ const MAX_NOTIFICATION_CHARS = 1200;
 const MAX_PERSISTED_JOBS = 100;
 const MAX_PERSISTED_JOB_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_PERSISTED_TEXT_CHARS = 12000;
-const JOB_STORE_VERSION = 1;
-const JOB_STORE_DIR = process.env.PI_SPAWN_SUBAGENT_DIR || path.join(os.homedir(), ".pi", "agent", "spawn-subagent");
-const JOB_STORE_PATH = path.join(JOB_STORE_DIR, "jobs.json");
 
 interface UsageStats {
   input: number;
@@ -65,7 +68,7 @@ interface SpawnSubagentDetails {
 
 type SpawnSubagentResult = AgentToolResult<SpawnSubagentDetails>;
 type OnUpdateCallback = (partial: SpawnSubagentResult) => void;
-type BackgroundJobStatus = "running" | "completed" | "failed" | "canceled";
+type BackgroundJobStatus = JobStatus;
 
 interface BackgroundSubagentJob {
   id: string;
@@ -322,10 +325,6 @@ function persistResult(result?: SpawnSubagentResult): PersistedSpawnSubagentResu
 
 function isMode(value: unknown): value is SpawnSubagentDetails["mode"] {
   return value === "single" || value === "parallel" || value === "chain";
-}
-
-function isJobStatus(value: unknown): value is BackgroundJobStatus {
-  return value === "running" || value === "completed" || value === "failed" || value === "canceled";
 }
 
 function isAgentScope(value: unknown): value is AgentScope {
