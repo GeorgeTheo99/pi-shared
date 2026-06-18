@@ -6,7 +6,7 @@ import {
   DEFAULT_MAX_LINES,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { chromium, type BrowserContext, type Page, type Response } from "playwright";
+import { chromium, type BrowserContext, type Page, type Response } from "patchright";
 import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
@@ -45,6 +45,15 @@ const config = {
   consoleLogLimit: envInt("BROWSER_MCP_CONSOLE_LOG_LIMIT", 200),
   allowPrivateHosts: envFlag("BROWSER_MCP_WEB_ALLOW_PRIVATE_HOSTS", false),
 };
+
+// Realistic browser identity used when BROWSER_MCP_USER_AGENT is unset.
+// Vanilla headless Chromium advertises "HeadlessChrome" and navigator.webdriver=true;
+// patchright fixes webdriver/CDP leaks, and this UA removes the remaining string tell.
+const DEFAULT_STEALTH_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+// Launch args that further reduce automation tells (belt-and-suspenders with patchright).
+const STEALTH_LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled"];
 
 function envFlag(name: string, defaultValue: boolean): boolean {
   const value = process.env[name];
@@ -186,10 +195,11 @@ class BrowserRuntime {
         width: this.options.viewportWidth ?? config.viewportWidth,
         height: this.options.viewportHeight ?? config.viewportHeight,
       },
+      userAgent: config.userAgent ?? DEFAULT_STEALTH_USER_AGENT,
+      args: STEALTH_LAUNCH_ARGS,
     };
     if (config.browserChannel) launchOptions.channel = config.browserChannel;
     if (config.browserExecutablePath) launchOptions.executablePath = config.browserExecutablePath;
-    if (config.userAgent) launchOptions.userAgent = config.userAgent;
 
     this.context = await chromium.launchPersistentContext(config.profileDir, launchOptions);
     this.context.setDefaultTimeout(config.defaultTimeoutMs);

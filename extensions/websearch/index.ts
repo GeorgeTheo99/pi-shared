@@ -121,6 +121,26 @@ function formatResults(
 	return lines.join("\n");
 }
 
+// Realistic, current-browser identity so fetches are not auto-flagged as bots.
+// Full UA (engine tail included) + the headers every real browser sends.
+const BROWSER_USER_AGENT =
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+const BROWSER_HEADERS: Record<string, string> = {
+	"User-Agent": BROWSER_USER_AGENT,
+	Accept:
+		"text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,text/plain;q=0.7,*/*;q=0.5",
+	"Accept-Language": "en-US,en;q=0.9",
+	"Upgrade-Insecure-Requests": "1",
+	"Sec-Fetch-Site": "none",
+	"Sec-Fetch-Mode": "navigate",
+	"Sec-Fetch-User": "?1",
+	"Sec-Fetch-Dest": "document",
+	"Sec-CH-UA": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
+	"Sec-CH-UA-Mobile": "?0",
+	"Sec-CH-UA-Platform": '"macOS"',
+};
+
 // Simple HTML → text extractor
 function htmlToText(html: string): string {
 	return html
@@ -248,12 +268,7 @@ const webFetch = defineTool({
 		const maxChars = params.max_chars ?? 20000;
 		try {
 			const resp = await fetch(params.url, {
-				headers: {
-					"User-Agent":
-						"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-					Accept:
-						"text/html,application/xhtml+xml,application/json,text/plain,*/*",
-				},
+				headers: BROWSER_HEADERS,
 				signal: AbortSignal.timeout(30_000),
 				redirect: "follow",
 			});
