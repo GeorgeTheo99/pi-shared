@@ -1,34 +1,42 @@
 # SPDX-License-Identifier: Apache-2.0
 """IndexShare-aware GLM-5.2 (``glm_moe_dsa``) model for mlx-lm v0.31.3.
 
-This is a port of ``mlx_lm/models/deepseek_v32.py`` with the minimal
-changes required for GLM-5.2's IndexShare DSA:
+Port of ``mlx_lm/models/deepseek_v32.py`` with the minimal changes
+required for GLM-5.2's IndexShare DSA:
 
 1. ``ModelArgs`` adds GLM-5.2-specific fields (``indexer_types`` and
    friends) with defaults so GLM-5.1 (no ``indexer_types``) still loads.
 2. ``Glm52Attention`` only instantiates ``Indexer`` on ``"full"`` layers
    (21 of 78); ``"shared"`` layers get ``self.indexer = None`` so the
    model defines no indexer parameters for them — matching a checkpoint
-   that ships indexer weights for the 21 full layers only.
-3. The attention forward guards (a) the indexer call and (b) the
-   ``mx.depends(cache[0].keys, (cache[1].keys, cache[1].values))`` line
-   that would otherwise receive ``None`` on shared layers (a fresh
-   ``KVCache`` has ``keys = None`` until ``update_and_fetch`` runs).
+   that ships indexer weights for full layers only.
+3. **top-k threading (IndexShare)**: a full layer whose *next* layer is
+   shared (``next_skip_topk``) returns its ``topk_indices``; shared
+   layers reuse ``prev_topk_indices`` from the preceding full layer
+   instead of recomputing. The model loop threads ``topk_indices`` →
+   ``prev_topk_indices`` between layers. Ported from
+   ``transformers.models.glm_moe_dsa.modeling_glm_moe_dsa``.
+4. The ``mx.depends(cache[0].keys, (cache[1].keys, cache[1].values))``
+   graph-size guard is skipped on shared layers (their ``cache[1]`` is
+   never populated — ``keys`` stays ``None``).
 
-Milestone 1 scope: the model LOADS strictly (no missing/unexpected
-params). On shared layers the forward falls through to *dense* attention
-(``topk_indices = None``), which is functionally wrong but lets load +
-smoke generation succeed. The sparse top-k threading
-(``skip_topk`` / ``next_skip_topk`` / ``prev_topk_indices``) is added in
-a later milestone by porting the logic from
-``transformers.models.glm_moe_dsa.modeling_glm_moe_dsa``.
+The Indexer math (rope on the first ``qk_rope_head_dim`` of
+``head_dim``, interleaved; per-head q·k → relu → weight → sum over
+heads → topk) is identical to DeepSeek V3.2's ``Indexer``, which itself
+matches the GLM-5.2 reference (``indexer_rope_interleave=True`` ==
+``traditional=True``). So the existing ``Indexer`` is reused unchanged.
+
+MTP (``num_nextn_predict_layers=1``, ``index_share_for_mtp_iteration``)
+is disabled for GLM-5.2 — the checkpoint ships no ``mtp.*`` weights, so
+MTP attachment would break strict load. MTP stays off via omlx model
+settings (``mtp_enabled=False``); no MTPModule is instantiated.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -84,8 +92,23 @@ def _is_full_indexer_layer(config: ModelArgs, layer_idx: int) -> bool:
     return types[layer_idx] == "full"
 
 
+def _next_is_shared(config: ModelArgs, layer_idx: int) -> bool:
+    """True iff the next layer is a shared (indexer-less) layer.
+
+    Mirrors ``next_skip_topk`` in the transformers reference: a full
+    layer that is followed by a shared layer must return its
+    ``topk_indices`` so the shared layer can reuse it.
+    """
+    types = getattr(config, "indexer_types", None)
+    if not types:
+        return False
+    if layer_idx + 1 >= len(types):
+        return False
+    return types[layer_idx + 1] == "shared"
+
+
 class Glm52Attention(nn.Module):
-    """DeepseekV32Attention with conditional (IndexShare) indexer."""
+    """DeepseekV32Attention with IndexShare (conditional indexer + top-k threading)."""
 
     def __init__(self, config: ModelArgs, layer_idx: int):
         super().__init__()
@@ -142,8 +165,11 @@ class Glm52Attention(nn.Module):
         # IndexShare: only "full" layers (21 of 78) carry an indexer.
         # Shared layers set self.indexer = None → no indexer params defined,
         # matching a checkpoint that ships indexer weights for full layers
-        # only.
-        if _is_full_indexer_layer(config, layer_idx):
+        # only. A full layer followed by a shared layer must hand its
+        # topk_indices to the next layer (next_skip_topk).
+        self.is_full = _is_full_indexer_layer(config, layer_idx)
+        self.next_skip_topk = _next_is_shared(config, layer_idx)
+        if self.is_full:
             self.indexer = Indexer(config)
         else:
             self.indexer = None
@@ -161,7 +187,8 @@ class Glm52Attention(nn.Module):
         x: mx.array,
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
-    ) -> mx.array:
+        prev_topk_indices: Optional[mx.array] = None,
+    ) -> Tuple[mx.array, Optional[mx.array]]:
         B, L, D = x.shape
 
         qr = self.q_a_layernorm(self.q_a_proj(x))
@@ -185,13 +212,36 @@ class Glm52Attention(nn.Module):
         else:
             cache = [None] * 2
 
-        # IndexShare: shared layers skip the indexer entirely. On full
-        # layers the indexer call also initialises cache[1] (via
-        # update_and_fetch), which the depends guard below relies on.
-        has_indexer = self.indexer is not None
-        topk_indices = (
-            self.indexer(x, qr, mask, cache=cache[1]) if has_indexer else None
-        )
+        # IndexShare top-k selection:
+        # - full layer: compute fresh topk via the indexer (also populates
+        #   cache[1] via update_and_fetch, which the depends guard below
+        #   relies on).
+        # - shared layer: reuse the preceding full layer's prev_topk_indices
+        #   (no indexer call). BUT omlx's scheduler reads ``cache[1].state``
+        #   for SSD/prefix-cache management, and a fresh KVCache has
+        #   ``keys=None`` → ``.state`` raises 'NoneType has no shape' →
+        #   the scheduler flags "cache corruption" and re-prefills forever
+        #   (no tokens ever emit). Prime slot 1 with a zero-length update so
+        #   its state is well-formed (keys.shape=(B,H,0,D)); the attention
+        #   math is unaffected (topk_indices=None → dense attention).
+        # - fallback (shared with no prev, e.g. layer 0 being shared — does
+        #   not occur for GLM-5.2 since layer 0 is full): dense attention.
+        if self.is_full:
+            topk_indices = self.indexer(x, qr, mask, cache=cache[1])
+        else:
+            if (
+                cache is not None
+                and cache[1] is not None
+                and getattr(cache[1], "keys", None) is None
+            ):
+                # Zero-length prime: B,H,0,D matching indexer key shape.
+                _b = x.shape[0]
+                cache[1].update_and_fetch(
+                    mx.zeros((_b, 1, 0, self.config.index_head_dim), dtype=x.dtype),
+                    mx.zeros((_b, 1, 0, 0), dtype=x.dtype),
+                )
+            topk_indices = prev_topk_indices
+
         if topk_indices is not None:
             if L == 1:
                 idx = topk_indices[:, :, 0, :, None]
@@ -221,9 +271,10 @@ class Glm52Attention(nn.Module):
         # Ensure the indexer cache is evaluated even if the topk_indices
         # are unused, to keep the graph from getting too large. Only
         # meaningful for full layers: shared layers have no indexer and
-        # cache[1] is never populated (keys stays None).
+        # cache[1] is primed to zero-length above (keys is a 0-len array,
+        # not None, so the depends guard is safe but unneeded).
         if (
-            has_indexer
+            self.is_full
             and cache is not None
             and cache[0] is not None
             and cache[1] is not None
@@ -253,16 +304,20 @@ class Glm52Attention(nn.Module):
             output = self.unembed_out(output)
 
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
-        return self.o_proj(output)
+        # Hand topk_indices to the next layer iff it is shared.
+        return self.o_proj(output), (
+            topk_indices if self.next_skip_topk else None
+        )
 
 
 class Glm52DecoderLayer(DeepseekV32DecoderLayer):
-    """Decoder layer that wires ``layer_idx`` into the IndexShare attention."""
+    """Decoder layer that wires ``layer_idx`` into the IndexShare attention
+    and threads ``prev_topk_indices`` through the residual block."""
 
     def __init__(self, config: ModelArgs, layer_idx: int):
         # Bypass DeepseekV32DecoderLayer.__init__ (which would build a
         # stock DeepseekV32Attention with an unconditional indexer) and
-        # construct directly. Inherits __call__ (residual block).
+        # construct directly. Inherits nothing stateful from super.
         nn.Module.__init__(self)
         self.self_attn = Glm52Attention(config, layer_idx)
         self.mlp = (
@@ -279,6 +334,20 @@ class Glm52DecoderLayer(DeepseekV32DecoderLayer):
             config.hidden_size, eps=config.rms_norm_eps
         )
 
+    def __call__(
+        self,
+        x: mx.array,
+        mask: Optional[mx.array] = None,
+        cache: Optional[Any] = None,
+        prev_topk_indices: Optional[mx.array] = None,
+    ) -> Tuple[mx.array, Optional[mx.array]]:
+        r, topk_indices = self.self_attn(
+            self.input_layernorm(x), mask, cache, prev_topk_indices
+        )
+        h = x + r
+        r = self.mlp(self.post_attention_layernorm(h))
+        return h + r, topk_indices
+
 
 class Glm52Model(DeepseekV32Model):
     """DeepseekV32Model body using IndexShare-aware decoder layers."""
@@ -286,7 +355,7 @@ class Glm52Model(DeepseekV32Model):
     def __init__(self, config: ModelArgs):
         # Bypass DeepseekV32Model.__init__ (which builds stock
         # DeepseekV32DecoderLayer layers) and construct directly so no
-        # throwaway indexers are allocated. Inherits pipeline() + __call__.
+        # throwaway indexers are allocated. Inherits pipeline().
         nn.Module.__init__(self)
         self.vocab_size = config.vocab_size
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
@@ -300,6 +369,26 @@ class Glm52Model(DeepseekV32Model):
         self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.pipeline_rank = 0
         self.pipeline_size = 1
+
+    def __call__(self, x: mx.array, cache: Optional[Any] = None) -> mx.array:
+        h = self.embed_tokens(x)
+
+        if cache is None:
+            cache = [None] * self.num_layers
+        mask = create_attention_mask(
+            h, cache[0][0] if cache[0] else None, return_array=True
+        )
+
+        # IndexShare: thread topk_indices from full layers to the shared
+        # layers that follow them. ``topk_indices`` is None except when the
+        # previous layer was a full layer followed by a shared one.
+        topk_indices = None
+        for i in range(self.num_layers):
+            h, topk_indices = self.layers[self.start_idx + i](
+                h, mask, cache[i], prev_topk_indices=topk_indices
+            )
+
+        return self.norm(h)
 
 
 class Model(DSV32Model):
