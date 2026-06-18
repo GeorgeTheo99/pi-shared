@@ -8,7 +8,7 @@ set -euo pipefail
 PI_OMLX_AGENT_DIR="${PI_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
 PI_SHARED_DIR="${PI_SHARED_DIR:-$HOME/local_code/pi-shared}"
 PI_LOCAL_EXTENSIONS_DIR="${PI_LOCAL_EXTENSIONS_DIR:-$HOME/local_code/pi-local/extensions}"
-PI_INSTALL_DIR="${PI_INSTALL_DIR:-/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent}"
+PI_INSTALL_DIR="${PI_INSTALL_DIR:-/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent}"
 
 mkdir -p "$PI_OMLX_AGENT_DIR"
 
@@ -44,7 +44,7 @@ ln -sfn "$PI_SHARED_DIR/AGENTS.md" "$PI_OMLX_AGENT_DIR/AGENTS.md"
 
 COMPACTION_JS="$PI_INSTALL_DIR/dist/core/compaction/compaction.js"
 if [[ -f "$COMPACTION_JS" ]]; then
-  python3 - "$COMPACTION_JS" <<'PY'
+  if ! python3 - "$COMPACTION_JS" <<'PY'
 from pathlib import Path
 import sys
 
@@ -82,13 +82,16 @@ if not backup.exists():
     backup.write_text(text)
 path.write_text(text.replace(old, new))
 PY
+  then
+    echo "warning: compaction zero-usage patch did not apply (Pi version may have changed); skipping" >&2
+  fi
 else
   echo "warning: Pi compaction file not found: $COMPACTION_JS" >&2
 fi
 
-OPENAI_COMPLETIONS_JS="$PI_INSTALL_DIR/node_modules/@mariozechner/pi-ai/dist/providers/openai-completions.js"
+OPENAI_COMPLETIONS_JS="$PI_INSTALL_DIR/node_modules/@earendil-works/pi-ai/dist/providers/openai-completions.js"
 if [[ -f "$OPENAI_COMPLETIONS_JS" ]]; then
-  python3 - "$OPENAI_COMPLETIONS_JS" <<'PY'
+  if ! python3 - "$OPENAI_COMPLETIONS_JS" <<'PY'
 from pathlib import Path
 import sys
 
@@ -179,126 +182,41 @@ if "function createDsmlToolMarkupFilter" not in text:
         raise SystemExit(f"Expected hasToolHistory insertion point not found in {path}")
     text = text.replace(old1, new1, 1)
 
-old2 = '''            const finishCurrentBlock = (block) => {
-                if (block) {
-                    const contentIndex = getContentIndex(block);
-                    if (contentIndex === -1) {
-                        return;
-                    }
-                    if (block.type === "text") {
-                        stream.push({
-                            type: "text_end",
-                            contentIndex,
-                            content: block.text,
-                            partial: output,
-                        });
-                    }
-                    else if (block.type === "thinking") {
-                        stream.push({
-                            type: "thinking_end",
-                            contentIndex,
-                            content: block.thinking,
-                            partial: output,
-                        });
-                    }
-                    else if (block.type === "toolCall") {
-                        block.arguments = parseStreamingJson(block.partialArgs);
-                        // Finalize in-place and strip the scratch buffers so replay only
-                        // carries parsed arguments.
-                        delete block.partialArgs;
-                        delete block.streamIndex;
-                        stream.push({
-                            type: "toolcall_end",
-                            contentIndex,
-                            toolCall: block,
-                            partial: output,
-                        });
-                    }
+old2 = '''            const ensureTextBlock = () => {
+                if (!textBlock) {
+                    textBlock = { type: "text", text: "" };
+                    blocks.push(textBlock);
+                    stream.push({ type: "text_start", contentIndex: getContentIndex(textBlock), partial: output });
                 }
+                return textBlock;
             };
 '''
-new2 = '''            const finishCurrentBlock = (block) => {
-                if (block) {
-                    const contentIndex = getContentIndex(block);
-                    if (contentIndex === -1) {
-                        return;
-                    }
-                    if (block.type === "text") {
-                        stream.push({
-                            type: "text_end",
-                            contentIndex,
-                            content: block.text,
-                            partial: output,
-                        });
-                    }
-                    else if (block.type === "thinking") {
-                        stream.push({
-                            type: "thinking_end",
-                            contentIndex,
-                            content: block.thinking,
-                            partial: output,
-                        });
-                    }
-                    else if (block.type === "toolCall") {
-                        block.arguments = parseStreamingJson(block.partialArgs);
-                        // Finalize in-place and strip the scratch buffers so replay only
-                        // carries parsed arguments.
-                        delete block.partialArgs;
-                        delete block.streamIndex;
-                        stream.push({
-                            type: "toolcall_end",
-                            contentIndex,
-                            toolCall: block,
-                            partial: output,
-                        });
-                    }
+new2 = '''            const ensureTextBlock = () => {
+                if (!textBlock) {
+                    textBlock = { type: "text", text: "" };
+                    blocks.push(textBlock);
+                    stream.push({ type: "text_start", contentIndex: getContentIndex(textBlock), partial: output });
                 }
-            };
-            const appendTextDelta = (delta) => {
-                if (!delta) {
-                    return;
-                }
-                if (!currentBlock || currentBlock.type !== "text") {
-                    finishCurrentBlock(currentBlock);
-                    currentBlock = { type: "text", text: "" };
-                    output.content.push(currentBlock);
-                    stream.push({ type: "text_start", contentIndex: currentContentIndex(), partial: output });
-                }
-                if (currentBlock.type === "text") {
-                    currentBlock.text += delta;
-                    stream.push({
-                        type: "text_delta",
-                        contentIndex: currentContentIndex(),
-                        delta,
-                        partial: output,
-                    });
-                }
+                return textBlock;
             };
             const dsmlTextFilter = createDsmlToolMarkupFilter(!!compat.stripDsmlToolMarkup);
 '''
 if "const dsmlTextFilter = createDsmlToolMarkupFilter" not in text:
     if old2 not in text:
-        raise SystemExit(f"Expected finishCurrentBlock block not found in {path}")
+        raise SystemExit(f"Expected ensureTextBlock block not found in {path}")
     text = text.replace(old2, new2, 1)
 
 old3 = '''                    if (choice.delta.content !== null &&
                         choice.delta.content !== undefined &&
                         choice.delta.content.length > 0) {
-                        if (!currentBlock || currentBlock.type !== "text") {
-                            finishCurrentBlock(currentBlock);
-                            currentBlock = { type: "text", text: "" };
-                            output.content.push(currentBlock);
-                            stream.push({ type: "text_start", contentIndex: currentContentIndex(), partial: output });
-                        }
-                        if (currentBlock.type === "text") {
-                            currentBlock.text += choice.delta.content;
-                            stream.push({
-                                type: "text_delta",
-                                contentIndex: currentContentIndex(),
-                                delta: choice.delta.content,
-                                partial: output,
-                            });
-                        }
+                        const block = ensureTextBlock();
+                        block.text += choice.delta.content;
+                        stream.push({
+                            type: "text_delta",
+                            contentIndex: getContentIndex(block),
+                            delta: choice.delta.content,
+                            partial: output,
+                        });
                     }
 '''
 new3 = '''                    let contentDelta = choice.delta.content;
@@ -306,7 +224,16 @@ new3 = '''                    let contentDelta = choice.delta.content;
                         contentDelta !== undefined &&
                         contentDelta.length > 0) {
                         contentDelta = dsmlTextFilter.filter(contentDelta);
-                        appendTextDelta(contentDelta);
+                        if (contentDelta.length > 0) {
+                            const block = ensureTextBlock();
+                            block.text += contentDelta;
+                            stream.push({
+                                type: "text_delta",
+                                contentIndex: getContentIndex(block),
+                                delta: contentDelta,
+                                partial: output,
+                            });
+                        }
                     }
 '''
 if "let contentDelta = choice.delta.content;" not in text:
@@ -314,20 +241,32 @@ if "let contentDelta = choice.delta.content;" not in text:
         raise SystemExit(f"Expected content delta block not found in {path}")
     text = text.replace(old3, new3, 1)
 
-old4 = '''                }
+old4 = '''            for (const block of blocks) {
+                finishBlock(block);
             }
-            finishCurrentBlock(currentBlock);
             if (options?.signal?.aborted) {
 '''
-new4 = '''                }
+new4 = '''            {
+                const flushDelta = dsmlTextFilter.flush();
+                if (flushDelta) {
+                    const block = ensureTextBlock();
+                    block.text += flushDelta;
+                    stream.push({
+                        type: "text_delta",
+                        contentIndex: getContentIndex(block),
+                        delta: flushDelta,
+                        partial: output,
+                    });
+                }
             }
-            appendTextDelta(dsmlTextFilter.flush());
-            finishCurrentBlock(currentBlock);
+            for (const block of blocks) {
+                finishBlock(block);
+            }
             if (options?.signal?.aborted) {
 '''
-if "appendTextDelta(dsmlTextFilter.flush());\n            finishCurrentBlock(currentBlock);" not in text:
+if "const flushDelta = dsmlTextFilter.flush();" not in text:
     if old4 not in text:
-        raise SystemExit(f"Expected final finishCurrentBlock block not found in {path}")
+        raise SystemExit(f"Expected final finalize loop not found in {path}")
     text = text.replace(old4, new4, 1)
 
 old5 = '''        sendSessionAffinityHeaders: model.compat.sendSessionAffinityHeaders ?? detected.sendSessionAffinityHeaders,
@@ -350,6 +289,9 @@ if text != original:
         backup.write_text(original)
     path.write_text(text)
 PY
+  then
+    echo "warning: openai-completions DSML filter patch did not apply (Pi version may have changed); skipping" >&2
+  fi
 else
   echo "warning: Pi OpenAI completions provider not found: $OPENAI_COMPLETIONS_JS" >&2
 fi
