@@ -7,10 +7,11 @@ Shared pi instructions and explicitly shareable pi resources.
 ## Contents
 
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
-- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), SearXNG-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
+- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), SearXNG-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
 - `knowledge/software-engineering/` — curated software engineering classics source catalog and local searchable corpus. Future state: ingest public/open texts and user-supplied lawful private copies for copyrighted books; metadata-only until then.
 - `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-local/skills`.
 - `prompts/` — shared prompt templates.
+- `workflows/` — saved JavaScript workflows for the `workflow` tool (`<name>.js` invocable as `workflow({ name })`). Shared, committed; project workflows live under `.pi/workflows/`.
 - `themes/` — shared themes.
 - `bin/pi-vanilla` — recovery launcher for a vanilla Pi session when shared/local harness resources break normal startup.
 - `bin/pi-omlx-repair` — repair/wiring script for the dedicated `~/.pi-omlx/agent` Pi profile used by local oMLX/cloud model launchers.
@@ -97,6 +98,13 @@ Current generated `pi-*` shell launchers call this automatically before writing 
   - `/panel --compare` runs multiple model families through `spawn_subagent` in parallel and asks the main session to synthesize
   - `/panel --list [search]`, `panel_models`, and `panel_select` use Pi model registries for portable runtime model discovery, including the alternate `~/.pi-omlx/agent` profile by default
   - optional model preferences/exclusions live in `~/.pi/panel-config.json` or project `.pi/panel-config.json`; trusted `modelProfileDirs` overrides are honored only from `~/.pi/panel-config.json`
+- `extensions/workflow` — trusted JS workflow runner on top of Pi subagents:
+  - `workflow` runs a JavaScript workflow body (inline `script`, saved `name`, or `scriptPath`) whose primitives are Pi subagent calls
+  - workflow globals: `agent(prompt, opts?)`, `parallel(thunks)`, `phase(title)`, `log(message)`, `args`, `cwd`
+  - shared agents only in v1 (`scout`, `planner`, `reviewer`, `worker`, `panelist`); each `agent()` call spawns an isolated `pi --mode json -p --no-session` subprocess, mirroring `spawn_subagent` single mode
+  - saved workflows: `pi-shared/workflows/<name>.js` (shared, committed) or `.pi/workflows/<name>.js` (project, requires trust); `/workflows` lists them
+  - use for repeatable, multi-phase, scriptable orchestration; use `spawn_subagent` for ordinary one-off single/parallel/chain delegation
+  - v1 scope: Pi-backed subagents only, no external backends, no resume-by-replay, no schema validation
 - `extensions/integration-bundles` — lazy enterprise tool-bundle loader driven by `master_integration_list.yaml`:
   - keeps GPT / o-series safely under OpenAI's 128-tool API limit by exposing only a router toolset by default and loading bundles (jira, slack, glean, salesforce, google-workspace, databricks-aidk, ...) on demand
   - injects an `<available_bundles>` block into the system prompt with NL `description` text so the model can self-discover when to load each bundle
