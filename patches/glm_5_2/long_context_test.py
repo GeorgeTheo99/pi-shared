@@ -8,22 +8,17 @@ tests in this dir missed). Run with oMLX STOPPED (frees 386GB):
     launchctl bootstrap gui/$(id -u) \\
         ~/Library/LaunchAgents/com.local.claude-proxy.plist
 
-KNOWN BUG (2026-06-18): GLM-5.2-mxfp4 emits gibberish (echoes prompt tokens)
-at ~5-7K+ token context. Monotonic in length, in prefill (last prompt token
-already wrong). Reproduces in DIRECT mlx_lm.generate (oMLX stopped) → bug is
-in patch/model/MLX, NOT oMLX serving.
+REGRESSION HISTORY: before 2026-06-20, GLM-5.2-mxfp4 emitted gibberish
+(echoed prompt tokens) at ~5-7K+ token context. The root cause was that the
+MLX patch inherited DeepSeekV32Args.rope_theta=10000 while GLM-5.2 stores its
+authoritative RoPE base in config.json as rope_parameters.rope_theta=8000000.
+That mismatch is harmless for tiny prompts but corrupts medium/long-context
+attention. This test should now PASS; failures indicate a regression in RoPE
+normalization, IndexShare DSA, cache restore, or the underlying MLX kernels.
 
-Ruled out:
-  - IndexShare sparse topk path (forced dense still fails)
-  - SSD/prefix cache (cache.enabled=false still fails)
-  - chunked prefill (prefill_step_size=1M true single-chunk still fails)
-  - rope_theta (vanilla 10000; same as transformers ref; within good range)
-  - oMLX serving layer (direct mlx_lm reproduces)
-
-Remaining suspects: mxfp4 quant at long context; a config field the MLX
-conversion lost; MLX kernel at GLM-5.2 MLA dims (head_dim 192, qk_nope 192,
-qk_rope 64, v 256, kv_lora 512). The patch's MLA core is line-for-line
-identical to stock mlx_lm DeepseekV32Attention (works at 128K for DS V3).
+Previously investigated suspects included IndexShare sparse top-k, SSD/prefix
+cache, chunked prefill, and oMLX serving. Keep those in mind if this regresses,
+but first verify ModelArgs.from_dict(config).rope_theta == 8000000.0.
 """
 import sys, time, random
 from omlx.patches.glm_5_2 import apply_glm_5_2_patch
@@ -58,7 +53,12 @@ def main():
                  for i in range(nl)]
         sp = f"SEED{seed}x{rand.randint(0,10**9)}\n" + "\n".join(lines) + "\nAnswer with just the number."
         msgs = [{"role": "system", "content": sp}, {"role": "user", "content": "What is 2+2?"}]
-        prompt = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+        prompt = tokenizer.apply_chat_template(
+            msgs,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
         pt = len(tokenizer.encode(prompt))
         t0 = time.time()
         out = mlx_lm.generate(model, tokenizer, prompt=prompt, max_tokens=8,
@@ -70,7 +70,7 @@ def main():
         print(f"  {lab:<5} {pt:>5}tok {time.time()-t0:5.1f}s: {out[:38]!r} {'OK' if ok else 'FAIL'}", flush=True)
 
     print(f"\n[result] {fails} failure(s) of {len(cases)}")
-    # Expect 0 failures once fixed. Currently fails at ~6k+.
+    # Expect 0 failures; nonzero indicates a long-context regression.
     sys.exit(1 if fails else 0)
 
 

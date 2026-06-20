@@ -47,8 +47,11 @@ cfg = {
     "moe_layer_freq": 1,
     "max_position_embeddings": 512,
     "rms_norm_eps": 1e-5,
+    # GLM-5.2 stores the authoritative RoPE base in `rope_parameters`,
+    # not top-level `rope_theta`; keep these intentionally different so this
+    # synthetic test catches regressions to DeepSeekV32's inherited default.
     "rope_theta": 10000.0,
-    "rope_parameters": {"rope_theta": 10000.0, "rope_type": "default"},
+    "rope_parameters": {"rope_theta": 8000000.0, "rope_type": "default"},
     "attention_bias": False,
     "topk_method": "noaux_tc",
     "scoring_func": "sigmoid",
@@ -67,6 +70,7 @@ cfg = {
 }
 
 args = ModelArgs.from_dict(cfg)
+assert args.rope_theta == 8000000.0, "rope_parameters.rope_theta was not normalized"
 model = Model(args)
 mx.eval(model.parameters())
 

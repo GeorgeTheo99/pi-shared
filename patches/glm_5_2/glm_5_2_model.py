@@ -79,6 +79,17 @@ class ModelArgs(DSV32Args):
     qk_head_dim: Optional[int] = None
     ep_size: int = 1
     mlp_layer_types: Optional[List[str]] = None
+    rope_parameters: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self):
+        # GLM-5.2 stores its RoPE base in the Transformers-style
+        # `rope_parameters` block, not the older top-level `rope_theta` field
+        # used by DeepSeekV32Args.  If we do not normalize it here, mlx-lm's
+        # inherited default (`10000`) is used instead of the checkpoint's
+        # `8000000`, which is harmless for tiny prompts but corrupts medium /
+        # long-context attention.
+        if self.rope_parameters and "rope_theta" in self.rope_parameters:
+            self.rope_theta = float(self.rope_parameters["rope_theta"])
 
 
 def _is_full_indexer_layer(config: ModelArgs, layer_idx: int) -> bool:
