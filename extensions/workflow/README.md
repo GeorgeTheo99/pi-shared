@@ -35,12 +35,47 @@ The workflow body is an **async function body** (top-level `await` and `return` 
 
 | Global | Signature | Description |
 |---|---|---|
-| `agent` | `(prompt, opts?) => Promise<string>` | Run one Pi subagent. `opts.agent` picks a shared agent (`scout`, `planner`, `reviewer`, `worker`, `panelist`; default `worker`). `opts.model` / `opts.cwd` are optional. Returns the subagent's final assistant text. Throws on failure. |
+| `agent` | `(prompt, opts?) => Promise<string>` | Run one Pi subagent. `opts.agent` picks a shared agent (`scout`, `planner`, `reviewer`, `worker`, `panelist`; default `worker`). `opts.model` / `opts.cwd` are optional. `opts.onProgress(text)` receives each streamed assistant update **while the subagent is still running**, so the orchestrator can observe in-progress findings. Returns the subagent's final assistant text. Throws on failure. |
 | `parallel` | `(thunks) => Promise<any[]>` | Run an array of zero-arg async functions concurrently. Max 8 lanes, concurrency capped at 4. Returns results in input order. |
 | `phase` | `(title) => void` | Mark a status grouping boundary (shown in progress + result). |
 | `log` | `(message) => void` | Emit a progress note (shown in progress + result). |
-| `args` | `object` | The `args` object passed to the tool (or `{}`). |
+| `cache` | `(key, producer) => Promise<T>` | Resume-by-replay primitive. When journaling is enabled (`args._journal`), a completed `key`'s result is replayed from disk instead of re-running `producer`; otherwise it degrades to `await producer()`. See [Resume-by-replay](#resume-by-replay-journaling). |
+| `args` | `object` | The `args` object passed to the tool (or `{}`). The reserved key `args._journal` enables journaling. |
 | `cwd` | `string` | The session working directory. |
+
+## Live observability & steering
+
+Each `agent(...)` call streams the subagent's `--mode json` events. Two things surface that live activity:
+
+- **TUI progress** shows a per-agent line with a `[N↑]` counter of streamed updates so a long-running subagent visibly advances rather than looking frozen. Aborting the workflow (Esc/Ctrl-C) propagates to every running subagent (SIGTERM → SIGKILL after 5s).
+- **`opts.onProgress(text)`** hands each streamed update to your workflow JS. This is the *orchestrator-visible* channel — use it to log, trip an early-exit, or feed a supervisor decision. Note: Pi's agent loop is still step-based, so the safe way to *steer* is between bounded `agent()` calls (see the `supervisor` workflow), not by injecting into a running subagent.
+
+```js
+await agent("Do the long thing", {
+  agent: "worker",
+  onProgress: (text) => log(`worker streamed ${text.length} chars`),
+});
+```
+
+## Resume-by-replay (journaling)
+
+Wrap expensive steps in `cache(key, () => agent(...))` and run with a stable `args._journal` id. Successful results are persisted to `~/.pi/workflow-journal/<id>.json`; **only successful** steps are journaled, so re-invoking with the same id replays completed steps and resumes a failed run from the first incomplete step instead of restarting from scratch.
+
+```js
+workflow({ name: "my-pipeline", args: { _journal: "nightly-2026-06-22" } })
+// first run: computes step1, step2, crashes in step3
+// re-run same id: replays step1+step2 from disk, resumes at step3
+```
+
+Inside the workflow:
+
+```js
+const recon = await cache("recon", () => agent("Map the module", { agent: "scout" }));
+const plan  = await cache("plan",  () => agent(`Plan from:\n${recon}`, { agent: "planner" }));
+const impl  = await cache("impl",  () => agent(`Implement:\n${plan}`,  { agent: "worker" }));
+```
+
+The result footer reports `journal: <id> (replayed N, computed M)`.
 
 ## Sources
 
@@ -86,6 +121,23 @@ workflow({
 })
 ```
 
+## Example: supervisor (checkpoint steering)
+
+A `worker` performs a task; a `reviewer` judges each attempt against a rubric and replies `ACCEPT` or `REVISE: <instruction>`. A `REVISE` redirects the worker's next attempt. The loop is bounded by `maxRounds` and never false-accepts a malformed verdict. This is the safe form of "orchestrator steers mid-session" — steering happens between bounded steps.
+
+```
+workflow({
+  name: "supervisor",
+  args: {
+    task: "Implement X in file Y and report the diff",
+    rubric: "Must edit the real file, run a verification command, and show the diff",
+    maxRounds: 3,
+  },
+})
+```
+
+Returns `{ rounds, accepted, finalOutput, history }` where `history` is the per-round verdict trail.
+
 ## How subagents run
 
 Each `agent(...)` call spawns an isolated `pi --mode json -p --no-session` subprocess, exactly like `spawn_subagent` single mode:
@@ -95,12 +147,13 @@ Each `agent(...)` call spawns an isolated `pi --mode json -p --no-session` subpr
 - **Profile**: subagents inherit the parent's `PI_CODING_AGENT_DIR`. No per-call `agentDir` override, so there is no separate trust-boundary surface.
 - **Aborts**: the workflow's abort signal propagates to every running subagent (SIGTERM → SIGKILL after 5s).
 
-## v1 constraints (intentionally boring)
+## Constraints
 
 - Pi-backed subagents only — **no external Codex/Claude backends**.
-- **No resume-by-replay / journaling.** A failed workflow re-runs from the start.
+- **Resume-by-replay is opt-in** via `cache()` + `args._journal`. Without a journal id, a failed workflow re-runs from the start.
 - **No structured output schema validation.** Return whatever you want; it's serialized to JSON in the result.
 - **No per-call `agentDir` / `agentScope`.**
+- **Steering is between steps, not mid-step.** There is no channel to inject messages into a running subagent; use the `supervisor` pattern (reviewer judges each bounded worker step) for course-correction.
 
 These are deliberate v1 scope cuts. Each can become a v2 feature once the reuse need is proven.
 

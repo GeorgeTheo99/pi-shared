@@ -12,6 +12,8 @@
  *   - `parallel(thunks)`     → Promise<any[]>   : runs thunks concurrently (capped)
  *   - `phase(title)`         : marks a status grouping boundary
  *   - `log(message)`         : emits a progress note
+ *   - `cache(key, fn)`       → Promise<T>       : resume-by-replay; replays a persisted
+ *                                                 result when args._journal is set
  *   - `args`                 : the `args` object passed to the tool (or {})
  *   - `cwd`                  : the session working directory
  *
@@ -23,7 +25,7 @@
  * v1 constraints (intentionally boring):
  *   - Pi-backed subagents only (spawns `pi --mode json -p --no-session`).
  *   - No external Codex/Claude backends.
- *   - No resume-by-replay / journaling.
+ *   - Resume-by-replay via opt-in cache(key, fn) + args._journal (off by default).
  *   - No structured output schema validation.
  *   - Subagents inherit the parent's Pi profile (PI_CODING_AGENT_DIR); no
  *     per-call agentDir override, so no separate trust-boundary surface.
@@ -59,6 +61,10 @@ interface AgentRun {
   error?: string;
   lastText?: string;
   exitCode?: number;
+  // Observability: count of streamed assistant updates and when the last one
+  // arrived, so a run's live activity is captured (not just final output).
+  updateCount?: number;
+  lastUpdateAt?: string;
 }
 
 interface WorkflowDetails {
@@ -71,6 +77,58 @@ interface WorkflowDetails {
   returnValue?: unknown;
   status: "running" | "completed" | "failed";
   error?: string;
+  // Resume-by-replay journaling: the journal id (run identity) and which
+  // cache() keys were replayed from disk vs freshly computed this run.
+  journalId?: string;
+  replayedKeys?: string[];
+  computedKeys?: string[];
+}
+
+/** On-disk journal entry for one cache() key. Only successful results are
+ * persisted, so a restart resumes from the first incomplete/failed step. */
+interface JournalEntry {
+  key: string;
+  value: unknown;
+  completedAt: string;
+}
+
+interface Journal {
+  id: string;
+  filePath: string;
+  entries: Map<string, JournalEntry>;
+}
+
+function journalDir(): string {
+  // Persist alongside other pi runtime state under the user home.
+  return path.join(os.homedir(), ".pi", "workflow-journal");
+}
+
+/** Load (or start) a journal for the given run id. Corrupt journals are
+ * treated as empty rather than fatal — a clean re-run is always safe. */
+function loadJournal(id: string): Journal {
+  const safeId = id.replace(/[^\w.-]+/g, "_");
+  const filePath = path.join(journalDir(), `${safeId}.json`);
+  const entries = new Map<string, JournalEntry>();
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw) as { entries?: JournalEntry[] };
+    for (const e of parsed.entries ?? []) {
+      if (e && typeof e.key === "string") entries.set(e.key, e);
+    }
+  } catch {
+    // No journal yet, or unreadable/corrupt — start fresh.
+  }
+  return { id, filePath, entries };
+}
+
+function persistJournal(journal: Journal): void {
+  try {
+    fs.mkdirSync(journalDir(), { recursive: true });
+    const payload = { id: journal.id, entries: Array.from(journal.entries.values()) };
+    fs.writeFileSync(journal.filePath, JSON.stringify(payload, null, 2), { encoding: "utf8", mode: 0o600 });
+  } catch {
+    // Journaling is best-effort; failure to persist must not fail the workflow.
+  }
 }
 
 type OnUpdateCallback = (partial: { content: { type: "text"; text: string }[]; details: WorkflowDetails }) => void;
@@ -170,6 +228,10 @@ async function runAgent(options: {
   parentModel?: string;
   signal?: AbortSignal;
   onStatus: (patch: Partial<AgentRun>) => void;
+  // Optional live-stream sink: invoked with each streamed assistant text as it
+  // arrives, so the orchestrator layer (workflow JS) can observe in-progress
+  // findings, not just the final output.
+  onStream?: (text: string) => void;
 }): Promise<AgentExecResult> {
   const agent = options.agents.find((candidate) => candidate.name === options.agentName);
   if (!agent) {
@@ -188,6 +250,7 @@ async function runAgent(options: {
   const messages: Message[] = [];
   let stderr = "";
   let wasAborted = false;
+  let updateCount = 0;
 
   try {
     if (agent.systemPrompt.trim()) {
@@ -220,12 +283,20 @@ async function runAgent(options: {
         }
         if (event.type === "message_update" && event.message) {
           const text = extractMessageText(event.message as Message);
-          if (text) options.onStatus({ lastText: text });
+          if (text) {
+            updateCount++;
+            options.onStatus({ lastText: text, updateCount, lastUpdateAt: new Date().toISOString() });
+            options.onStream?.(text);
+          }
         }
         if (event.type === "message_end" && event.message) {
           messages.push(event.message as Message);
           const text = extractMessageText(event.message as Message);
-          if (text) options.onStatus({ lastText: text });
+          if (text) {
+            updateCount++;
+            options.onStatus({ lastText: text, updateCount, lastUpdateAt: new Date().toISOString() });
+            options.onStream?.(text);
+          }
         }
       };
 
@@ -396,10 +467,11 @@ interface RuntimeOptions {
   signal?: AbortSignal;
   details: WorkflowDetails;
   onUpdate?: OnUpdateCallback;
+  journal?: Journal;
 }
 
 function buildRuntime(opts: RuntimeOptions) {
-  const { args, cwd, agents, parentModel, signal, details, onUpdate } = opts;
+  const { args, cwd, agents, parentModel, signal, details, onUpdate, journal } = opts;
   let lastEmitMs = 0;
   const emit = (force = false) => {
     const now = Date.now();
@@ -416,7 +488,10 @@ function buildRuntime(opts: RuntimeOptions) {
     emit(true);
   };
 
-  const agent = async (prompt: string, agentOpts?: { agent?: string; model?: string; cwd?: string }): Promise<string> => {
+  const agent = async (
+    prompt: string,
+    agentOpts?: { agent?: string; model?: string; cwd?: string; onProgress?: (text: string) => void },
+  ): Promise<string> => {
     if (typeof prompt !== "string") throw new Error("agent(prompt, opts?): prompt must be a string");
     const agentName = agentOpts?.agent ?? "worker";
     const run: AgentRun = { agent: agentName, task: prompt, status: "queued" };
@@ -434,6 +509,18 @@ function buildRuntime(opts: RuntimeOptions) {
         Object.assign(run, patch);
         emit();
       },
+      // Forward each streamed assistant update to the workflow's optional
+      // onProgress sink so the orchestrator can act on in-progress findings.
+      onStream:
+        typeof agentOpts?.onProgress === "function"
+          ? (text) => {
+              try {
+                agentOpts.onProgress!(text);
+              } catch {
+                // A faulty onProgress callback must never crash the subagent run.
+              }
+            }
+          : undefined,
     });
     run.exitCode = result.exitCode;
     run.output = result.output;
@@ -467,7 +554,34 @@ function buildRuntime(opts: RuntimeOptions) {
     emit(true);
   };
 
-  return { agent, parallel, phase, log, args, cwd };
+  // cache(key, producer): resume-by-replay primitive. If journaling is enabled
+  // and `key` already has a persisted successful result, the producer is NOT
+  // run and the stored value is returned (replay). Otherwise the producer runs
+  // and, on success, its result is journaled so a later restart skips it.
+  // Without a journal it degrades to a plain `await producer()` (no caching).
+  const cache = async <T,>(key: string, producer: () => Promise<T>): Promise<T> => {
+    const cacheKey = String(key);
+    if (journal) {
+      const existing = journal.entries.get(cacheKey);
+      if (existing) {
+        details.replayedKeys = details.replayedKeys ?? [];
+        if (!details.replayedKeys.includes(cacheKey)) details.replayedKeys.push(cacheKey);
+        log(`replay: "${cacheKey}" (from journal ${journal.id})`);
+        emit(true);
+        return existing.value as T;
+      }
+    }
+    const value = await producer();
+    if (journal) {
+      journal.entries.set(cacheKey, { key: cacheKey, value, completedAt: new Date().toISOString() });
+      persistJournal(journal);
+      details.computedKeys = details.computedKeys ?? [];
+      if (!details.computedKeys.includes(cacheKey)) details.computedKeys.push(cacheKey);
+    }
+    return value;
+  };
+
+  return { agent, parallel, phase, log, cache, args, cwd };
 }
 
 function cloneDetails(details: WorkflowDetails): WorkflowDetails {
@@ -487,7 +601,10 @@ function formatProgress(details: WorkflowDetails): string {
     for (const a of details.agents) {
       const icon = a.status === "completed" ? "✔" : a.status === "failed" ? "✖" : a.status === "running" ? "◼" : "◻";
       const tail = a.status === "completed" ? ` — ${compactLine(a.output ?? "", 120)}` : a.lastText ? ` — ${compactLine(a.lastText, 120)}` : ` — ${compactLine(a.task, 120)}`;
-      lines.push(`  ${icon} ${a.agent}${tail}`);
+      // Live-activity counter (streamed assistant updates) for running agents,
+      // so a long-running subagent visibly shows progress rather than a frozen line.
+      const activity = a.status === "running" && a.updateCount ? ` [${a.updateCount}↑]` : "";
+      lines.push(`  ${icon} ${a.agent}${activity}${tail}`);
     }
   }
   if (details.logs.length) {
@@ -515,6 +632,11 @@ function formatResult(details: WorkflowDetails, returnValueText: string): string
   if (details.scriptPath) parts.push(`source: ${details.source} (${details.scriptPath})`);
   else parts.push(`source: ${details.source}`);
   if (details.phases.length) parts.push(`phases: ${details.phases.join(" › ")}`);
+  if (details.journalId) {
+    const replayed = details.replayedKeys?.length ?? 0;
+    const computed = details.computedKeys?.length ?? 0;
+    parts.push(`journal: ${details.journalId} (replayed ${replayed}, computed ${computed})`);
+  }
   if (details.agents.length) {
     const succeeded = details.agents.filter((a) => a.status === "completed").length;
     parts.push(`agents: ${succeeded}/${details.agents.length} succeeded`);
@@ -533,7 +655,7 @@ function formatResult(details: WorkflowDetails, returnValueText: string): string
 }
 
 const WorkflowParams = Type.Object({
-  script: Type.Optional(Type.String({ description: "Inline trusted JS workflow body. Treated as an async function body with `agent`, `parallel`, `phase`, `log`, `args`, `cwd` in scope. Mutually exclusive with `name` and `scriptPath`." })),
+  script: Type.Optional(Type.String({ description: "Inline trusted JS workflow body. Treated as an async function body with `agent`, `parallel`, `phase`, `log`, `cache`, `args`, `cwd` in scope. Mutually exclusive with `name` and `scriptPath`." })),
   name: Type.Optional(Type.String({ description: "Name of a saved workflow. Resolved from the shared workflows dir (pi-shared/workflows/<name>.js) first, then the nearest .pi/workflows/<name>.js. Mutually exclusive with `script` and `scriptPath`." })),
   scriptPath: Type.Optional(Type.String({ description: "Explicit path to a .js workflow file (absolute or relative to cwd). Mutually exclusive with `script` and `name`." })),
   args: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Optional object passed to the workflow as the `args` global." })),
@@ -542,14 +664,15 @@ const WorkflowParams = Type.Object({
 const WORKFLOW_ROUTING = `Workflow vs spawn_subagent routing:
 - Use \`workflow\` for repeatable, scriptable, multi-phase orchestration: when the fan-out pattern is non-trivial (interleaved phases, conditional lanes, gathered results fed into later steps) or worth saving/reusing as a named workflow.
 - Use \`spawn_subagent\` for ordinary one-off single / parallel / chain delegation where a declarative task list is enough.
-- Inside a workflow, \`agent(prompt, {agent})\` runs one Pi subagent (shared agents: scout, planner, reviewer, worker, panelist; default worker) and returns its final text. \`parallel(thunks)\` runs lanes concurrently. \`phase(title)\` and \`log(msg)\` annotate progress.
+- Inside a workflow, \`agent(prompt, {agent, onProgress})\` runs one Pi subagent (shared agents: scout, planner, reviewer, worker, panelist; default worker) and returns its final text; pass \`onProgress(text)\` to observe its streamed output mid-run. \`parallel(thunks)\` runs lanes concurrently. \`phase(title)\` and \`log(msg)\` annotate progress. \`cache(key, fn)\` enables resume-by-replay when \`args._journal\` is set.
 - Keep workflows small and focused. Prefer saving repeatable workflows under pi-shared/workflows/<name>.js (shared) or .pi/workflows/<name>.js (project) and invoking them by \`name\`.`;
 
 const workflowTool = defineTool({
   name: "workflow",
   label: "Workflow",
   description: [
-    "Run a trusted JavaScript workflow whose primitives are Pi subagent calls. The workflow body is an async function with globals `agent(prompt, opts?)`, `parallel(thunks)`, `phase(title)`, `log(message)`, `args`, and `cwd` in scope.",
+    "Run a trusted JavaScript workflow whose primitives are Pi subagent calls. The workflow body is an async function with globals `agent(prompt, opts?)`, `parallel(thunks)`, `phase(title)`, `log(message)`, `cache(key, producer)`, `args`, and `cwd` in scope.",
+    "Pass args._journal=<run id> to enable resume-by-replay: cache(key, fn) results are persisted, and re-invoking with the same _journal id replays completed steps and resumes a failed run from the first incomplete step.",
     "Provide exactly one source: `script` (inline JS), `name` (saved workflow), or `scriptPath` (workflow file). Optional `args` object is passed through to the workflow.",
     "Use for repeatable, multi-phase, scriptable orchestration on top of existing Pi subagents. For ordinary one-off single/parallel/chain delegation, prefer spawn_subagent.",
   ].join(" "),
@@ -621,11 +744,23 @@ const workflowTool = defineTool({
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...args: string[]) => (...args: unknown[]) => Promise<unknown>;
     let workflowFn: (...args: unknown[]) => Promise<unknown>;
     try {
-      workflowFn = new AsyncFunction("agent", "parallel", "phase", "log", "args", "cwd", source.code);
+      workflowFn = new AsyncFunction("agent", "parallel", "phase", "log", "cache", "args", "cwd", source.code);
     } catch (err: unknown) {
       details.status = "failed";
       details.error = `Failed to compile workflow: ${err instanceof Error ? err.message : String(err)}`;
       return { content: [{ type: "text", text: `Error: ${details.error}` }], details, isError: true };
+    }
+
+    // Resume-by-replay: enabled when the caller passes args._journal (a stable
+    // run id). Completed cache() keys from a prior run are replayed; a failed
+    // run can be re-invoked with the same id to resume from the first
+    // incomplete step instead of restarting from scratch.
+    const journalId = typeof args._journal === "string" && args._journal.trim() ? args._journal.trim() : undefined;
+    const journal = journalId ? loadJournal(journalId) : undefined;
+    if (journal) {
+      details.journalId = journal.id;
+      details.replayedKeys = [];
+      details.computedKeys = [];
     }
 
     const runtime = buildRuntime({
@@ -636,11 +771,20 @@ const workflowTool = defineTool({
       signal,
       details,
       onUpdate: onUpdateCb,
+      journal,
     });
 
     let returnValue: unknown;
     try {
-      returnValue = await workflowFn(runtime.agent, runtime.parallel, runtime.phase, runtime.log, runtime.args, runtime.cwd);
+      returnValue = await workflowFn(
+        runtime.agent,
+        runtime.parallel,
+        runtime.phase,
+        runtime.log,
+        runtime.cache,
+        runtime.args,
+        runtime.cwd,
+      );
       details.returnValue = returnValue;
       details.status = "completed";
     } catch (err: unknown) {

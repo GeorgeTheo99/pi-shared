@@ -18,3 +18,4 @@ List available workflows with the `/workflows` command.
 ## Included
 
 - `research-fanout` — fan out N independent read-only questions to `scout` subagents in parallel, then have a `planner` synthesize them into an implementation plan.
+- `supervisor` — bounded worker↔reviewer steering loop: a `worker` attempts the task, a `reviewer` judges it against a rubric and replies `ACCEPT` or `REVISE: <instruction>`, and each `REVISE` redirects the worker's next attempt (capped by `maxRounds`). The safe form of mid-session steering — course-correction between bounded steps.
