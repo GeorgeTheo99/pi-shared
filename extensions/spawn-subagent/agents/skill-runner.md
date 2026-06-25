@@ -1,6 +1,6 @@
 ---
 name: skill-runner
-description: Generic subagent that executes a named skill end-to-end in an isolated session. Use when you want to run a specific skill (e.g. uco-updates, asq-submission, file-expenses, gmail, genie-rooms, databricks-sizing) without polluting the main agent's context. Pass the skill name and any skill-specific parameters in the task.
+description: Generic subagent that executes a named skill end-to-end in an isolated session. Use when you want to run a specific skill (e.g. uco-updates, get-help-asq, file-expenses, gmail, genie-rooms, databricks-sizing) without polluting the main agent's context. Pass the skill name and any skill-specific parameters in the task.
 tools: read, write, edit, bash, grep, find, ls
 ---
 
