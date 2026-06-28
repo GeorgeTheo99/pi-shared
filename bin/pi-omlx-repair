@@ -296,62 +296,9 @@ else
   echo "warning: Pi OpenAI completions provider not found: $OPENAI_COMPLETIONS_JS" >&2
 fi
 
-# --- GLM-5.2 IndexShare patch re-apply (pi-shared/patches/glm_5_2) ----------
-# omlx is a uv tool: `uv tool install --force omlx` wipes site-packages,
-# so this locally-maintained patch (no upstream PR) must be re-copied into
-# the venv and its dispatch branch re-injected into model_loading.py after
-# every omlx reinstall. Idempotent. Source of truth: pi-shared/patches/glm_5_2.
-OMLX_BIN="${OMLX_BIN:-$HOME/.local/share/uv/tools/omlx/bin/python}"
-if [[ -x "$OMLX_BIN" ]]; then
-  OMLX_PKG_DIR="$("$OMLX_BIN" -c 'import omlx, os; print(os.path.dirname(omlx.__file__))')" || {
-    echo "warning: could not locate omlx package dir; GLM-5.2 patch not re-applied" >&2
-    OMLX_PKG_DIR=""
-  }
-  if [[ -n "$OMLX_PKG_DIR" ]]; then
-    GLM52_SRC="$PI_SHARED_DIR/patches/glm_5_2"
-    GLM52_DST="$OMLX_PKG_DIR/patches/glm_5_2"
-    if [[ -d "$GLM52_SRC" ]]; then
-      mkdir -p "$GLM52_DST"
-      cp "$GLM52_SRC/__init__.py" "$GLM52_DST/__init__.py"
-      cp "$GLM52_SRC/glm_5_2_model.py" "$GLM52_DST/glm_5_2_model.py"
-      rm -rf "$GLM52_DST/__pycache__"
-      python3 - "$OMLX_PKG_DIR/utils/model_loading.py" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text()
-MARK = "from ..patches.glm_5_2 import apply_glm_5_2_patch"
-if MARK in text:
-    sys.exit(0)  # already injected
-anchor = 'logger.info("DeepSeek V4 pre-load patch applied for %s", model_name)\n'
-if anchor not in text:
-    sys.exit(
-        f"DeepSeek V4 dispatch anchor not found in {path}; "
-        f"omlx version may have changed — GLM-5.2 dispatch not injected"
-    )
-block = (
-    '\n'
-    '    # >>> glm_5_2 patch (pi-shared pi-omlx-repair) >>>\n'
-    '    if model_type == "glm_moe_dsa" and "indexer_types" in config:\n'
-    '        from ..patches.glm_5_2 import apply_glm_5_2_patch\n'
-    '\n'
-    '        if apply_glm_5_2_patch():\n'
-    '            logger.info("GLM-5.2 IndexShare pre-load patch applied for %s", model_name)\n'
-    '    # <<< glm_5_2 patch <<<\n'
-)
-backup = path.with_suffix(path.suffix + ".pre-glm52.bak")
-if not backup.exists():
-    backup.write_text(text)
-path.write_text(text.replace(anchor, anchor + block, 1))
-PY
-      printf 'Re-applied GLM-5.2 IndexShare patch into %s\n' "$GLM52_DST"
-    else
-      echo "warning: GLM-5.2 patch source not found at $GLM52_SRC; skipping" >&2
-    fi
-  fi
-else
-  echo "warning: omlx venv python not found at $OMLX_BIN; GLM-5.2 patch not re-applied" >&2
-fi
+# GLM-5.2 support now ships upstream in oMLX as the `omlx.patches.glm_moe_dsa`
+# framework (with optional bundled native kernels). Do not re-copy the retired
+# pi-shared `patches/glm_5_2` monkey patch here; uv-tool reinstalls should use
+# upstream oMLX's model-loading dispatch unchanged.
 
 printf 'Repaired oMLX Pi profile at %s\n' "$PI_OMLX_AGENT_DIR"
