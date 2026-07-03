@@ -1,6 +1,6 @@
 # Deep Research
 
-Shared pi extension for local/private SearXNG-backed research.
+Shared Pi extension for brokered multi-source research through the local-search MCP broker.
 
 ## Command
 
@@ -27,35 +27,38 @@ Shared pi extension for local/private SearXNG-backed research.
 --no-synthesize
 ```
 
-## SearXNG configuration
+## MCP broker configuration
 
-No public SearXNG instance is used implicitly. Resolution order:
+Direct SearXNG is not used by this client. The local-search MCP broker is the required entry point and owns backend strategy, including local/private SearXNG and provider fallback.
 
-1. `SEARXNG_BASE_URL`
-2. `SEARXNG_URL`
-3. `PI_SEARXNG_BASE_URL`
-4. `PI_RESEARCH_SEARXNG_URL`
-5. `~/.pi/research/config.json`
-6. local-only defaults if reachable:
-   - `http://127.0.0.1:8888`
-   - `http://localhost:8888`
+Resolution order:
+
+1. `PI_WEBSEARCH_MCP_URL`
+2. `SEARCH_MCP_URL`
+3. `WEBSEARCH_MCP_URL`
+4. `~/.pi/research/config.json`
+5. local-only defaults if reachable:
+   - `http://127.0.0.1:8889/mcp`
+   - `http://localhost:8889/mcp`
 
 Config file example:
 
 ```json
 {
-  "searxngBaseUrl": "http://127.0.0.1:8888"
+  "websearchMcpUrl": "http://127.0.0.1:8889/mcp"
 }
 ```
 
+`mcpUrl` is also accepted for compatibility with other local-search clients.
+
 ## Output
 
-The extension gathers sources, fetches excerpts, saves a bundle under `~/.pi/research/`, then prompts pi to synthesize a cited answer. Bundles include:
+The extension gathers sources, fetches excerpts through the broker, saves a bundle under `~/.pi/research/`, then prompts Pi to synthesize a cited answer. Bundles include:
 
 - `sources.json`
 - `excerpts.md`
 - `prompt.md`
-- `report.md` when pi has file tools and follows the generated instruction
+- `report.md` when Pi has file tools and follows the generated instruction
 
 ## Examples
 

@@ -7,7 +7,7 @@ Shared pi instructions and explicitly shareable pi resources.
 ## Contents
 
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
-- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), SearXNG-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
+- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), local-search MCP-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
 - `knowledge/software-engineering/` — curated software engineering classics source catalog and local searchable corpus. Future state: ingest public/open texts and user-supplied lawful private copies for copyrighted books; metadata-only until then.
 - `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-local/skills`.
 - `prompts/` — shared prompt templates.
@@ -74,10 +74,10 @@ Current generated `pi-*` shell launchers call this automatically before writing 
   - injects active memories into the prompt as untrusted project context
   - provides `memory_read` and `memory_write` tools plus `/memory [active|all|review|path|help]`
   - global memory is intentionally not implemented; store only durable project-specific facts and never secrets
-- `extensions/websearch` — local/private SearXNG-backed web tools:
-  - `web_search` searches SearXNG via `/search?format=json`
-  - `web_fetch` fetches a URL directly and returns extracted text
-  - SearXNG is not bundled; each machine must run or configure its own SearXNG endpoint. See `extensions/websearch/README.md`.
+- `extensions/websearch` — local-search MCP-backed web tools:
+  - `web_search` calls the MCP broker tool `web_search(query, num_results)`
+  - `web_fetch` calls the MCP broker tool `web_fetch(url, max_chars)`
+  - the broker is the stable entry point and owns local/private SearXNG plus fallback behavior; Pi does not bypass it with direct SearXNG fallback. See `extensions/websearch/README.md`.
 - `extensions/goal` — durable `/goal` loop for long-running work:
   - `/goal <objective> [--max-turns N]` starts a user-requested goal
   - `/goal status`, `/goal pause`, `/goal resume`, `/goal clear` control it
@@ -216,7 +216,7 @@ Project-local setups can instead use `./pi-shared` from `~/local_code/.pi/settin
 2. Point that machine's Pi `AGENTS.md` at this repo.
 3. Ensure project settings include `./pi-shared` as a package.
 4. Install package dependencies once.
-5. For `web_search`, run/configure SearXNG on that machine. Recommended endpoint: `http://127.0.0.1:8888`; JSON output must be enabled. Override with `SEARXNG_BASE_URL`, `SEARXNG_URL`, `PI_SEARXNG_BASE_URL`, `PI_RESEARCH_SEARXNG_URL`, or `~/.pi/research/config.json`.
+5. For `web_search` / `deep_research`, run/configure the local-search MCP broker on that machine. Recommended endpoint: `http://127.0.0.1:8889/mcp`; the broker owns local/private SearXNG and provider fallback. Override with `PI_WEBSEARCH_MCP_URL`, `SEARCH_MCP_URL`, `WEBSEARCH_MCP_URL`, or `~/.pi/research/config.json`.
 6. For `app_*`, set `BROWSER_MCP_APP_BASE_URL` when the target app is not `http://127.0.0.1:8100`; optionally add `BROWSER_MCP_APP_ALLOWED_HOSTS` for additional private hosts.
 7. Install the optional `pi-vanilla` recovery launcher if desired.
 8. Run `~/local_code/pi-shared/bin/pi-omlx-repair` on machines that use generated `pi-*` oMLX/cloud launchers.
@@ -243,19 +243,22 @@ ln -sfn ~/local_code/pi-shared/bin/pi-vanilla ~/.local/bin/pi-vanilla
 # Ensure ~/.local/bin is in PATH, then verify:
 pi-vanilla --list-models gpt-5.5
 
-# Optional web_search endpoint config if SearXNG is not on 127.0.0.1:8888
+# Optional web_search / deep_research MCP endpoint config if not on 127.0.0.1:8889/mcp
 mkdir -p ~/.pi/research
 cat > ~/.pi/research/config.json <<'JSON'
 {
-  "searxngBaseUrl": "http://127.0.0.1:8888"
+  "websearchMcpUrl": "http://127.0.0.1:8889/mcp"
 }
 JSON
 
 # Optional app_* target config if the app is not on 127.0.0.1:8100
 export BROWSER_MCP_APP_BASE_URL='http://127.0.0.1:8100'
 
-# Verify SearXNG JSON API
-curl -fsS 'http://127.0.0.1:8888/search?q=pi%20searxng%20health%20check&format=json' | python3 -m json.tool >/dev/null
+# Verify local-search MCP broker
+curl -fsS http://127.0.0.1:8889/health | python3 -m json.tool
+curl -fsS -H 'Accept: application/json' -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":"check","method":"tools/call","params":{"name":"web_search","arguments":{"query":"pi websearch health check","num_results":3}}}' \
+  http://127.0.0.1:8889/mcp | python3 -m json.tool >/dev/null
 ```
 
 Then start Pi from `~/local_code` and run:

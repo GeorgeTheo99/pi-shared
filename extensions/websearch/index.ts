@@ -1,19 +1,13 @@
 /**
- * Web Search & Fetch Tools — native pi wrappers around a local/private SearXNG JSON API.
+ * Web Search & Fetch Tools — native Pi wrappers around the local-search MCP broker.
  *
- * SearXNG is configured per machine; this shared extension discovers the endpoint
- * from environment variables, ~/.pi/research/config.json, or localhost defaults.
+ * The MCP broker is the stable entry point for product/Pi search. It owns the
+ * backend strategy (local/private SearXNG first, Tavily fallback when configured)
+ * so clients do not bypass broker-level reliability, policy, and observability.
  */
 
 import { Type } from "@mariozechner/pi-ai";
-import {
-	defineTool,
-	type ExtensionAPI,
-	truncateHead,
-	formatSize,
-	DEFAULT_MAX_BYTES,
-	DEFAULT_MAX_LINES,
-} from "@mariozechner/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +17,7 @@ import { join } from "node:path";
 // ---------------------------------------------------------------------------
 
 const CONFIG_PATH = join(homedir(), ".pi", "research", "config.json");
-const DEFAULT_LOCAL_SEARXNG = ["http://127.0.0.1:8888", "http://localhost:8888"];
+const DEFAULT_LOCAL_MCP = ["http://127.0.0.1:8889/mcp", "http://localhost:8889/mcp"];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,130 +32,161 @@ interface SearchResult {
 	engine: string | null;
 }
 
-function parseDomain(url: string): string {
-	try {
-		return new URL(url).hostname;
-	} catch {
-		return "";
-	}
+interface McpToolCallResult {
+	endpointUrl?: string;
+	checked: string[];
+	text?: string;
+	result?: unknown;
+	error?: string;
+}
+
+interface McpSearchPayload {
+	query?: string;
+	results?: SearchResult[];
+	suggestions?: string[];
+	text?: string;
+	error?: string;
 }
 
 function normalizeBaseUrl(url: string): string {
 	return url.replace(/\/+$/, "");
 }
 
-function readConfiguredBaseUrls(): string[] {
+function readSearchConfig(): Record<string, unknown> {
+	if (!existsSync(CONFIG_PATH)) return {};
+	try {
+		return JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Record<string, unknown>;
+	} catch {
+		// Ignore malformed config; the tool error reports the checked endpoints.
+		return {};
+	}
+}
+
+function readConfiguredMcpUrls(): string[] {
 	const envValues = [
-		process.env.SEARXNG_BASE_URL,
-		process.env.SEARXNG_URL,
-		process.env.PI_SEARXNG_BASE_URL,
-		process.env.PI_RESEARCH_SEARXNG_URL,
+		process.env.PI_WEBSEARCH_MCP_URL,
+		process.env.SEARCH_MCP_URL,
+		process.env.WEBSEARCH_MCP_URL,
 	].filter(Boolean) as string[];
 
-	const configValues: string[] = [];
-	if (existsSync(CONFIG_PATH)) {
-		try {
-			const config = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as {
-				searxngBaseUrl?: string;
-				searxngUrl?: string;
-			};
-			if (config.searxngBaseUrl) configValues.push(config.searxngBaseUrl);
-			if (config.searxngUrl) configValues.push(config.searxngUrl);
-		} catch {
-			// Ignore malformed config; the search error reports the checked endpoints.
-		}
-	}
+	const config = readSearchConfig();
+	const configValues = [config.websearchMcpUrl, config.mcpUrl].filter(
+		(value): value is string => typeof value === "string" && value.length > 0,
+	);
 
-	return [...new Set([...envValues, ...configValues, ...DEFAULT_LOCAL_SEARXNG].map(normalizeBaseUrl))];
+	return [...new Set([...envValues, ...configValues, ...DEFAULT_LOCAL_MCP].map(normalizeBaseUrl))];
 }
 
-async function searxngRequest(
-	path: string,
-	params: Record<string, string>,
-	timeout = 15_000,
-): Promise<{ baseUrl?: string; checked: string[]; data?: Record<string, unknown> }> {
-	const qs = new URLSearchParams(params).toString();
-	const checked: string[] = [];
+function readMcpApiKey(): string | undefined {
+	return [
+		process.env.PI_WEBSEARCH_MCP_API_KEY,
+		process.env.SEARCH_MCP_API_KEY,
+		process.env.TAVILY_API_KEY,
+	]
+		.find((value) => typeof value === "string" && value.trim().length > 0)
+		?.trim();
+}
 
-	for (const baseUrl of readConfiguredBaseUrls()) {
-		checked.push(baseUrl);
+function mcpResultText(result: unknown): string | undefined {
+	if (result && typeof result === "object") {
+		const content = (result as { content?: unknown }).content;
+		if (Array.isArray(content)) {
+			const parts = content
+				.map((item) =>
+					item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
+						? (item as { text: string }).text
+						: undefined,
+				)
+				.filter((part): part is string => Boolean(part));
+			if (parts.length) return parts.join("\n");
+		}
+
+		const structured = (result as { structuredContent?: unknown }).structuredContent;
+		if (structured && typeof structured === "object") return JSON.stringify(structured);
+	}
+	return result === undefined ? undefined : JSON.stringify(result);
+}
+
+async function mcpToolCall(
+	toolName: string,
+	args: Record<string, unknown>,
+	timeout = 20_000,
+): Promise<McpToolCallResult> {
+	const checked: string[] = [];
+	const apiKey = readMcpApiKey();
+	const headers: Record<string, string> = {
+		Accept: "application/json",
+		"Content-Type": "application/json",
+	};
+	if (apiKey) {
+		headers.Authorization = `Bearer ${apiKey}`;
+		headers["X-Tavily-Key"] = apiKey;
+	}
+
+	const payload = {
+		jsonrpc: "2.0",
+		id: "pi-websearch",
+		method: "tools/call",
+		params: { name: toolName, arguments: args },
+	};
+
+	let lastError: string | undefined;
+	for (const endpointUrl of readConfiguredMcpUrls()) {
+		checked.push(endpointUrl);
 		try {
-			const resp = await fetch(`${baseUrl}${path}?${qs}`, {
-				headers: { Accept: "application/json" },
+			const resp = await fetch(endpointUrl, {
+				method: "POST",
+				headers,
+				body: JSON.stringify(payload),
 				signal: AbortSignal.timeout(timeout),
 			});
-			if (!resp.ok) continue;
-			return { baseUrl, checked, data: (await resp.json()) as Record<string, unknown> };
-		} catch {
-			// Try the next configured SearXNG endpoint.
+			if (!resp.ok) {
+				lastError = `HTTP ${resp.status} ${resp.statusText}`;
+				continue;
+			}
+
+			const data = (await resp.json()) as { result?: unknown; error?: unknown };
+			if (data.error !== undefined) {
+				lastError = typeof data.error === "string" ? data.error : JSON.stringify(data.error);
+				continue;
+			}
+			if (!("result" in data)) {
+				lastError = "Malformed MCP response: missing result";
+				continue;
+			}
+
+			const text = mcpResultText(data.result);
+			if (!text) {
+				lastError = "Malformed MCP response: empty result content";
+				continue;
+			}
+			return { endpointUrl, checked, result: data.result, text };
+		} catch (err) {
+			lastError = err instanceof Error ? err.message : String(err);
 		}
 	}
 
-	return { checked };
+	return { checked, error: lastError ?? "MCP broker unavailable" };
 }
 
-function formatResults(
-	query: string,
-	results: SearchResult[],
-	suggestions: string[],
-): string {
-	if (!results.length) {
-		let msg = `No results found for: ${query}`;
-		if (suggestions.length) msg += `\nRelated: ${suggestions.join(", ")}`;
-		return msg;
+function parseMcpSearchPayload(text: string): McpSearchPayload | undefined {
+	try {
+		const parsed = JSON.parse(text) as McpSearchPayload;
+		return parsed && typeof parsed === "object" ? parsed : undefined;
+	} catch {
+		return undefined;
 	}
-	const lines: string[] = [`## Search: ${query}\n`];
-	for (const r of results) {
-		lines.push(`${r.rank}. **${r.title}** — ${r.domain}`);
-		if (r.snippet) lines.push(`   ${r.snippet}`);
-		lines.push(`   ${r.url}`);
-		lines.push("");
-	}
-	if (suggestions.length) lines.push(`Related: ${suggestions.join(", ")}`);
-	return lines.join("\n");
 }
 
-// Realistic, current-browser identity so fetches are not auto-flagged as bots.
-// Full UA (engine tail included) + the headers every real browser sends.
-const BROWSER_USER_AGENT =
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-
-const BROWSER_HEADERS: Record<string, string> = {
-	"User-Agent": BROWSER_USER_AGENT,
-	Accept:
-		"text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,text/plain;q=0.7,*/*;q=0.5",
-	"Accept-Language": "en-US,en;q=0.9",
-	"Upgrade-Insecure-Requests": "1",
-	"Sec-Fetch-Site": "none",
-	"Sec-Fetch-Mode": "navigate",
-	"Sec-Fetch-User": "?1",
-	"Sec-Fetch-Dest": "document",
-	"Sec-CH-UA": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
-	"Sec-CH-UA-Mobile": "?0",
-	"Sec-CH-UA-Platform": '"macOS"',
-};
-
-// Simple HTML → text extractor
-function htmlToText(html: string): string {
-	return html
-		.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-		.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-		.replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, "")
-		.replace(/<br\s*\/?>/gi, "\n")
-		.replace(/<\/p>/gi, "\n")
-		.replace(/<\/div>/gi, "\n")
-		.replace(/<\/li>/gi, "\n")
-		.replace(/<h[1-6][^>]*>/gi, "\n## ")
-		.replace(/<\/h[1-6]>/gi, "\n")
-		.replace(/<[^>]+>/g, "")
-		.replace(/&amp;/g, "&")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/&nbsp;/g, " ")
-		.replace(/\n{3,}/g, "\n\n")
-		.trim();
+function mcpErrorText(action: "Search" | "Fetch", result: McpToolCallResult): string {
+	return [
+		`${action} error: Could not reach the local-search MCP broker.`,
+		`Checked: ${result.checked.join(", ")}`,
+		result.error ? `MCP error: ${result.error}` : undefined,
+		`Configure PI_WEBSEARCH_MCP_URL, SEARCH_MCP_URL, WEBSEARCH_MCP_URL, websearchMcpUrl/mcpUrl in ${CONFIG_PATH}, or start the local-search MCP service.`,
+	]
+		.filter(Boolean)
+		.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -172,8 +197,8 @@ const webSearch = defineTool({
 	name: "web_search",
 	label: "Web Search",
 	description:
-		"Search the web via local SearXNG. Use this for ANY question about current events, news, facts, people, places, or any topic that requires up-to-date information. Returns ranked results with titles, URLs, and snippets.",
-	promptSnippet: "web_search for quick web lookups via SearXNG",
+		"Search the web via the local-search MCP broker, which uses local/private SearXNG with broker-managed fallback. Use this for ANY question about current events, news, facts, people, places, or any topic that requires up-to-date information. Returns ranked results with titles, URLs, and snippets.",
+	promptSnippet: "web_search for quick web lookups via the local-search MCP broker",
 	promptGuidelines: [
 		"Use web_search for quick facts, current information, or single-page lookups. Use web_fetch to read a specific URL found via web_search.",
 		"Do NOT use web_search for deep multi-source research — use deep_research instead.",
@@ -189,57 +214,38 @@ const webSearch = defineTool({
 
 	async execute(_id, params, _signal, _onUpdate, _ctx) {
 		const numResults = params.num_results ?? 8;
-		const search = await searxngRequest("/search", {
-			q: params.query,
-			format: "json",
-			categories: "general",
+		const mcp = await mcpToolCall("web_search", {
+			query: params.query,
+			num_results: numResults,
 		});
 
-		if (!search.data) {
+		if (!mcp.text) {
 			return {
-				content: [
-					{
-						type: "text" as const,
-						text: [
-							"Search error: Could not reach a local/private SearXNG JSON API.",
-							`Checked: ${search.checked.join(", ")}`,
-							`Configure SEARXNG_BASE_URL, SEARXNG_URL, PI_SEARXNG_BASE_URL, PI_RESEARCH_SEARXNG_URL, or ${CONFIG_PATH}.`,
-						].join("\n"),
-					},
-				],
-				details: { query: params.query, error: true, checked: search.checked },
+				content: [{ type: "text" as const, text: mcpErrorText("Search", mcp) }],
+				details: {
+					provider: "mcp",
+					query: params.query,
+					error: true,
+					checked: mcp.checked,
+					mcpError: mcp.error,
+				},
 			};
 		}
 
-		const data = search.data;
-		const raw = (data.results as Record<string, unknown>[]) ?? [];
-		const suggestions = ((data.suggestions as string[]) ?? []).slice(0, 5);
-		const unresponsive =
-			(data.unresponsive_engines as Record<string, unknown>[]) ?? [];
-
-		const results: SearchResult[] = raw.slice(0, numResults).map((r, i) => ({
-			rank: i + 1,
-			title: (r.title as string) ?? "Untitled",
-			url: (r.url as string) ?? "",
-			domain: parseDomain((r.url as string) ?? ""),
-			snippet: ((r.content as string) ?? "").trim(),
-			engine: typeof r.engine === "string" ? r.engine : null,
-		}));
-
-		let text = formatResults(params.query, results, suggestions);
-
-		if (!results.length && unresponsive.length) {
-			const names = unresponsive.map((e) =>
-				typeof e === "object" && e !== null && "name" in e
-					? String(e.name)
-					: String(e),
-			);
-			text += ` (unresponsive engines: ${names.join(", ")})`;
-		}
-
+		const payload = parseMcpSearchPayload(mcp.text);
+		const text = payload?.text ?? mcp.text;
 		return {
 			content: [{ type: "text" as const, text }],
-			details: { query: params.query, baseUrl: search.baseUrl, results, suggestions },
+			details: {
+				provider: "mcp",
+				query: params.query,
+				endpointUrl: mcp.endpointUrl,
+				checked: mcp.checked,
+				results: payload?.results,
+				suggestions: payload?.suggestions,
+				error: Boolean(payload?.error),
+				mcpError: payload?.error,
+			},
 		};
 	},
 });
@@ -248,8 +254,8 @@ const webFetch = defineTool({
 	name: "web_fetch",
 	label: "Web Fetch",
 	description:
-		"Fetch a URL and return its text content. Use this to read the full content of a web page found via web_search, or any URL the user provides.",
-	promptSnippet: "web_fetch to retrieve full page content from a URL",
+		"Fetch a URL via the local-search MCP broker and return its text content. Use this to read the full content of a web page found via web_search, or any URL the user provides.",
+	promptSnippet: "web_fetch to retrieve full page content through the local-search MCP broker",
 	promptGuidelines: [
 		"Use web_fetch to read a specific URL's content — typically a URL found via web_search.",
 		"Do NOT use web_fetch for research questions — use web_search or deep_research instead.",
@@ -266,63 +272,36 @@ const webFetch = defineTool({
 
 	async execute(_id, params, _signal, _onUpdate, _ctx) {
 		const maxChars = params.max_chars ?? 20000;
-		try {
-			const resp = await fetch(params.url, {
-				headers: BROWSER_HEADERS,
-				signal: AbortSignal.timeout(30_000),
-				redirect: "follow",
-			});
-			if (!resp.ok) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Fetch error: HTTP ${resp.status} ${resp.statusText}`,
-						},
-					],
-					details: { url: params.url, error: true, status: resp.status },
-				};
-			}
-			const contentType = resp.headers.get("content-type") ?? "";
-			const body = await resp.text();
+		const mcp = await mcpToolCall(
+			"web_fetch",
+			{ url: params.url, max_chars: maxChars },
+			30_000,
+		);
 
-			let text: string;
-			if (contentType.includes("html")) {
-				text = htmlToText(body);
-			} else {
-				text = body;
-			}
-
-			// Truncate if too large for LLM context
-			const truncation = truncateHead(text, {
-				maxBytes: DEFAULT_MAX_BYTES,
-				maxLines: DEFAULT_MAX_LINES,
-			});
-
-			let result = truncation.content;
-			if (truncation.truncated) {
-				result += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)})]`;
-			}
-
+		if (!mcp.text) {
 			return {
-				content: [{ type: "text" as const, text: result }],
+				content: [{ type: "text" as const, text: mcpErrorText("Fetch", mcp) }],
 				details: {
+					provider: "mcp",
 					url: params.url,
-					contentType,
-					truncated: truncation.truncated,
+					error: true,
+					checked: mcp.checked,
+					mcpError: mcp.error,
 				},
 			};
-		} catch (err) {
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Fetch error: ${err instanceof Error ? err.message : String(err)}`,
-					},
-				],
-				details: { url: params.url, error: true },
-			};
 		}
+
+		const isError = mcp.text.startsWith("Fetch error:");
+		return {
+			content: [{ type: "text" as const, text: mcp.text }],
+			details: {
+				provider: "mcp",
+				url: params.url,
+				endpointUrl: mcp.endpointUrl,
+				checked: mcp.checked,
+				error: isError,
+			},
+		};
 	},
 });
 

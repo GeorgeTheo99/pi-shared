@@ -21,6 +21,8 @@ const MAX_NOTIFICATION_CHARS = 1200;
 const MAX_PERSISTED_JOBS = 100;
 const MAX_PERSISTED_JOB_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_PERSISTED_TEXT_CHARS = 12000;
+const OPENAI_CODEX_PROVIDER = "openai-codex";
+const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
 interface UsageStats {
   input: number;
@@ -570,6 +572,51 @@ function resolveAgentDir(agentDir?: string): string | undefined {
   return canonicalAgentDir(agentDir);
 }
 
+function defaultAgentDir(): string {
+  return canonicalAgentDir(process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent"));
+}
+
+function authFileForAgentDir(agentDir?: string): string {
+  return path.join(agentDir ? canonicalAgentDir(agentDir) : defaultAgentDir(), "auth.json");
+}
+
+function hasOpenAICodexSubscriptionAuth(agentDir?: string): boolean {
+  try {
+    const raw = fs.readFileSync(authFileForAgentDir(agentDir), "utf8");
+    const auth = JSON.parse(raw) as Record<string, unknown>;
+    const entry = auth[OPENAI_CODEX_PROVIDER];
+    return Boolean(entry && typeof entry === "object" && (entry as { type?: unknown }).type === "oauth");
+  } catch {
+    return false;
+  }
+}
+
+function splitThinkingSuffix(model: string): { base: string; suffix: string } {
+  const colon = model.lastIndexOf(":");
+  if (colon <= 0) return { base: model, suffix: "" };
+  const maybeLevel = model.slice(colon + 1);
+  if (!THINKING_LEVELS.has(maybeLevel)) return { base: model, suffix: "" };
+  return { base: model.slice(0, colon), suffix: model.slice(colon) };
+}
+
+function isGptModelId(modelId: string): boolean {
+  return /^(?:gpt|chatgpt)[-.]/i.test(modelId);
+}
+
+function preferOpenAICodexSubscription(model: string | undefined, agentDir?: string): string | undefined {
+  if (!model || !hasOpenAICodexSubscriptionAuth(agentDir)) return model;
+
+  const { base, suffix } = splitThinkingSuffix(model.trim());
+  if (!base) return model;
+
+  const slash = base.indexOf("/");
+  const provider = slash > 0 ? base.slice(0, slash) : undefined;
+  const modelId = slash > 0 ? base.slice(slash + 1) : base;
+
+  if (provider === OPENAI_CODEX_PROVIDER || !isGptModelId(modelId)) return model;
+  return `${OPENAI_CODEX_PROVIDER}/${modelId}${suffix}`;
+}
+
 function allowedAgentDirs(): Set<string> {
   const dirs = [path.join(os.homedir(), ".pi-omlx", "agent")];
   if (process.env.PI_CODING_AGENT_DIR) dirs.push(process.env.PI_CODING_AGENT_DIR);
@@ -670,8 +717,12 @@ async function runSingleAgent(options: {
   // Model precedence: explicit call param > agent frontmatter > parent session model.
   // Inheriting the parent model avoids spawning children that fall back to a
   // default provider with no usable credentials (e.g. Databricks-routed parents
-  // where OPENAI_API_KEY is a sentinel value).
-  const model = options.model ?? agent.model ?? options.parentModel;
+  // where OPENAI_API_KEY is a sentinel value). GPT-family child models prefer
+  // the ChatGPT/Codex subscription provider when that OAuth login is present;
+  // API-routed OpenAI models are used only when subscription auth is unavailable.
+  const requestedModel = options.model ?? agent.model ?? options.parentModel;
+  const agentDir = resolveAgentDir(options.agentDir);
+  const model = preferOpenAICodexSubscription(requestedModel, agentDir);
   if (model) args.push("--model", model);
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
@@ -717,7 +768,6 @@ async function runSingleAgent(options: {
 
     args.push(`Task: ${options.task}`);
     const cwd = resolveCwd(options.defaultCwd, options.cwd);
-    const agentDir = resolveAgentDir(options.agentDir);
     let wasAborted = false;
 
     const exitCode = await new Promise<number>((resolve) => {
@@ -1091,6 +1141,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
     promptGuidelines: [
       "Use spawn_subagent for read-only reconnaissance when the user asks to explore, map, understand, trace, or investigate an unfamiliar code area before editing.",
       "Prefer spawn_subagent when one of three gates applies: likely 5+ sequential read/grep/find calls, 2+ independent investigation paths, or a specialist review/planning pass would materially improve correctness.",
+      "When selecting a GPT-family subagent model, prefer the OpenAI Codex subscription provider (`openai-codex/<model>`) over API-routed OpenAI (`openai/<model>`); spawn_subagent also auto-rewrites GPT-family models to `openai-codex` when that OAuth login is available for the child profile.",
       "Do NOT use spawn_subagent for single-file reads, quick greps, obvious edits, or normal linear test/fix loops the main agent can execute directly.",
       "Use parallel mode for independent questions, chain mode for sequential pipelines (scout→planner→worker), and single mode for one specialist pass.",
       "Use background=true for long-running agent jobs when the main chat can continue orchestrating other work; poll with jobAction=status and cancel with jobAction=cancel.",

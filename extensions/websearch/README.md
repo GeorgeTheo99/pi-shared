@@ -1,63 +1,78 @@
 # Web Search
 
-Shared pi extension that provides `web_search` and `web_fetch`.
+Shared Pi extension that provides `web_search` and `web_fetch` through the local-search MCP broker.
 
-- `web_search` calls a local/private SearXNG JSON API.
-- `web_fetch` fetches a URL directly and returns extracted text.
+- `web_search` calls the broker tool `web_search(query, num_results)`.
+- `web_fetch` calls the broker tool `web_fetch(url, max_chars)`.
+- The broker is the stable entry point. It owns backend strategy: local/private SearXNG first, then broker-managed fallback such as Tavily when available.
+- Pi clients do **not** fall back directly to SearXNG. If the broker is down, the tool reports a broker error so reliability issues are fixed at the shared entry point instead of bypassed.
 - For low-risk, reversible local actions, treat strong `web_search` results as execution hints: try the most plausible fix or workflow quickly, verify it directly, and only escalate to deeper research if that concrete path fails.
 
-## SearXNG requirement
+## MCP broker requirement
 
-This extension does **not** install or run SearXNG. Each machine that loads `pi-shared` must have a reachable SearXNG instance with JSON output enabled.
+This extension does **not** install or run local-search. Each machine that loads `pi-shared` must have a reachable MCP broker exposing these JSON-RPC tools:
 
-Minimum requirements:
+- `web_search(query: str, num_results: int = 8)`
+- `web_fetch(url: str, max_chars: int = 20000)`
 
-- SearXNG reachable from the Pi process.
-- `/search?...&format=json` returns JSON.
-- Recommended local URL: `http://127.0.0.1:8888`.
-- SearXNG `settings.yml` includes JSON in `search.formats`:
+Recommended local URL: `http://127.0.0.1:8889/mcp`.
 
-```yaml
-search:
-  formats:
-    - html
-    - json
+The broker should handle local/private SearXNG configuration internally. The current shared local-search broker uses `http://localhost:8888` for SearXNG and can use Tavily fallback when SearXNG is empty/errors.
 
-server:
-  bind_address: "127.0.0.1"
-  port: 8888
-  limiter: false
-```
-
-Use `bind_address: "0.0.0.0"` only if the machine/network is intentionally exposing SearXNG and access is protected.
-
-## SearXNG URL resolution
+## MCP URL resolution
 
 The tool checks, in order:
 
-1. `SEARXNG_BASE_URL`
-2. `SEARXNG_URL`
-3. `PI_SEARXNG_BASE_URL`
-4. `PI_RESEARCH_SEARXNG_URL`
-5. `~/.pi/research/config.json`
-6. local defaults:
-   - `http://127.0.0.1:8888`
-   - `http://localhost:8888`
+1. `PI_WEBSEARCH_MCP_URL`
+2. `SEARCH_MCP_URL`
+3. `WEBSEARCH_MCP_URL`
+4. `~/.pi/research/config.json`
+5. local defaults:
+   - `http://127.0.0.1:8889/mcp`
+   - `http://localhost:8889/mcp`
 
 Config file example:
 
 ```json
 {
-  "searxngBaseUrl": "http://127.0.0.1:8888"
+  "websearchMcpUrl": "http://127.0.0.1:8889/mcp"
 }
 ```
+
+`mcpUrl` is also accepted for compatibility with other local-search clients.
+
+Optional API/key forwarding:
+
+- `PI_WEBSEARCH_MCP_API_KEY`
+- `SEARCH_MCP_API_KEY`
+- `TAVILY_API_KEY`
+
+When one is set, Pi sends both `Authorization: Bearer <key>` and `X-Tavily-Key: <key>` to the broker so the transport and/or broker fallback can use it.
+
+## Why broker-first instead of direct SearXNG?
+
+Pros:
+
+- One stable client contract for Pi and product apps.
+- Centralized fallback, dedupe, circuit breaking, SSRF guards, provider policy, and observability.
+- Easier to add or swap providers without changing every client.
+
+Cons versus pure direct SearXNG:
+
+- One extra local HTTP/JSON-RPC hop.
+- The broker becomes the required availability boundary.
+- SearXNG-specific knobs/results must be exposed by the broker before clients can use them.
+- Structured SearXNG JSON may be normalized or wrapped by the broker, so clients needing raw fields should add broker support for those fields.
 
 ## Verification
 
 Run this on the target machine:
 
 ```bash
-curl -fsS 'http://127.0.0.1:8888/search?q=pi%20searxng%20health%20check&format=json' | python3 -m json.tool >/dev/null
+curl -fsS http://127.0.0.1:8889/health | python3 -m json.tool
+curl -fsS -H 'Accept: application/json' -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":"check","method":"tools/call","params":{"name":"web_search","arguments":{"query":"pi websearch health check","num_results":3}}}' \
+  http://127.0.0.1:8889/mcp | python3 -m json.tool
 ```
 
 Then restart Pi or run:
