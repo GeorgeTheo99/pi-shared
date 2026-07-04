@@ -175,6 +175,13 @@ function clampText(text: string) {
 	return text.trim().replace(/\s+/g, " ").slice(0, MAX_MEMORY_TEXT_CHARS);
 }
 
+function sanitizeStoredField(value: string | undefined, fieldName: string) {
+	const text = clampText(value ?? "");
+	if (!text) return undefined;
+	if (looksSecretish(text)) throw new Error(`Refusing to store memory ${fieldName} that looks like a secret or credential`);
+	return text;
+}
+
 function looksSecretish(text: string) {
 	const secretPatterns = [
 		/\b(?:sk|pk|ghp|gho|ghu|github_pat|xox[baprs])-[-_a-z0-9]{12,}\b/i,
@@ -187,7 +194,8 @@ function looksSecretish(text: string) {
 function formatMemory(memory: ProjectMemory) {
 	const tags = memory.tags.length ? ` #${memory.tags.join(" #")}` : "";
 	const stale = isDue(memory) ? " [review due]" : "";
-	return `- [${memory.id}]${stale} ${memory.text}${tags}`;
+	const source = memory.source ? ` (source: ${clampText(memory.source)})` : "";
+	return `- [${memory.id}]${stale} ${memory.text}${source}${tags}`;
 }
 
 function activeMemories(store: ProjectMemoryStore) {
@@ -229,9 +237,11 @@ Review-due memories: ${dueCount}
 ${body}
 
 Project memory policy:
-- Store only durable, project-specific facts that are likely useful in future sessions: repo commands, local setup, architecture notes, services, recurring fixes, and project-specific user decisions.
-- Do not store global user preferences, cross-project rules, secrets, tokens, credentials, private keys, or transient task state.
-- If a memory conflicts with the source while reviewing code/docs, use memory_write to update, archive, or mark it reviewed.`;
+- Treat memory maintenance as part of normal session work: read relevant memories before relying on prior state, and update memory while evidence is fresh.
+- Store only durable, project-specific facts likely useful in future sessions: canonical commands, local setup, architecture decisions, service names/ports, deployment state, recurring fixes, and explicit project decisions.
+- Every add/update should be evidence-backed; put concrete evidence in source when possible, such as files, commands, commit hashes, service status, test results, or explicit user statements.
+- Prefer update/archive/mark_reviewed over adding duplicates. If a memory conflicts with current files, commands, or runtime behavior, use memory_write to correct, archive, or mark it reviewed before finishing substantive work.
+- Do not store global user preferences, cross-project rules, secrets, tokens, credentials, private keys, sensitive personal data, transient task state, todos, guesses, or raw logs.`;
 	return text.length > MAX_PROMPT_CHARS ? `${text.slice(0, MAX_PROMPT_CHARS)}\n... [project memory truncated]` : text;
 }
 
@@ -262,9 +272,10 @@ const memoryWrite = defineTool({
 	description: "Add, update, archive, or mark reviewed a machine-local memory for the current project. Project memory only; global memory is intentionally disabled.",
 	promptSnippet: "memory_write to maintain durable machine-local project memories",
 	promptGuidelines: [
-		"Use memory_write only for durable project-specific facts likely useful in future sessions; do not store global preferences or transient task state.",
+		"Treat memory maintenance as part of normal session work: read relevant memories before relying on prior state, then write/update/archive when verified durable facts change.",
+		"Use memory_write only for evidence-backed, durable project-specific facts likely useful in future sessions; do not store global preferences, cross-project rules, transient task state, todos, guesses, or raw logs.",
 		"Never store secrets, tokens, credentials, private keys, passwords, or sensitive personal data with memory_write.",
-		"When reviewing source, compare relevant project memories with current files and use memory_write to update, archive, or mark reviewed stale memories.",
+		"Prefer updating, archiving, or marking reviewed existing memories over adding duplicates, and include concrete source evidence such as files, commands, commits, service status, tests, or explicit user decisions.",
 	],
 	parameters: Type.Object({
 		action: StringEnum(["add", "update", "archive", "mark_reviewed"] as const),
@@ -285,13 +296,14 @@ const memoryWrite = defineTool({
 
 			if (params.action === "add") {
 				if (!params.text?.trim()) throw new Error("memory_write add requires text");
-				const text = clampText(params.text);
-				if (looksSecretish(text)) throw new Error("Refusing to store memory that looks like a secret or credential");
+				const text = sanitizeStoredField(params.text, "text");
+				if (!text) throw new Error("memory_write add requires text");
+				const source = sanitizeStoredField(params.source, "source");
 				const memory: ProjectMemory = {
 					id: makeMemoryId(),
 					text,
 					tags: normalizeTags(params.tags),
-					source: params.source?.trim() || undefined,
+					source,
 					confidence: params.confidence ?? "medium",
 					status: "active",
 					createdAt: timestamp,
@@ -312,12 +324,12 @@ const memoryWrite = defineTool({
 
 			if (params.action === "update") {
 				if (params.text !== undefined) {
-					const text = clampText(params.text);
-					if (looksSecretish(text)) throw new Error("Refusing to store memory that looks like a secret or credential");
+					const text = sanitizeStoredField(params.text, "text");
+					if (!text) throw new Error("memory_write update text cannot be empty");
 					memory.text = text;
 				}
 				if (params.tags) memory.tags = normalizeTags(params.tags);
-				if (params.source !== undefined) memory.source = params.source.trim() || undefined;
+				if (params.source !== undefined) memory.source = sanitizeStoredField(params.source, "source");
 				if (params.confidence) memory.confidence = params.confidence;
 				memory.status = "active";
 				memory.updatedAt = timestamp;
@@ -335,7 +347,7 @@ const memoryWrite = defineTool({
 				memory.status = "archived";
 				memory.updatedAt = timestamp;
 				memory.archivedAt = timestamp;
-				memory.archiveReason = params.reason?.trim() || "Archived because it is no longer useful or accurate.";
+				memory.archiveReason = sanitizeStoredField(params.reason, "reason") ?? "Archived because it is no longer useful or accurate.";
 				saveStore(location, store);
 				return {
 					content: [{ type: "text" as const, text: `Archived project memory ${memory.id}` }],
@@ -346,7 +358,8 @@ const memoryWrite = defineTool({
 			memory.lastReviewedAt = timestamp;
 			memory.updatedAt = timestamp;
 			memory.reviewAfter = addDaysIso(reviewDays);
-			if (params.reason?.trim()) memory.source = params.reason.trim();
+			const reason = sanitizeStoredField(params.reason, "reason");
+			if (reason) memory.source = reason;
 			saveStore(location, store);
 			return {
 				content: [{ type: "text" as const, text: `Marked project memory ${memory.id} reviewed` }],

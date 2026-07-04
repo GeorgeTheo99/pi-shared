@@ -73,7 +73,8 @@ Current generated `pi-*` shell launchers call this automatically before writing 
   - stores canonical JSON in `~/.pi/memory/projects/`
   - injects active memories into the prompt as untrusted project context
   - provides `memory_read` and `memory_write` tools plus `/memory [active|all|review|path|help]`
-  - global memory is intentionally not implemented; store only durable project-specific facts and never secrets
+  - memory hygiene happens during normal session work: read relevant memories before relying on prior state, write/update verified durable facts while evidence is fresh, and archive stale entries before finishing substantive work
+  - global memory is intentionally not implemented; store only evidence-backed durable project-specific facts and never secrets, global/user-wide preferences, transient task state, todos, guesses, or raw logs
 - `extensions/websearch` — local-search MCP-backed web tools:
   - `web_search` calls the MCP broker tool `web_search(query, num_results)`
   - `web_fetch` calls the MCP broker tool `web_fetch(url, max_chars)`
