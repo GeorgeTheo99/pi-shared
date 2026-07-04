@@ -64,7 +64,7 @@ function expandTilde(input: string): string {
 }
 
 function defaultProfileDirs(): string[] {
-  return [path.join(os.homedir(), ".pi-omlx", "agent")];
+  return [path.join(os.homedir(), ".pi-omlx", "agent"), path.join(os.homedir(), ".pi", "agent")];
 }
 
 function familyFor(provider: string, id: string): string {
@@ -166,8 +166,10 @@ function uniqueModels(models: PanelModel[]): PanelModel[] {
 function modelScore(model: PanelModel, currentFamily?: string, preferredRank = 999): number {
   const preference = preferredRank < 999 ? 100_000 - preferredRank * 1_000 : 0;
   const differentFamily = currentFamily && model.family !== currentFamily ? 10_000 : 0;
+  const subscriptionGpt = model.provider === "openai-codex" ? 20_000 : 0;
+  const apiRoutedGptPenalty = model.family === "gpt" && model.provider !== "openai-codex" ? -20_000 : 0;
   const reasoning = model.reasoning ? 500 : 0;
-  return preference + differentFamily + reasoning + Math.floor(model.contextWindow / 10_000) + Math.floor(model.maxTokens / 10_000);
+  return preference + differentFamily + subscriptionGpt + apiRoutedGptPenalty + reasoning + Math.floor(model.contextWindow / 10_000) + Math.floor(model.maxTokens / 10_000);
 }
 
 function orderedCandidates(models: PanelModel[], config: PanelConfig, current?: PanelModel, mode = "single"): PanelModel[] {
