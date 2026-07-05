@@ -368,6 +368,26 @@ class BrowserRuntime {
     };
   }
 
+  async evaluate(script: string, arg?: unknown): Promise<Record<string, unknown>> {
+    const source = script.trim();
+    if (!source) throw new Error("JavaScript expression cannot be empty");
+    const page = await this.activePage();
+    const result = await page.evaluate(
+      async ({ source, arg }) => {
+        const evaluated = globalThis.eval(`(${source})`);
+        if (typeof evaluated === "function") return await evaluated(arg);
+        return evaluated;
+      },
+      { source, arg },
+    );
+    return {
+      ...await this.describePage(page),
+      result: result === undefined ? null : result,
+      result_type: result === null ? "null" : typeof result,
+      result_was_undefined: result === undefined,
+    };
+  }
+
   async screenshot(outputPath?: string, label?: string, fullPage = true, cwd = process.cwd()): Promise<Record<string, unknown>> {
     const page = await this.activePage();
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "").replace("T", "-");
@@ -596,6 +616,27 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal) {
       abortIfNeeded(signal);
       const result = await runtime.run(() => runtime.extractText(params.selector, params.max_chars ?? 8_000));
+      return truncatedTextResult(result);
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_evaluate",
+    label: "Browser Evaluate",
+    description: "Evaluate a JavaScript expression or function in the active browser page and return a JSON-serializable result.",
+    promptSnippet: "browser_evaluate to inspect the active page with JavaScript, such as computed styles, DOM state, and client-side data",
+    promptGuidelines: [
+      "Use browser_evaluate for targeted page inspection that requires JavaScript, such as getComputedStyle or DOM measurements.",
+      "Return plain JSON-serializable values; DOM nodes, CSSStyleDeclaration, and other complex browser objects should be mapped to plain objects or arrays first.",
+      "The script runs in the active page context and may mutate the page; prefer read-only expressions for inspection.",
+    ],
+    parameters: Type.Object({
+      script: Type.String({ description: "JavaScript expression, IIFE, or function expression. If it evaluates to a function, it is called with arg." }),
+      arg: Type.Optional(Type.Unknown({ description: "Optional JSON-serializable argument passed to a function expression." })),
+    }),
+    async execute(_id, params, signal) {
+      abortIfNeeded(signal);
+      const result = await runtime.run(() => runtime.evaluate(params.script, params.arg));
       return truncatedTextResult(result);
     },
   });

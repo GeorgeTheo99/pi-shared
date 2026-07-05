@@ -16,6 +16,7 @@ Prefer `browser_*` for actual interaction with public web pages:
 - `browser_type`
 - `browser_wait_for`
 - `browser_extract_text`
+- `browser_evaluate`
 - `browser_screenshot`
 - `browser_export_pdf`
 - `browser_console_logs`
@@ -35,6 +36,7 @@ Use `app_*` for local/private web app testing:
 - `app_type_text`
 - `app_wait_for`
 - `app_extract_text`
+- `app_evaluate`
 - `app_screenshot`
 - `app_console_logs`
 - `app_network_log`
@@ -56,6 +58,16 @@ export BROWSER_MCP_APP_ALLOWED_HOSTS='127.0.0.1,localhost,dev.internal'
 - Use `browser_*` for actual browser interaction with public web pages.
 - Use `web_search` / `web_fetch` for informational research and current-facts lookup.
 - Use `app_*` for local/private app UI and API testing.
+- Use `browser_evaluate` / `app_evaluate` only for targeted page inspection or test setup that needs JavaScript, such as computed styles, DOM measurements, localStorage, or client-side state. Prefer returning plain JSON-serializable objects/arrays.
+
+Example:
+
+```json
+{
+  "script": "(selector) => { const el = document.querySelector(selector); const cs = getComputedStyle(el); return { text: el?.textContent, wordSpacing: cs.wordSpacing, rect: el?.getBoundingClientRect().toJSON?.() }; }",
+  "arg": ".headline"
+}
+```
 
 ## Safety and private hosts
 

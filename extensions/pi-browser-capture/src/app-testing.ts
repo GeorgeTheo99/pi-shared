@@ -404,6 +404,26 @@ class NativeAppRuntime {
 		};
 	}
 
+	async evaluate(script: string, arg?: unknown): Promise<Record<string, unknown>> {
+		const source = script.trim();
+		if (!source) throw new Error("JavaScript expression cannot be empty");
+		const page = await this.activePage();
+		const result = await page.evaluate(
+			async ({ source, arg }) => {
+				const evaluated = globalThis.eval(`(${source})`);
+				if (typeof evaluated === "function") return await evaluated(arg);
+				return evaluated;
+			},
+			{ source, arg },
+		);
+		return {
+			...await this.describePage(page),
+			result: result === undefined ? null : result,
+			result_type: result === null ? "null" : typeof result,
+			result_was_undefined: result === undefined,
+		};
+	}
+
 	async screenshot(label?: string, fullPage = true): Promise<Record<string, unknown>> {
 		const page = await this.activePage();
 		const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "").replace("T", "-");
@@ -702,6 +722,28 @@ const appExtractText = defineTool({
 	},
 });
 
+const appEvaluate = defineTool({
+	name: "app_evaluate",
+	label: "App Evaluate",
+	description: "Evaluate a JavaScript expression or function in the active app page and return a JSON-serializable result.",
+	promptSnippet: "app_evaluate to inspect the active app page with JavaScript, such as computed styles, DOM state, and client-side data",
+	parameters: Type.Object({
+		script: Type.String({ description: "JavaScript expression, IIFE, or function expression. If it evaluates to a function, it is called with arg." }),
+		arg: Type.Optional(Type.Unknown({ description: "Optional JSON-serializable argument passed to a function expression." })),
+	}),
+	async execute(_id, params, signal) {
+		abortIfNeeded(signal);
+		const result = await runtime.run(() => runtime.evaluate(params.script, params.arg));
+		const text = jsonText(result);
+		const truncation = truncateHead(text, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
+		let output = truncation.content;
+		if (truncation.truncated) {
+			output += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)})]`;
+		}
+		return { content: [{ type: "text" as const, text: output }], details: { ...result, truncated: truncation.truncated } };
+	},
+});
+
 const appScreenshot = defineTool({
 	name: "app_screenshot",
 	label: "App Screenshot",
@@ -802,6 +844,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(appTypeText);
 	pi.registerTool(appWaitFor);
 	pi.registerTool(appExtractText);
+	pi.registerTool(appEvaluate);
 	pi.registerTool(appScreenshot);
 	pi.registerTool(appConsoleLogs);
 	pi.registerTool(appNetworkLog);
