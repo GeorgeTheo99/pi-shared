@@ -92,7 +92,7 @@ Current generated `pi-*` shell launchers call this automatically before writing 
   - `spawn_subagent` spawns isolated `pi --mode json -p --no-session` subprocesses for single, parallel, or chained specialist work
   - parallel tasks and chain steps may specify task-level `model` and `agentDir` overrides for multi-model/multi-profile workflows
   - bundled shared agents: `scout`, `planner`, `reviewer`, `worker`, `panelist`
-  - background job completion is a UI notification in interactive/RPC sessions, not an injected LLM-context message; fetch full output with `jobAction: "status"`
+  - background job completion is a UI notification in interactive/RPC sessions, never an injected LLM-context message; fetch/list jobs with `jobAction: "status"` / `"list"`
   - `/subagents [shared|user|project|all]` lists available agents
   - project-local `.pi/agents` are disabled by default unless `agentScope` is `project` or `all` and confirmed in UI
 - `extensions/panel` — user-invoked alternate-model second opinions:

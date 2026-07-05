@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { StringEnum, type Message } from "@mariozechner/pi-ai";
-import { type AgentToolResult, type ExtensionAPI, type ExtensionContext, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
+import { type AgentToolResult, type ExtensionAPI, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList } from "./agents.js";
@@ -17,7 +17,6 @@ import {
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const MAX_RETURN_CHARS = 24000;
-const MAX_NOTIFICATION_CHARS = 1200;
 const MAX_PERSISTED_JOBS = 100;
 const MAX_PERSISTED_JOB_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_PERSISTED_TEXT_CHARS = 12000;
@@ -72,6 +71,7 @@ interface SpawnSubagentDetails {
 type SpawnSubagentResult = AgentToolResult<SpawnSubagentDetails>;
 type OnUpdateCallback = (partial: SpawnSubagentResult) => void;
 type BackgroundJobStatus = JobStatus;
+type BackgroundJobNotifier = (message: string, type: "info" | "warning" | "error") => void;
 
 interface BackgroundSubagentJob {
   id: string;
@@ -486,35 +486,20 @@ function jobSuccessSummary(job: BackgroundSubagentJob): string {
   return `${successCount}/${results.length} succeeded`;
 }
 
-function formatJobNotification(job: BackgroundSubagentJob): string {
-  const output = job.error || extractResultText(job.result) || "(no output)";
-  return [
-    `Background subagent job ${job.id} ${job.status}.`,
-    `${job.mode}: ${sanitizePersistedText(job.label, 500)}`,
-    `Results: ${jobSuccessSummary(job)}`,
-    "",
-    "Preview:",
-    sanitizePersistedText(output, MAX_NOTIFICATION_CHARS),
-    "",
-    `Status: {"jobAction":"status","jobId":"${job.id}"}`,
-  ].join("\n");
-}
-
-function notifyJobFinished(pi: ExtensionAPI, job: BackgroundSubagentJob, ctx?: Pick<ExtensionContext, "hasUI" | "ui">): void {
+function notifyJobFinished(job: BackgroundSubagentJob, notify?: BackgroundJobNotifier): void {
   if (job.status === "running" || job.notifiedAt) return;
   job.notifiedAt = new Date().toISOString();
 
-  if (ctx?.hasUI) {
-    const type = job.status === "completed" ? "info" : "warning";
-    ctx.ui.notify(
-      `Background subagent job ${job.id} ${job.status}: ${jobSuccessSummary(job)}. Full output: spawn_subagent status ${job.id}.`,
-      type,
-    );
-  } else {
-    pi.sendMessage(
-      { customType: "spawn-subagent", content: formatJobNotification(job), display: true, details: persistJob(job) },
-      { deliverAs: "followUp" },
-    );
+  if (notify) {
+    try {
+      const type = job.status === "completed" ? "info" : "warning";
+      notify(
+        `Background subagent job ${job.id} ${job.status}: ${jobSuccessSummary(job)}. Full output: spawn_subagent status ${job.id}.`,
+        type,
+      );
+    } catch {
+      // Completion notices are best-effort; job state and status output are already persisted.
+    }
   }
 
   queueSaveBackgroundJobStore();
@@ -1188,11 +1173,16 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
     renderResult: renderSpawnSubagentResult,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      const toolCwd = ctx.cwd;
+      const toolModel = ctx.model;
+      const completionNotify: BackgroundJobNotifier | undefined = ctx.hasUI
+        ? ((ui) => (message: string, type: "info" | "warning" | "error") => ui.notify(message, type))(ctx.ui)
+        : undefined;
       const agentScope: AgentScope = params.agentScope ?? "shared";
-      const discovery = discoverAgents(ctx.cwd, agentScope);
+      const discovery = discoverAgents(toolCwd, agentScope);
       const agents = discovery.agents;
       const confirmProjectAgents = params.confirmProjectAgents ?? true;
-      const parentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+      const parentModel = toolModel ? `${toolModel.provider}/${toolModel.id}` : undefined;
 
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -1218,7 +1208,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
             job.updatedAt = new Date().toISOString();
             markUnfinishedResults(job.result, "canceled", "background job canceled by request");
             job.abortController.abort();
-            notifyJobFinished(pi, job, ctx);
+            notifyJobFinished(job, completionNotify);
           } else {
             await saveBackgroundJobStore();
           }
@@ -1292,7 +1282,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
             const step = params.chain[i];
             const task = step.task.replace(/\{previous\}/g, previousOutput);
             const result = await runSingleAgent({
-              defaultCwd: ctx.cwd,
+              defaultCwd: toolCwd,
               agents,
               agentName: step.agent,
               task,
@@ -1368,7 +1358,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
 
           const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (task, index) => {
             const result = await runSingleAgent({
-              defaultCwd: ctx.cwd,
+              defaultCwd: toolCwd,
               agents,
               agentName: task.agent,
               task: task.task,
@@ -1411,7 +1401,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
 
         if (params.agent && params.task) {
           const result = await runSingleAgent({
-            defaultCwd: ctx.cwd,
+            defaultCwd: toolCwd,
             agents,
             agentName: params.agent,
             task: params.task,
@@ -1452,7 +1442,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
           label: summarizeJobLabel(params, mode),
           startedAt: now,
           updatedAt: now,
-          cwd: ctx.cwd,
+          cwd: toolCwd,
           abortController: new AbortController(),
         };
         backgroundJobs.set(job.id, job);
@@ -1475,7 +1465,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
               job.status = result.details.results.some(isFailure) ? "failed" : "completed";
             }
             job.updatedAt = new Date().toISOString();
-            notifyJobFinished(pi, job, ctx);
+            notifyJobFinished(job, completionNotify);
             queueSaveBackgroundJobStore();
           })
           .catch((error: unknown) => {
@@ -1485,7 +1475,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
               markUnfinishedResults(job.result, "failed", "background job failed");
             }
             job.updatedAt = new Date().toISOString();
-            notifyJobFinished(pi, job, ctx);
+            notifyJobFinished(job, completionNotify);
             queueSaveBackgroundJobStore();
           });
 
