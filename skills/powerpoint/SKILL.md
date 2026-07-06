@@ -1,6 +1,7 @@
 ---
 name: powerpoint
-description: Use this skill whenever a .pptx or .potx file is involved as input or output: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text; editing/updating existing presentations; combining/splitting decks; working with templates, layouts, speaker notes, or comments. Also use when the user mentions deck, slides, presentation, PowerPoint, PPTX/POTX, or deck-generation code.
+description: >-
+  Use this skill whenever a .pptx or .potx file is involved as input or output: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text; editing/updating existing presentations; combining/splitting decks; working with templates, layouts, speaker notes, or comments. Also use when the user mentions deck, slides, presentation, PowerPoint, PPTX/POTX, or deck-generation code.
 ---
 
 This skill guides high-quality PowerPoint generation, inspection, editing, and repair.
