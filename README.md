@@ -9,7 +9,7 @@ Shared pi instructions and explicitly shareable pi resources.
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
 - `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), local-search MCP-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
 - `knowledge/software-engineering/` — curated software engineering classics source catalog and local searchable corpus. Future state: ingest public/open texts and user-supplied lawful private copies for copyrighted books; metadata-only until then.
-- `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-local/skills`.
+- `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-databricks/skills`.
 - `prompts/` — shared prompt templates.
 - `workflows/` — saved JavaScript workflows for the `workflow` tool (`<name>.js` invocable as `workflow({ name })`). Shared, committed; project workflows live under `.pi/workflows/`.
 - `themes/` — shared themes.
@@ -196,7 +196,7 @@ Use this simple mental model:
 
 ```text
 ~/local_code/pi-shared/  = shared by git across machines
-~/local_code/pi-local/   = private to this machine
+~/local_code/pi-databricks/   = private to this machine
 ```
 
 ### What goes in `pi-shared`
@@ -214,23 +214,23 @@ Put resources here only when they should travel to every machine that installs t
 
 When you `git add`, `git commit`, and `git push` from `pi-shared`, those resources become available to other machines after they `git pull` and run `/reload` in Pi. Helper launchers in `bin/` also need a local symlink or PATH entry on each machine.
 
-### What goes in `pi-local`
+### What goes in `pi-databricks`
 
 Put machine-specific resources here. Do not commit this directory to `pi-shared`.
 
 ```text
-~/local_code/pi-local/AGENTS.md       # local-only project instructions
-~/local_code/pi-local/skills/         # local-only skill source
-~/local_code/pi-local/extensions/     # local-only tools/extensions
-~/local_code/pi-local/prompts/        # local-only prompt templates, if needed
-~/local_code/pi-local/themes/         # local-only themes, if needed
+~/local_code/pi-databricks/AGENTS.md       # local-only project instructions
+~/local_code/pi-databricks/skills/         # local-only skill source
+~/local_code/pi-databricks/extensions/     # local-only tools/extensions
+~/local_code/pi-databricks/prompts/        # local-only prompt templates, if needed
+~/local_code/pi-databricks/themes/         # local-only themes, if needed
 ```
 
 Recommended local-only skill pattern:
 
 ```bash
-mkdir -p ~/local_code/pi-local/skills/my-private-skill
-cat > ~/local_code/pi-local/skills/my-private-skill/SKILL.md <<'MD'
+mkdir -p ~/local_code/pi-databricks/skills/my-private-skill
+cat > ~/local_code/pi-databricks/skills/my-private-skill/SKILL.md <<'MD'
 ---
 name: my-private-skill
 description: What this private machine-local skill does and when to use it.
@@ -242,13 +242,13 @@ Instructions go here.
 MD
 
 mkdir -p ~/.pi/agent/skills
-ln -sfn ~/local_code/pi-local/skills/my-private-skill ~/.pi/agent/skills/my-private-skill
+ln -sfn ~/local_code/pi-databricks/skills/my-private-skill ~/.pi/agent/skills/my-private-skill
 ```
 
 Recommended local-only extension pattern:
 
 ```bash
-mkdir -p ~/local_code/pi-local/extensions
+mkdir -p ~/local_code/pi-databricks/extensions
 # Add local extension files here, then include this path in local Pi settings if needed.
 ```
 

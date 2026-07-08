@@ -22,7 +22,7 @@ _DEFAULT_PI_SHARED_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
 
 PI_OMLX_AGENT_DIR="${PI_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
 PI_SHARED_DIR="${PI_SHARED_DIR:-$_DEFAULT_PI_SHARED_DIR}"
-PI_LOCAL_EXTENSIONS_DIR="${PI_LOCAL_EXTENSIONS_DIR:-$HOME/local_code/pi-local/extensions}"
+PI_LOCAL_EXTENSIONS_DIR="${PI_LOCAL_EXTENSIONS_DIR:-$HOME/local_code/pi-databricks/extensions}"
 PI_INSTALL_DIR="${PI_INSTALL_DIR:-/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent}"
 
 mkdir -p "$PI_OMLX_AGENT_DIR"
@@ -53,7 +53,7 @@ def rel_from_settings(target: Path) -> str:
 settings["packages"] = [rel_from_settings(pi_shared_dir)]
 if local_extensions_arg.exists():
     settings["extensions"] = [rel_from_settings(local_extensions_arg.resolve())]
-elif settings.get("extensions") == ["../../local_code/pi-local/extensions"]:
+elif settings.get("extensions") == ["../../local_code/pi-databricks/extensions"]:
     settings.pop("extensions", None)
 settings["skills"] = ["~/.codex/skills"]
 settings["enableSkillCommands"] = True
