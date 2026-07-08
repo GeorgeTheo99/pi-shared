@@ -56,12 +56,41 @@ _DEFAULT_PROVIDER_COMPAT = {
     "supportsDeveloperRole": False,
     "supportsReasoningEffort": False,
     "supportsUsageInStreaming": False,
+    "supportsStore": False,
     "maxTokensField": "max_tokens",
 }
 
 
 def _norm_provider(meta: dict) -> str:
     return (meta.get("provider") or "local").strip().lower()
+
+
+def _pi_hints(meta: dict) -> dict:
+    """Optional Pi-specific passthrough hints from the gateway catalog.
+
+    The gateway carries an opaque ``pi:`` block per model (id/name/reasoning/
+    compat) so machine-local config can shape the rendered Pi artifacts without
+    this module needing provider-specific knowledge.
+    """
+    hints = meta.get("pi")
+    return hints if isinstance(hints, dict) else {}
+
+
+def _is_anthropic_shape(key: str, meta: dict) -> bool:
+    """Should Pi talk anthropic-messages to the gateway for this model?
+
+    True for native anthropic providers, for models whose upstream protocol is
+    anthropic, and for claude-family models behind translating gateways (the
+    gateway's /v1/messages path translates for openai-shaped upstreams, and
+    Pi's anthropic client handles claude thinking/tool responses best).
+    """
+    if _norm_provider(meta) in ANTHROPIC_PROVIDERS:
+        return True
+    if not key.startswith("cloud:"):
+        return False
+    if (meta.get("protocol") or "").strip().lower() == "anthropic":
+        return True
+    return str(meta.get("name", "")).lower().startswith("claude")
 
 
 def _is_qwen_family(key: str, meta: dict) -> bool:
@@ -88,8 +117,13 @@ def _reasoning_kind(key: str, meta: dict, status: dict) -> str:
 
     if meta.get("enable_thinking") is False or chat_template_kwargs.get("enable_thinking") is False:
         return ""
+    # Explicit Pi hint wins in both directions: reasoning: false silences a
+    # model that would otherwise get thinking controls (e.g. an anthropic-shape
+    # model served without extended thinking).
+    if _pi_hints(meta).get("reasoning") is False:
+        return ""
 
-    if provider in ANTHROPIC_PROVIDERS:
+    if _is_anthropic_shape(key, meta):
         return "anthropic"
 
     if _is_local_key(key, meta):
@@ -123,11 +157,19 @@ def _reasoning_kind(key: str, meta: dict, status: dict) -> str:
         # GPT-5.x rejects some reasoning+tools shapes on Chat Completions.
         return "openai-responses"
 
+    if _pi_hints(meta).get("reasoning") is True or (
+        key.startswith("cloud:") and thinking in THINKING_VALUES
+    ):
+        # Generic gateway-proxied reasoning model (no provider-specific branch
+        # matched): mark reasoning without speculative thinking params — the
+        # gateway/provider owns any request-shape translation.
+        return "gateway"
+
     return ""
 
 
-def _api_type_for(kind: str, provider: str) -> str:
-    if provider in ANTHROPIC_PROVIDERS or kind == "fireworks-messages":
+def _api_type_for(kind: str, key: str, meta: dict) -> str:
+    if _is_anthropic_shape(key, meta) or kind == "fireworks-messages":
         return "anthropic-messages"
     if kind == "openai-responses":
         return "openai-responses"
@@ -221,7 +263,7 @@ def _eligible_entries(aliases: dict) -> list[tuple[str, dict]]:
 def _model_id_for(key: str, meta: dict) -> str:
     """The model id used in BOTH models.json and the launcher (never drifts)."""
     if key.startswith("cloud:"):
-        return meta.get("provider_model_id") or key
+        return _pi_hints(meta).get("id") or meta.get("provider_model_id") or key
     return key  # local: alias key == omlx_id
 
 
@@ -259,8 +301,8 @@ def render_models(
         )
         provider = _norm_provider(meta)
         kind = _reasoning_kind(key, meta, status)
-        api_type = _api_type_for(kind, provider)
-        is_anthropic = provider in ANTHROPIC_PROVIDERS
+        api_type = _api_type_for(kind, key, meta)
+        is_anthropic = _is_anthropic_shape(key, meta)
         is_cloud = provider not in {"local", "omlx", "mlx", "gguf"}
         # Cloud models route through the gateway, which handles vision fallback
         # for text-only models (reroute to gemini). So mark every cloud model
@@ -272,7 +314,8 @@ def render_models(
             for k in ("alias", "name", "omlx_id", "provider_model_id", "desc")
         ).lower()
         is_vision = bool(meta.get("vision")) or "vl" in _hay or "gemma" in _hay
-        desc = meta.get("desc") or key
+        hints = _pi_hints(meta)
+        desc = hints.get("name") or meta.get("desc") or key
         model: dict = {
             "id": _model_id_for(key, meta),
             "name": desc,
@@ -289,7 +332,14 @@ def render_models(
             # OpenAI-shaped models but override Anthropic cloud models to the
             # gateway root to avoid /v1/v1/messages.
             model["baseUrl"] = gw
+            # Gateway-translated anthropic streams don't support Pi's eager
+            # tool-input streaming; disable it for proxied anthropic models.
+            model.setdefault("compat", {})["supportsEagerToolInputStreaming"] = False
         _apply_reasoning(model, kind, meta)
+        if kind == "gateway":
+            model["reasoning"] = True
+        if isinstance(hints.get("compat"), dict):
+            model.setdefault("compat", {}).update(hints["compat"])
         if key.startswith("cloud:"):
             cloud_models.append(model)
         else:

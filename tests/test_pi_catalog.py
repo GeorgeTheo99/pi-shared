@@ -106,6 +106,82 @@ def test_cloud_anthropic_uses_messages_api_and_root_baseurl(tmp_path):
     assert m["input"] == ["text", "image"]  # cloud always image-capable
 
 
+def test_gateway_proxied_anthropic_protocol_model(tmp_path):
+    """A databricks-style pooled model with protocol: anthropic gets the
+    anthropic-messages API, root baseUrl, eager-tool-streaming off, and pi
+    hints (name override, reasoning: false) honored."""
+    aliases = {
+        "cloud:databricks-claude-fable-5": {
+            "name": "claude-fable-5", "alias": "fable", "desc": "fable",
+            "provider": "databricks-e2-west", "protocol": "anthropic",
+            "provider_model_id": "databricks-claude-fable-5",
+            "vision": True, "context": 1000000, "max_output_tokens": 128000,
+            "pi": {"name": "Claude Fable 5 via Databricks"},
+        },
+        "cloud:databricks-claude-opus-4-8": {
+            "name": "claude-opus-4.8", "alias": "opus48", "desc": "opus",
+            "provider": "databricks", "protocol": "anthropic",
+            "provider_model_id": "databricks-claude-opus-4-8",
+            "thinking": "optional", "vision": True, "context": 1000000, "max_output_tokens": 128000,
+            "pi": {"name": "pi-opus48", "reasoning": False},
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"]
+    by_id = {m["id"]: m for m in models}
+    fable = by_id["databricks-claude-fable-5"]
+    assert fable["api"] == "anthropic-messages"
+    assert fable["baseUrl"] == "http://localhost:9111"
+    assert fable["name"] == "Claude Fable 5 via Databricks"  # pi.name override
+    assert fable["reasoning"] is True  # anthropic-shape default
+    assert fable["compat"]["supportsEagerToolInputStreaming"] is False
+    opus = by_id["databricks-claude-opus-4-8"]
+    assert opus["reasoning"] is False  # pi.reasoning: false wins
+    assert opus["api"] == "anthropic-messages"
+
+
+def test_gateway_proxied_openai_protocol_model(tmp_path):
+    """OpenAI-protocol gateway models: openai-completions at provider /v1,
+    generic reasoning from thinking, pi.id override for the model id, and
+    pi.compat merged per-model."""
+    aliases = {
+        "cloud:databricks-gpt-5-5": {
+            "name": "gpt-5.5", "alias": "gpt", "desc": "gpt",
+            "provider": "databricks", "protocol": "openai",
+            "provider_model_id": "databricks-gpt-5-5",
+            "thinking": "optional", "context": 400000, "max_output_tokens": 128000,
+            "pi": {"compat": {"supportsReasoningEffort": True}},
+        },
+        "cloud:databricks-gemini-3-1-pro": {
+            "name": "gemini-3.1-pro", "alias": "gemini", "desc": "gemini",
+            "provider": "databricks-e2", "protocol": "openai",
+            "provider_model_id": "databricks-gemini-3-1-pro",
+            "thinking": "optional", "vision": True, "context": 1000000, "max_output_tokens": 65536,
+            "pi": {"id": "gemini-3.1-pro-preview"},
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"),
+             "--launchers-out", str(tmp_path / "launchers.zsh"))
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"]
+    by_id = {m["id"]: m for m in models}
+    gpt = by_id["databricks-gpt-5-5"]
+    assert gpt["api"] == "openai-completions"
+    assert "baseUrl" not in gpt  # provider /v1 base
+    assert gpt["reasoning"] is True  # generic gateway reasoning from thinking
+    assert gpt["compat"]["supportsReasoningEffort"] is True  # pi.compat merged
+    gem = by_id["gemini-3.1-pro-preview"]  # pi.id override used as model id
+    assert gem["reasoning"] is True
+    # Launcher uses the SAME overridden id.
+    launchers = (tmp_path / "launchers.zsh").read_text()
+    assert "'gemini-3.1-pro-preview'" in launchers
+    assert "pi-gemini()" in launchers
+    assert "pi-fable" not in launchers  # only defined aliases render
+
+
 def test_cloud_gpt_uses_responses_api(tmp_path):
     aliases = {
         "cloud:gpt-5.4": {

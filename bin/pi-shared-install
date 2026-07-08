@@ -9,7 +9,12 @@
 # Usage:
 #   pi-shared-install [--force] [--no-catalog] [--aliases PATH]
 #                     [--models-out PATH] [--launchers-out PATH]
-#                     [--pi-agent-dir PATH] [--ls99-extras]
+#                     [--pi-agent-dir PATH|''] [--provider-name NAME]
+#                     [--ls99-extras]
+#
+# --pi-agent-dir '' (empty) renders launchers for Pi's DEFAULT profile
+# (no PI_CODING_AGENT_DIR override) — use this on machines whose models.json
+# lives in ~/.pi/agent (e.g. gateway-only setups without an oMLX profile).
 set -euo pipefail
 
 _self="${BASH_SOURCE[0]:-$0}"
@@ -33,6 +38,9 @@ PI_OMLX_AGENT_DIR="${PI_SHARED_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
 ALIASES_PATH="${PI_SHARED_ALIASES:-$HOME/.claude/model-aliases.json}"
 MODELS_OUT="${PI_SHARED_MODELS_OUT:-$PI_OMLX_AGENT_DIR/models.json}"
 LAUNCHERS_OUT="${PI_SHARED_LAUNCHERS_OUT:-$HOME/.pi/model-gateway/pi-launchers.zsh}"
+# Launcher Pi profile: default = the oMLX profile; empty = Pi default profile.
+CATALOG_PI_AGENT_DIR="${PI_SHARED_CATALOG_PI_AGENT_DIR-$PI_OMLX_AGENT_DIR}"
+PROVIDER_NAME="${PI_SHARED_PROVIDER_NAME:-}"
 FORCE=0
 GENERATE_CATALOG=1
 LS99_EXTRAS="${PI_SHARED_LS99_EXTRAS:-0}"
@@ -69,7 +77,8 @@ while [ $# -gt 0 ]; do
     --aliases) shift; [ $# -gt 0 ] || die "--aliases requires a path"; ALIASES_PATH="$(expand_path "$1")" ;;
     --models-out) shift; [ $# -gt 0 ] || die "--models-out requires a path"; MODELS_OUT="$(expand_path "$1")" ;;
     --launchers-out) shift; [ $# -gt 0 ] || die "--launchers-out requires a path"; LAUNCHERS_OUT="$(expand_path "$1")" ;;
-    --pi-agent-dir) shift; [ $# -gt 0 ] || die "--pi-agent-dir requires a path"; PI_OMLX_AGENT_DIR="$(expand_path "$1")" ;;
+    --pi-agent-dir) shift; [ $# -gt 0 ] || die "--pi-agent-dir requires a path (or '' for the default Pi profile)"; CATALOG_PI_AGENT_DIR="$([ -n "$1" ] && expand_path "$1" || true)" ;;
+    --provider-name) shift; [ $# -gt 0 ] || die "--provider-name requires a name"; PROVIDER_NAME="$1" ;;
     --ls99-extras) LS99_EXTRAS=1 ;;
     -h|--help|help) usage ;;
     *) die "unknown argument: $1" ;;
@@ -82,6 +91,7 @@ LAUNCHERS_OUT="$(expand_path "$LAUNCHERS_OUT")"
 PI_AGENT_DIR="$(expand_path "$PI_AGENT_DIR")"
 PI_OMLX_AGENT_DIR="$(expand_path "$PI_OMLX_AGENT_DIR")"
 ALIASES_PATH="$(expand_path "$ALIASES_PATH")"
+[ -n "$CATALOG_PI_AGENT_DIR" ] && CATALOG_PI_AGENT_DIR="$(expand_path "$CATALOG_PI_AGENT_DIR")"
 
 install_symlink() {
   local name="$1"
@@ -192,8 +202,14 @@ generate_catalog() {
     warn "No alias catalog at $ALIASES_PATH; skipping initial pi-catalog generation"
     return 0
   fi
-  mkdir -p "$PI_OMLX_AGENT_DIR" "$(dirname "$LAUNCHERS_OUT")"
-  local cmd=("$ROOT_DIR/bin/pi-catalog" --aliases "$ALIASES_PATH" --models-out "$MODELS_OUT" --launchers-out "$LAUNCHERS_OUT" --pi-agent-dir "$PI_OMLX_AGENT_DIR")
+  mkdir -p "$(dirname "$MODELS_OUT")" "$(dirname "$LAUNCHERS_OUT")"
+  local cmd=("$ROOT_DIR/bin/pi-catalog" --aliases "$ALIASES_PATH" --models-out "$MODELS_OUT" --launchers-out "$LAUNCHERS_OUT")
+  if [ -n "$CATALOG_PI_AGENT_DIR" ]; then
+    cmd+=(--pi-agent-dir "$CATALOG_PI_AGENT_DIR")
+  fi
+  if [ -n "$PROVIDER_NAME" ]; then
+    cmd+=(--provider-name "$PROVIDER_NAME")
+  fi
   if [ "$LS99_EXTRAS" = "1" ]; then
     cmd+=(--ls99-extras)
   fi
