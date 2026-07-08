@@ -295,11 +295,16 @@ def render_launchers(
     gateway_url: str = "http://localhost:9111",
     pi_agent_dir: str | None = None,
     ls99_extras: bool = False,
+    aliases_path: str | None = None,
+    models_out: str | None = None,
+    launchers_out: str | None = None,
 ) -> str:
     """zsh snippet defining pi-<alias>() quick-start functions + pi-list + pi-restart.
 
     Optionally appends pi-default + pi-openai (ls99 opt-in layer). No
-    claude-*/codex-* — standardize on pi.
+    claude-*/codex-* — standardize on pi. If output paths are given, also emits
+    a ``pi-regen`` function that re-runs pi-catalog with the same args, so the
+    launcher can refresh itself + models.json after a catalog change.
     """
     gw_host = gateway_url.rstrip("/").replace("https://", "").replace("http://", "")
     # Build the (alias, model_id, display) rows, sorted for stable output.
@@ -360,17 +365,64 @@ def render_launchers(
             '  echo "  pi-default                     Pi default provider/model"',
             '  echo "  pi-openai                      OpenAI subscription (ChatGPT Plus/Pro via /login OAuth)"',
         ]
+    if models_out or launchers_out:
+        lines += ['  echo "  pi-regen                       regenerate this launcher + models.json from the alias catalog"']
     lines += ['}', ""]
 
-    lines += _render_pi_restart()
+    # pi-regen: re-run pi-catalog with the same args used to generate this file.
+    if models_out or launchers_out:
+        lines += _render_pi_regen(
+            aliases_path=aliases_path,
+            models_out=models_out,
+            launchers_out=launchers_out,
+            provider_name=provider_name,
+            gateway_url=gateway_url,
+            pi_agent_dir=pi_agent_dir,
+            ls99_extras=ls99_extras,
+        )
+
+    lines += _render_pi_restart(auto_regen=bool(models_out or launchers_out))
     if ls99_extras:
         lines += ["", _render_pi_default(), "", _render_pi_openai()]
 
     return "\n".join(lines) + "\n"
 
 
-def _render_pi_restart() -> list[str]:
-    """pi-restart() — wraps `server-ci restart --<service>` and polls the port."""
+def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, gateway_url, pi_agent_dir, ls99_extras) -> list[str]:
+    # Build the pi-catalog invocation that reproduces this launcher. Bakes the
+    # machine-specific paths so `pi-regen` refreshes both outputs in one call.
+    import shlex
+    cmd = ["pi-catalog"]
+    if aliases_path:
+        cmd += ["--aliases", aliases_path]
+    if models_out:
+        cmd += ["--models-out", models_out]
+    if launchers_out:
+        cmd += ["--launchers-out", launchers_out]
+    cmd += ["--provider-name", provider_name, "--gateway-url", gateway_url]
+    if pi_agent_dir:
+        cmd += ["--pi-agent-dir", pi_agent_dir]
+    if ls99_extras:
+        cmd += ["--ls99-extras"]
+    cmd_str = " ".join(shlex.quote(c) for c in cmd)
+    return [
+        "pi-regen() {",
+        "  # Regenerate this launcher + models.json from the alias catalog.",
+        "  # (model-gateway writes the alias file; pi-catalog renders Pi artifacts.)",
+        f'  echo "Regenerating Pi artifacts from {aliases_path or "the alias catalog"}..."',
+        f"  {cmd_str} \"$@\"",
+        "}",
+        "",
+    ]
+
+
+def _render_pi_restart(*, auto_regen: bool = False) -> list[str]:
+    """pi-restart() — wraps `server-ci restart --<service>` and polls the port.
+
+    If auto_regen is set, a successful model-gw restart also runs `pi-regen`
+    so the launcher + models.json stay in sync with the freshly-regenerated
+    alias catalog.
+    """
     return [
         "pi-restart() {",
         "  # Restart model-gateway (and other services) via the canonical server-ci",
@@ -424,6 +476,10 @@ def _render_pi_restart() -> list[str]:
         '        echo "WARNING: $svc did not report UP within 25s"',
         "      fi",
         "    fi",
+        "  fi",
+        "  if [ $rc -eq 0 ] && [ \"$svc\" = model-gw ] && command -v pi-regen >/dev/null 2>&1; then",
+        "    # model-gw restart regenerated the alias catalog; refresh Pi artifacts.",
+        "    pi-regen --quiet 2>/dev/null || true",
         "  fi",
         "  return $rc",
         "}",
@@ -526,6 +582,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--omlx-status-url", default=None, help="optional oMLX status URL (default: http://localhost:9110/v1/models/status when --omlx-status not given)")
     parser.add_argument("--ls99-extras", action="store_true", help="include pi-default + pi-openai (ls99 opt-in layer)")
     parser.add_argument("--check", action="store_true", help="drift check only; exit 1 when stale")
+    parser.add_argument("--quiet", action="store_true", help="suppress per-file write messages (used by pi-regen)")
     args = parser.parse_args(argv)
 
     if not args.aliases.exists():
@@ -567,6 +624,9 @@ def main(argv: list[str] | None = None) -> int:
             gateway_url=args.gateway_url,
             pi_agent_dir=pi_agent_dir,
             ls99_extras=args.ls99_extras,
+            aliases_path=str(args.aliases.expanduser()),
+            models_out=str(args.models_out.expanduser()) if args.models_out else None,
+            launchers_out=str(args.launchers_out.expanduser()) if args.launchers_out else None,
         )
         renders.append((args.launchers_out, launchers, "pi-launchers.zsh"))
 
@@ -584,9 +644,11 @@ def main(argv: list[str] | None = None) -> int:
         tmp = target.with_suffix(f"{target.suffix}.tmp.{os.getpid()}")
         tmp.write_text(content)
         tmp.replace(target)
-        shown = path if path == target else f"{path} → {target}"
-        print(f"pi-catalog: wrote {label} → {shown}")
-    print(f"pi-catalog: {len(aliases)} aliases rendered")
+        if not args.quiet:
+            shown = path if path == target else f"{path} → {target}"
+            print(f"pi-catalog: wrote {label} → {shown}")
+    if not args.quiet:
+        print(f"pi-catalog: {len(aliases)} aliases rendered")
     return 0
 
 

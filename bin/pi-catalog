@@ -4,6 +4,24 @@ set -euo pipefail
 # pi-catalog — render Pi CLI artifacts (models.json + pi-launchers.zsh) from a
 # model-aliases.json catalog (the model-gateway public contract). Source of
 # logic: ../lib/pi_catalog.py. See that module's docstring for full options.
+#
+# Install per-machine via a ~/.local/bin symlink to this file (mirrors pi-vanilla
+# / pi-omlx-repair). Resolve the symlink so the wrapper finds ../lib regardless
+# of how it was invoked.
 
-_PI_SHARED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+_self="${BASH_SOURCE[0]:-$0}"
+# Resolve symlinks (readlink -f is portable on macOS 14+/coreutils; fall back).
+if command -v readlink >/dev/null 2>&1 && readlink -f "$_self" >/dev/null 2>&1; then
+  _self="$(readlink -f "$_self")"
+else
+  while [ -L "$_self" ]; do
+    _dir="$(cd "$(dirname "$_self")" && pwd)"
+    _self="$(readlink "$_self")"
+    case "$_self" in
+      /*) ;;
+      *)  _self="$_dir/$_self" ;;
+    esac
+  done
+fi
+_PI_SHARED_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
 exec python3 "$_PI_SHARED_DIR/lib/pi_catalog.py" "$@"

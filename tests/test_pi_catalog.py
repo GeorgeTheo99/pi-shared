@@ -213,6 +213,42 @@ def test_ls99_extras_adds_pi_default_and_pi_openai(tmp_path):
     assert "openai-codex" in launchers
 
 
+def test_pi_regen_baked_with_paths(tmp_path):
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
+    p = _load_aliases(tmp_path, aliases)
+    mp = tmp_path / "m.json"
+    lp = tmp_path / "l.zsh"
+    r = _run("--aliases", str(p), "--models-out", str(mp), "--launchers-out", str(lp), "--provider-name", "ls99-models")
+    assert r.returncode == 0, r.stderr
+    launchers = lp.read_text()
+    assert "pi-regen()" in launchers
+    # the regen command reproduces the generation args
+    assert "--aliases" in launchers and str(p) in launchers
+    assert "--models-out" in launchers and str(mp) in launchers
+    assert "--launchers-out" in launchers and str(lp) in launchers
+    assert "--provider-name" in launchers and "ls99-models" in launchers
+
+
+def test_pi_restart_calls_regen_after_model_gw(tmp_path):
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), "--launchers-out", str(tmp_path / "l.zsh"))
+    assert r.returncode == 0, r.stderr
+    launchers = (tmp_path / "l.zsh").read_text()
+    # pi-restart auto-regens after a successful model-gw restart
+    assert 'pi-regen --quiet' in launchers
+    assert '"$svc" = model-gw' in launchers
+
+
+def test_no_regen_when_no_output_paths(tmp_path):
+    # when launched without output paths (unrealistic, but render_launchers guard)
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
+    p = _load_aliases(tmp_path, aliases)
+    # only models-out, no launchers-out: pi-regen still baked (models_out given)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"))
+    assert r.returncode == 0, r.stderr
+
+
 def test_no_ls99_extras_omits_default_openai(tmp_path):
     aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
     p = _load_aliases(tmp_path, aliases)
