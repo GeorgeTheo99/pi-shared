@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -238,6 +239,33 @@ def test_pi_restart_calls_regen_after_model_gw(tmp_path):
     # pi-restart auto-regens after a successful model-gw restart
     assert 'pi-regen --quiet' in launchers
     assert '"$svc" = model-gw' in launchers
+    assert 'model-gateway restart' in launchers
+    assert 'server-ci restart --"$svc"' in launchers
+
+
+def test_pi_restart_help_does_not_execute_backticked_commands(tmp_path):
+    if not shutil.which("zsh"):
+        pytest.skip("zsh not available")
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
+    p = _load_aliases(tmp_path, aliases)
+    launcher = tmp_path / "l.zsh"
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), "--launchers-out", str(launcher))
+    assert r.returncode == 0, r.stderr
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    invoked = tmp_path / "invoked"
+    for name in ("model-gateway", "server-ci"):
+        script = fake_bin / name
+        script.write_text(f"#!/usr/bin/env bash\necho {name} >> {invoked}\n")
+        script.chmod(0o755)
+    z = subprocess.run(
+        ["zsh", "-c", f"PATH={fake_bin}:$PATH; source {launcher}; pi-restart --help"],
+        capture_output=True,
+        text=True,
+    )
+    assert z.returncode == 0, z.stderr
+    assert not invoked.exists()
+    assert "model-gateway restart" in z.stdout
 
 
 def test_no_regen_when_no_output_paths(tmp_path):

@@ -5,19 +5,38 @@ set -euo pipefail
 # local OpenAI-compatible models that report zero token usage still get a sane
 # estimated context percentage.
 
+_self="${BASH_SOURCE[0]:-$0}"
+if command -v readlink >/dev/null 2>&1 && readlink -f "$_self" >/dev/null 2>&1; then
+  _self="$(readlink -f "$_self")"
+else
+  while [ -L "$_self" ]; do
+    _dir="$(cd "$(dirname "$_self")" && pwd)"
+    _self="$(readlink "$_self")"
+    case "$_self" in
+      /*) ;;
+      *)  _self="$_dir/$_self" ;;
+    esac
+  done
+fi
+_DEFAULT_PI_SHARED_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
+
 PI_OMLX_AGENT_DIR="${PI_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
-PI_SHARED_DIR="${PI_SHARED_DIR:-$HOME/local_code/pi-shared}"
+PI_SHARED_DIR="${PI_SHARED_DIR:-$_DEFAULT_PI_SHARED_DIR}"
 PI_LOCAL_EXTENSIONS_DIR="${PI_LOCAL_EXTENSIONS_DIR:-$HOME/local_code/pi-local/extensions}"
 PI_INSTALL_DIR="${PI_INSTALL_DIR:-/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent}"
 
 mkdir -p "$PI_OMLX_AGENT_DIR"
 
-python3 - "$PI_OMLX_AGENT_DIR/settings.json" <<'PY'
+python3 - "$PI_OMLX_AGENT_DIR/settings.json" "$PI_SHARED_DIR" "$PI_LOCAL_EXTENSIONS_DIR" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+settings_dir = path.parent
+pi_shared_dir = Path(sys.argv[2]).expanduser().resolve()
+local_extensions_arg = Path(sys.argv[3]).expanduser()
 settings = {}
 if path.exists():
     try:
@@ -25,8 +44,17 @@ if path.exists():
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Invalid JSON in {path}: {exc}")
 
-settings["packages"] = ["../../local_code/pi-shared"]
-settings["extensions"] = ["../../local_code/pi-local/extensions"]
+def rel_from_settings(target: Path) -> str:
+    try:
+        return os.path.relpath(target.resolve(), settings_dir.resolve())
+    except OSError:
+        return str(target)
+
+settings["packages"] = [rel_from_settings(pi_shared_dir)]
+if local_extensions_arg.exists():
+    settings["extensions"] = [rel_from_settings(local_extensions_arg.resolve())]
+elif settings.get("extensions") == ["../../local_code/pi-local/extensions"]:
+    settings.pop("extensions", None)
 settings["skills"] = ["~/.codex/skills"]
 settings["enableSkillCommands"] = True
 # Default thinking on for every reasoning model in this profile. Local

@@ -16,6 +16,7 @@ Shared pi instructions and explicitly shareable pi resources.
 - `bin/pi-vanilla` — recovery launcher for a vanilla Pi session when shared/local harness resources break normal startup.
 - `bin/pi-omlx-repair` — repair/wiring script for the dedicated `~/.pi-omlx/agent` Pi profile used by local oMLX/cloud model launchers.
 - `bin/pi-catalog` — render Pi CLI artifacts (`models.json` + `pi-launchers.zsh`) from a `model-aliases.json` catalog (the model-gateway public contract). The Pi-side of the model-gateway/Pi separation: the gateway owns the generic catalog, pi-catalog owns Pi-specific rendering. Install per-machine via a `~/.local/bin` symlink.
+- `bin/pi-shared-install` / `install.sh` — portable installer that symlinks shared helper scripts into `~/.local/bin`, wires this repo into `~/.pi/agent/settings.json`, and optionally renders initial Pi catalog artifacts.
 - `lib/pi_catalog.py` — the importable module behind `bin/pi-catalog` (render functions + CLI).
 - `tests/test_pi_catalog.py` — tests for the catalog renderer (`python3 -m pytest tests/`).
 
@@ -33,6 +34,38 @@ Future Pi launchers should follow one of two rules:
 
 1. If they are normal/enhanced Pi sessions, load `pi-shared` as a package and use the shared `AGENTS.md`.
 2. If they are recovery/minimal launchers, explicitly bypass shared resources and document that exception.
+
+## Portable install
+
+On a fresh Mac after cloning this repo:
+
+```bash
+cd ~/local_code/pi-shared
+./install.sh
+```
+
+The installer is idempotent and safe to rerun. It:
+
+- symlinks `pi-catalog`, `pi-omlx-repair`, and `pi-vanilla` into `~/.local/bin`
+- ensures `~/.pi/agent/settings.json` includes this repo in `packages`
+- symlinks `~/.pi/agent/AGENTS.md` to this repo's shared `AGENTS.md` unless a real file already exists
+- if `~/.claude/model-aliases.json` exists, renders `~/.pi-omlx/agent/models.json` and `~/.pi/model-gateway/pi-launchers.zsh`
+
+Useful options:
+
+```bash
+./install.sh --no-catalog
+./install.sh --force
+./install.sh --aliases ~/.claude/model-aliases.json \
+  --models-out ~/.pi-omlx/agent/models.json \
+  --launchers-out ~/.pi/model-gateway/pi-launchers.zsh
+```
+
+After catalog generation, source the launcher from your shell, for example:
+
+```bash
+[ -f ~/.pi/model-gateway/pi-launchers.zsh ] && source ~/.pi/model-gateway/pi-launchers.zsh
+```
 
 ## Vanilla recovery launcher
 
@@ -55,11 +88,11 @@ Requirements and behavior:
 
 ## oMLX/cloud profile repair
 
-`bin/pi-omlx-repair` repairs the dedicated `~/.pi-omlx/agent` profile used by generated `pi-*` model launchers. It:
+`bin/pi-omlx-repair` repairs the dedicated `~/.pi-omlx/agent` profile used by generated `pi-*` model launchers. It resolves the pi-shared repo from its own script/symlink location, so it works outside `~/local_code`. It:
 
-- writes `settings.json` so `../../local_code/pi-shared` is loaded as a package
-- includes `../../local_code/pi-local/extensions` and `~/.codex/skills`
-- symlinks `~/.pi-omlx/agent/AGENTS.md` to `~/local_code/pi-shared/AGENTS.md`
+- writes `settings.json` so this `pi-shared` repo is loaded as a package
+- includes `~/.codex/skills` and a local extensions directory only if one exists
+- symlinks `~/.pi-omlx/agent/AGENTS.md` to this repo's `AGENTS.md`
 - patches the installed Pi compaction code to ignore all-zero provider usage and fall back to token estimation for context percentage
 
 Run manually if needed:
@@ -97,7 +130,7 @@ pi-catalog --aliases ~/.claude/model-aliases.json \
   --pi-agent-dir ~/.pi-omlx/agent --ls99-extras
 ```
 
-The generated launcher bakes in a `pi-regen()` function (the same invocation) so it can refresh itself + `models.json` after a catalog change. `pi-restart model-gw` auto-calls `pi-regen` — the gateway regenerates the alias catalog on start, then `pi-regen` refreshes the Pi artifacts. No launchd watcher needed.
+The generated launcher bakes in a `pi-regen()` function (the same invocation) so it can refresh itself + `models.json` after a catalog change. `pi-restart model-gw` auto-calls `pi-regen` — it delegates to the portable `model-gateway restart` command when available, falls back to `server-ci restart --model-gw` on ls99/dev-server installs, then refreshes the Pi artifacts. No launchd watcher needed.
 
 For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databricks directly), point `--gateway-url` at the endpoint and `--provider-name` at the Pi provider, and feed a catalog alias file from whatever source is appropriate.
 

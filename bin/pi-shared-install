@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# pi-shared-install — portable installer for shared Pi resources.
+#
+# Installs helper launchers into ~/.local/bin, wires this repo into
+# ~/.pi/agent/settings.json as a package, optionally renders initial Pi catalog
+# artifacts when a model-aliases.json file is present, and prints the shell line
+# to source generated launchers.
+#
+# Usage:
+#   pi-shared-install [--force] [--no-catalog] [--aliases PATH]
+#                     [--models-out PATH] [--launchers-out PATH]
+#                     [--pi-agent-dir PATH] [--ls99-extras]
+set -euo pipefail
+
+_self="${BASH_SOURCE[0]:-$0}"
+if command -v readlink >/dev/null 2>&1 && readlink -f "$_self" >/dev/null 2>&1; then
+  _self="$(readlink -f "$_self")"
+else
+  while [ -L "$_self" ]; do
+    _dir="$(cd "$(dirname "$_self")" && pwd)"
+    _self="$(readlink "$_self")"
+    case "$_self" in
+      /*) ;;
+      *)  _self="$_dir/$_self" ;;
+    esac
+  done
+fi
+ROOT_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
+
+BIN_DIR="${PI_SHARED_BIN_DIR:-$HOME/.local/bin}"
+PI_AGENT_DIR="${PI_SHARED_AGENT_DIR:-$HOME/.pi/agent}"
+PI_OMLX_AGENT_DIR="${PI_SHARED_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
+ALIASES_PATH="${PI_SHARED_ALIASES:-$HOME/.claude/model-aliases.json}"
+MODELS_OUT="${PI_SHARED_MODELS_OUT:-$PI_OMLX_AGENT_DIR/models.json}"
+LAUNCHERS_OUT="${PI_SHARED_LAUNCHERS_OUT:-$HOME/.pi/model-gateway/pi-launchers.zsh}"
+FORCE=0
+GENERATE_CATALOG=1
+LS99_EXTRAS="${PI_SHARED_LS99_EXTRAS:-0}"
+
+if [ -t 1 ]; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'
+else
+  C_RESET=""; C_BOLD=""; C_GREEN=""; C_YELLOW=""; C_RED=""
+fi
+
+log()  { printf '%s▶%s %s\n' "$C_BOLD" "$C_RESET" "$*"; }
+ok()   { printf '%s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
+warn() { printf '%s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
+die()  { printf '%s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
+
+usage() {
+  sed -n '2,/^set -euo/p' "$0" | grep -E '^#   ' | sed 's/^#   /  /'
+  exit 1
+}
+
+expand_path() {
+  local p="$1"
+  case "$p" in
+    ~) printf '%s\n' "$HOME" ;;
+    ~/*) printf '%s/%s\n' "$HOME" "${p#~/}" ;;
+    *) printf '%s\n' "$p" ;;
+  esac
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --force) FORCE=1 ;;
+    --no-catalog) GENERATE_CATALOG=0 ;;
+    --aliases) shift; [ $# -gt 0 ] || die "--aliases requires a path"; ALIASES_PATH="$(expand_path "$1")" ;;
+    --models-out) shift; [ $# -gt 0 ] || die "--models-out requires a path"; MODELS_OUT="$(expand_path "$1")" ;;
+    --launchers-out) shift; [ $# -gt 0 ] || die "--launchers-out requires a path"; LAUNCHERS_OUT="$(expand_path "$1")" ;;
+    --pi-agent-dir) shift; [ $# -gt 0 ] || die "--pi-agent-dir requires a path"; PI_OMLX_AGENT_DIR="$(expand_path "$1")" ;;
+    --ls99-extras) LS99_EXTRAS=1 ;;
+    -h|--help|help) usage ;;
+    *) die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+MODELS_OUT="$(expand_path "$MODELS_OUT")"
+LAUNCHERS_OUT="$(expand_path "$LAUNCHERS_OUT")"
+PI_AGENT_DIR="$(expand_path "$PI_AGENT_DIR")"
+PI_OMLX_AGENT_DIR="$(expand_path "$PI_OMLX_AGENT_DIR")"
+ALIASES_PATH="$(expand_path "$ALIASES_PATH")"
+
+install_symlink() {
+  local name="$1"
+  local src="$ROOT_DIR/bin/$name"
+  local dest="$BIN_DIR/$name"
+  [ -f "$src" ] || die "missing $src"
+  mkdir -p "$BIN_DIR"
+  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+    if [ "$FORCE" -eq 1 ]; then
+      rm -f "$dest"
+    else
+      warn "$dest exists and is not a symlink; leaving it untouched (use --force to replace)"
+      return 0
+    fi
+  fi
+  ln -sfn "$src" "$dest"
+  ok "Installed $dest → $src"
+}
+
+wire_settings() {
+  mkdir -p "$PI_AGENT_DIR"
+  python3 - "$PI_AGENT_DIR/settings.json" "$ROOT_DIR" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1]).expanduser()
+settings_dir = settings_path.parent
+repo = Path(sys.argv[2]).expanduser().resolve()
+settings = {}
+if settings_path.exists():
+    try:
+        settings = json.loads(settings_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON in {settings_path}: {exc}")
+packages = settings.get("packages", [])
+if packages is None:
+    packages = []
+if not isinstance(packages, list):
+    raise SystemExit(f"Expected {settings_path} packages to be an array")
+
+def package_source(entry):
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        source = entry.get("source") or entry.get("path")
+        return source if isinstance(source, str) else None
+    return None
+
+def resolve_source(source: str) -> Path:
+    return (settings_dir / Path(source).expanduser()).resolve()
+
+seen_repo = False
+new_packages = []
+seen_resolved = set()
+for entry in packages:
+    source = package_source(entry)
+    if source:
+        try:
+            resolved = resolve_source(source)
+        except OSError:
+            resolved = None
+        if resolved == repo:
+            if seen_repo:
+                continue
+            seen_repo = True
+        key = str(resolved) if resolved else json.dumps(entry, sort_keys=True)
+        if key in seen_resolved:
+            continue
+        seen_resolved.add(key)
+    new_packages.append(entry)
+
+if not seen_repo:
+    rel = os.path.relpath(repo, settings_dir.resolve())
+    new_packages.append(rel)
+settings["packages"] = new_packages
+settings_path.parent.mkdir(parents=True, exist_ok=True)
+tmp = settings_path.with_suffix(settings_path.suffix + ".tmp")
+tmp.write_text(json.dumps(settings, indent=2) + "\n")
+tmp.replace(settings_path)
+print(settings_path)
+PY
+  ok "Wired $ROOT_DIR into $PI_AGENT_DIR/settings.json packages"
+}
+
+wire_agents_md() {
+  local dest="$PI_AGENT_DIR/AGENTS.md" src="$ROOT_DIR/AGENTS.md"
+  [ -f "$src" ] || return 0
+  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+    if [ "$FORCE" -eq 1 ]; then
+      rm -f "$dest"
+    else
+      warn "$dest exists and is not a symlink; leaving it untouched (use --force to replace)"
+      return 0
+    fi
+  fi
+  ln -sfn "$src" "$dest"
+  ok "Installed $dest → $src"
+}
+
+generate_catalog() {
+  if [ "$GENERATE_CATALOG" -eq 0 ]; then
+    warn "Skipping pi-catalog generation (--no-catalog)"
+    return 0
+  fi
+  if [ ! -f "$ALIASES_PATH" ]; then
+    warn "No alias catalog at $ALIASES_PATH; skipping initial pi-catalog generation"
+    return 0
+  fi
+  mkdir -p "$PI_OMLX_AGENT_DIR" "$(dirname "$LAUNCHERS_OUT")"
+  local cmd=("$ROOT_DIR/bin/pi-catalog" --aliases "$ALIASES_PATH" --models-out "$MODELS_OUT" --launchers-out "$LAUNCHERS_OUT" --pi-agent-dir "$PI_OMLX_AGENT_DIR")
+  if [ "$LS99_EXTRAS" = "1" ]; then
+    cmd+=(--ls99-extras)
+  fi
+  log "Rendering Pi catalog artifacts"
+  "${cmd[@]}"
+  ok "Rendered $MODELS_OUT and $LAUNCHERS_OUT"
+}
+
+main() {
+  [ "$(uname -s)" = "Darwin" ] || warn "pi-shared installer is intended for macOS; continuing because no launchd changes are required"
+  log "Installing pi-shared from $ROOT_DIR"
+  install_symlink pi-catalog
+  install_symlink pi-omlx-repair
+  install_symlink pi-vanilla
+  wire_settings
+  wire_agents_md
+  generate_catalog
+  printf '\nNext step: source generated launchers from your shell, e.g. add this to ~/.zshrc if you generated them:\n'
+  printf '  [ -f %q ] && source %q\n' "$LAUNCHERS_OUT" "$LAUNCHERS_OUT"
+  ok "pi-shared installed"
+}
+
+main

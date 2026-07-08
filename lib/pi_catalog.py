@@ -455,40 +455,58 @@ def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, 
 
 
 def _render_pi_restart(*, auto_regen: bool = False, aliases_path: str | None = None) -> list[str]:
-    """pi-restart() — wraps `server-ci restart --<service>` and polls the port.
+    """pi-restart() — restart model-gateway portably, with server-ci fallback.
 
-    If auto_regen is set, a successful model-gw restart also runs `pi-regen`
-    so the launcher + models.json stay in sync with the freshly-regenerated
-    alias catalog. It first waits for the alias file mtime to advance (the
-    gateway writes aliases early in its lifespan) so pi-regen doesn't render
-    from a stale file.
+    `model-gateway restart` is the portable repo-owned restart surface. ls99's
+    `server-ci restart --model-gw` remains as a fallback so older/dev-server
+    installs keep working. If auto_regen is set, a successful model-gw restart
+    also runs `pi-regen` so launcher + models.json stay in sync with the
+    freshly-regenerated alias catalog.
     """
     out = [
         "pi-restart() {",
-        "  # Restart model-gateway (and other services) via the canonical server-ci",
-        "  # interface, which maps flags to launchd labels. Defaults to model-gw.",
+        "  # Restart model-gateway via its portable CLI when available; fall",
+        "  # back to ls99's server-ci for legacy/dev-server services.",
         '  local svc="${1:-model-gw}"',
         '  if [ "$svc" = "-h" ] || [ "$svc" = "--help" ]; then',
         '    echo "Usage: pi-restart [service]   (default: model-gw)"',
         '    echo ""',
-        r'    echo "Wraps `server-ci restart --<service>`. Common services:"',
-        '    echo "  model-gw  Cloud LLM gateway (port 9111)  [default]"',
-        '    echo "  omlx      oMLX inference server (port 9110)"',
-        '    echo "  all       All services"',
-        '    echo "  status    Show status of all services (no restart)"',
-        '    echo "Full list: server-ci restart --help"',
+        "    echo 'For model-gw, calls model-gateway restart when available.'",
+        "    echo 'Falls back to server-ci restart --<service> for legacy services.'",
+        '    echo "  model-gw  Model gateway (port 9111)  [default]"',
+        '    echo "  omlx      oMLX inference server (port 9110; server-ci only)"',
+        '    echo "  all       All server-ci services"',
+        '    echo "  status    Show gateway/server-ci status (no restart)"',
         "    return 0",
         "  fi",
         '  if [ "$svc" = "status" ]; then',
-        "    server-ci restart --status",
+        "    if command -v model-gateway >/dev/null 2>&1; then",
+        "      model-gateway status",
+        "    elif command -v server-ci >/dev/null 2>&1; then",
+        "      server-ci restart --status",
+        "    else",
+        '      echo "Error: neither model-gateway nor server-ci found on PATH" >&2',
+        "      return 1",
+        "    fi",
         "    return $?",
         "  fi",
-        '  if ! command -v server-ci >/dev/null 2>&1; then',
-        '    echo "Error: server-ci not found on PATH" >&2',
-        "    return 1",
+        "  local rc=0",
+        '  if [ "$svc" = "model-gw" ] && command -v model-gateway >/dev/null 2>&1; then',
+        "    model-gateway restart",
+        "    rc=$?",
+        "    if [ $rc -ne 0 ] && command -v server-ci >/dev/null 2>&1; then",
+        '      echo "model-gateway restart failed; falling back to server-ci restart --model-gw" >&2',
+        "      server-ci restart --model-gw",
+        "      rc=$?",
+        "    fi",
+        "  else",
+        '    if ! command -v server-ci >/dev/null 2>&1; then',
+        '      echo "Error: model-gateway not found for model-gw and server-ci not found for fallback" >&2',
+        "      return 1",
+        "    fi",
+        '    server-ci restart --"$svc"',
+        "    rc=$?",
         "  fi",
-        '  server-ci restart --"$svc"',
-        "  local rc=$?",
         '  if [ $rc -eq 0 ] && [ "$svc" != "all" ] && [ "$svc" != "status" ]; then',
         "    # Poll until the service port reports UP (or ~25s elapse).",
         '    local port=""',
@@ -499,9 +517,16 @@ def _render_pi_restart(*, auto_regen: bool = False, aliases_path: str | None = N
         '    if [ -n "$port" ]; then',
         "      local elapsed=0 line=\"\"",
         "      while [ $elapsed -lt 25 ]; do",
-        '        line=$(server-ci restart --status 2>/dev/null | grep -E "^[[:space:]]*$port " | head -1)',
-        '        if echo "$line" | grep -qi "UP"; then',
-        "          break",
+        '        if [ "$svc" = "model-gw" ]; then',
+        '          if curl -fsS --max-time 3 "http://127.0.0.1:$port/health" 2>/dev/null | grep -q "\\\"status\\\""; then',
+        '            line="  $port ($svc): UP"',
+        "            break",
+        "          fi",
+        '        elif command -v server-ci >/dev/null 2>&1; then',
+        '          line=$(server-ci restart --status 2>/dev/null | grep -E "^[[:space:]]*$port " | head -1)',
+        '          if echo "$line" | grep -qi "UP"; then',
+        "            break",
+        "          fi",
         "        fi",
         "        sleep 2",
         "        elapsed=$((elapsed + 2))",

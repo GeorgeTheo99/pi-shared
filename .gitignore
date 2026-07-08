@@ -14,6 +14,7 @@ bin/*
 !bin/pi-vanilla
 !bin/pi-omlx-repair
 !bin/pi-catalog
+!bin/pi-shared-install
 
 # Per-project Pi config (e.g. .pi/enterprise-tools.json) is local-only;
 # pi-shared travels by git and should not carry per-machine activation state.
