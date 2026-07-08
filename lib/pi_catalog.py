@@ -333,6 +333,19 @@ def render_launchers(
         "# Source from ~/.zshrc. Regenerated from model-aliases.json (the",
         "# model-gateway public catalog contract). No claude-*/codex-* — pi-* only.",
         "",
+    ]
+    # When targeting a dedicated Pi profile (e.g. ~/.pi-omlx/agent), run the
+    # shared repair script once at source time so the profile stays wired
+    # (pi-shared package, AGENTS.md symlink, zero-usage fallback) after Pi
+    # updates. Idempotent; silent on success.
+    if pi_agent_dir:
+        lines += [
+            f'if command -v pi-omlx-repair >/dev/null 2>&1; then',
+            f'  PI_OMLX_AGENT_DIR={pi_agent_dir!r} pi-omlx-repair >/dev/null 2>&1 || true',
+            f'fi',
+            "",
+        ]
+    lines += [
         "_pi_gw_launch() {",
         "  local pi_provider=\"$1\" model=\"$2\" alias_name=\"$3\"; shift 3",
         f'  if ! curl -sf --max-time 2 {gateway_url}/health >/dev/null 2>&1; then',
