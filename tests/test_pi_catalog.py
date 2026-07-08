@@ -1,0 +1,283 @@
+"""Tests for pi-shared/lib/pi_catalog.py — Pi artifact renderer.
+
+Covers: models.json reasoning/thinkingFormat/api_type/vision/baseUrl logic,
+launcher id<->models.json id agreement, ls99 extras (pi-default/pi-openai),
+--check drift, symlink-safe writes, empty-catalog refusal.
+
+Run:  cd ~/local_code/pi-shared && python3 -m pytest tests/ -q
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+SHARED_ROOT = Path(__file__).resolve().parents[1]
+MODULE = SHARED_ROOT / "lib" / "pi_catalog.py"
+
+
+def _run(*extra, env: dict | None = None) -> subprocess.CompletedProcess:
+    e = dict(os.environ)
+    e["PYTHONPATH"] = str(SHARED_ROOT / "lib") + (os.pathsep + e.get("PYTHONPATH", ""))
+    if env:
+        e.update(env)
+    return subprocess.run(
+        [sys.executable, str(MODULE), *extra],
+        capture_output=True, text=True, env=e,
+    )
+
+
+def _load_aliases(tmp_path: Path, entries: dict) -> Path:
+    p = tmp_path / "aliases.json"
+    p.write_text(json.dumps(entries))
+    return p
+
+
+# --- models.json rendering --------------------------------------------------
+
+def test_local_qwen_gets_qwen_chat_template(tmp_path):
+    aliases = {
+        "qwen3.6-27b-mlx": {
+            "name": "qwen3.6-27b", "alias": "qwen36mlx", "desc": "local qwen",
+            "provider": "local", "omlx_id": "qwen3.6-27b-mlx",
+            "thinking": "always", "thinking_format": "qwen-chat-template",
+            "context": 262144, "max_output_tokens": 32768, "vision": True,
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "models.json").read_text())
+    prov = models["providers"]["ls99-models"]
+    m = prov["models"][0]
+    assert m["id"] == "qwen3.6-27b-mlx"  # local id == alias key
+    assert m["api"] == "openai-completions"
+    assert m["reasoning"] is True
+    assert m["compat"] == {"thinkingFormat": "qwen-chat-template"}
+    assert m["thinkingLevelMap"]["off"] is None  # thinking=always disables off
+    # high is the default on-level (not remapped); minimal/low/medium/xhigh collapse to it
+    assert m["thinkingLevelMap"]["minimal"] is None
+    assert "high" not in m["thinkingLevelMap"]
+    assert m["input"] == ["text", "image"]  # vision=True
+    assert m["contextWindow"] == 262144
+
+
+def test_local_glm_gets_graded_reasoning(tmp_path):
+    aliases = {
+        "glm-5.2-4.5bit": {
+            "name": "glm-5.2", "alias": "glm52mlx", "desc": "GLM 5.2",
+            "provider": "local", "omlx_id": "glm-5.2-4.5bit",
+            "thinking": "optional", "thinking_format": "glm-chat-template",
+            "context": 1000000, "max_output_tokens": 128000,
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["compat"]["thinkingFormat"] == "chat-template"
+    assert m["compat"]["chatTemplateKwargs"]["reasoning_effort"]["$var"] == "thinking.effort"
+    assert m["thinkingLevelMap"]["xhigh"] == "max"
+    assert m["thinkingLevelMap"]["high"] == "high"
+
+
+def test_cloud_anthropic_uses_messages_api_and_root_baseurl(tmp_path):
+    aliases = {
+        "cloud:claude-opus-4-8": {
+            "name": "claude-opus-4.8", "alias": "opus48", "desc": "Opus 4.8",
+            "provider": "anthropic", "provider_model_id": "claude-opus-4-8",
+            "thinking": "optional", "vision": True, "context": 1000000, "max_output_tokens": 128000,
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["id"] == "claude-opus-4-8"  # cloud id == provider_model_id
+    assert m["api"] == "anthropic-messages"
+    assert m["reasoning"] is True  # anthropic kind
+    assert m["baseUrl"] == "http://localhost:9111"  # root, not /v1 (avoid /v1/v1/messages)
+    assert m["input"] == ["text", "image"]  # cloud always image-capable
+
+
+def test_cloud_gpt_uses_responses_api(tmp_path):
+    aliases = {
+        "cloud:gpt-5.4": {
+            "name": "gpt-5.4", "alias": "gpt", "desc": "GPT-5.4",
+            "provider": "openai", "provider_model_id": "gpt-5.4",
+            "thinking": "optional", "context": 1000000, "max_output_tokens": 32768,
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["api"] == "openai-responses"
+    assert m["reasoning"] is True
+    assert "baseUrl" not in m  # openai-shaped uses provider /v1 base
+
+
+def test_cloud_gemini_openrouter_reasoning(tmp_path):
+    aliases = {
+        "cloud:google/gemini-3.1-pro-preview": {
+            "name": "gemini-3.1-pro", "alias": "gemini", "desc": "Gemini",
+            "provider": "openrouter", "provider_model_id": "google/gemini-3.1-pro-preview",
+            "thinking": "optional", "thinking_format": "openrouter", "vision": True,
+            "context": 1000000, "max_output_tokens": 65536,
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["api"] == "openai-completions"
+    assert m["compat"]["thinkingFormat"] == "openrouter"
+    assert m["reasoning"] is True
+
+
+def test_supported_false_skipped(tmp_path):
+    aliases = {
+        "bad-mlx": {"name": "bad", "alias": "bad", "supported": False, "desc": "", "provider": "local"},
+        "cloud:good-id": {
+            "name": "good", "alias": "good", "provider": "openai",
+            "provider_model_id": "good-id", "thinking": "optional",
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"]
+    assert [m["id"] for m in models] == ["good-id"]
+
+
+def test_provider_name_override(tmp_path):
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), "--provider-name", "my-prov")
+    assert r.returncode == 0, r.stderr
+    assert "my-prov" in json.loads((tmp_path / "m.json").read_text())["providers"]
+
+
+# --- launcher rendering + id agreement --------------------------------------
+
+def test_launcher_and_models_ids_agree(tmp_path):
+    aliases = {
+        "qwen3.6-27b-mlx": {
+            "name": "qwen3.6-27b", "alias": "qwen36mlx", "desc": "local qwen",
+            "provider": "local", "thinking": "optional", "thinking_format": "qwen-chat-template",
+        },
+        "cloud:claude-opus-4-8": {
+            "name": "claude-opus-4.8", "alias": "opus48", "provider": "anthropic",
+            "provider_model_id": "claude-opus-4-8", "thinking": "optional",
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"),
+             "--launchers-out", str(tmp_path / "l.zsh"), "--pi-agent-dir", "/tmp/.pi-omlx/agent")
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["models"]
+    launchers = (tmp_path / "l.zsh").read_text()
+    # The launcher passes the model id as a quoted arg to _pi_gw_launch; it must
+    # match the models.json id exactly (no drift).
+    for m in models:
+        assert f" {m['id']!r} " in launchers, f"launcher missing model id {m['id']!r}"
+    assert "pi-qwen36mlx()" in launchers
+    assert "pi-opus48()" in launchers
+    assert "pi-list()" in launchers
+    assert "pi-restart()" in launchers
+    # pi-agent-dir wrapping
+    assert "PI_CODING_AGENT_DIR='/tmp/.pi-omlx/agent'" in launchers
+    # provider name passed as 1st arg to _pi_gw_launch
+    assert "_pi_gw_launch 'ls99-models'" in launchers
+    # NO claude-*/codex-* FUNCTION definitions (standardize on pi).
+    # (Model ids like 'claude-opus-4-8' may appear as args, that's fine.)
+    import re
+    assert not re.search(r'\bclaude-[A-Za-z0-9_]+\s*\(\)', launchers), "launcher defines claude-* functions"
+    assert not re.search(r'\bcodex-[A-Za-z0-9_]+\s*\(\)', launchers), "launcher defines codex-* functions"
+
+
+def test_ls99_extras_adds_pi_default_and_pi_openai(tmp_path):
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--launchers-out", str(tmp_path / "l.zsh"), "--ls99-extras")
+    assert r.returncode == 0, r.stderr
+    launchers = (tmp_path / "l.zsh").read_text()
+    assert "pi-default()" in launchers
+    assert "pi-openai()" in launchers
+    assert "-u PI_CODING_AGENT_DIR" in launchers  # both use default profile
+    assert "openai-codex" in launchers
+
+
+def test_no_ls99_extras_omits_default_openai(tmp_path):
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--launchers-out", str(tmp_path / "l.zsh"))
+    assert r.returncode == 0, r.stderr
+    launchers = (tmp_path / "l.zsh").read_text()
+    assert "pi-default()" not in launchers
+    assert "pi-openai()" not in launchers
+
+
+# --- IO / drift / edge cases -------------------------------------------------
+
+def test_check_drift_detection(tmp_path):
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
+    p = _load_aliases(tmp_path, aliases)
+    mp = tmp_path / "m.json"
+    r = _run("--aliases", str(p), "--models-out", str(mp))
+    assert r.returncode == 0
+    r = _run("--aliases", str(p), "--models-out", str(mp), "--check")
+    assert r.returncode == 0, r.stderr
+    assert "in sync" in r.stdout
+    mp.write_text("{}")
+    r = _run("--aliases", str(p), "--models-out", str(mp), "--check")
+    assert r.returncode == 1
+    assert "DRIFT" in r.stderr or "DRIFT" in r.stdout
+
+
+def test_symlink_safe_write(tmp_path):
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
+    p = _load_aliases(tmp_path, aliases)
+    target = tmp_path / "real-models.json"
+    target.write_text("{}")
+    link = tmp_path / "link-models.json"
+    link.symlink_to(target)
+    r = _run("--aliases", str(p), "--models-out", str(link))
+    assert r.returncode == 0, r.stderr
+    assert link.is_symlink()
+    assert "ls99-models" in json.loads(target.read_text())["providers"]
+
+
+def test_empty_catalog_refused(tmp_path):
+    p = _load_aliases(tmp_path, {})
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"))
+    assert r.returncode != 0
+    assert "empty catalog" in r.stderr
+
+
+def test_no_output_targets_errors(tmp_path):
+    p = _load_aliases(tmp_path, {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}})
+    r = _run("--aliases", str(p))
+    assert r.returncode != 0
+    assert "nothing to do" in r.stderr
+
+
+def test_real_alias_file_renders(tmp_path):
+    """Smoke test against the live ls99 alias file if present."""
+    af = Path.home() / ".claude" / "model-aliases.json"
+    if not af.exists():
+        pytest.skip("no live alias file")
+    r = _run("--aliases", str(af), "--models-out", str(tmp_path / "m.json"),
+             "--launchers-out", str(tmp_path / "l.zsh"), "--pi-agent-dir", str(Path.home() / ".pi-omlx/agent"),
+             "--ls99-extras", "--omlx-status-url", "http://localhost:9110/v1/models/status")
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["models"]
+    assert len(models) >= 30
+    launchers = (tmp_path / "l.zsh").read_text()
+    for m in models:
+        assert f" {m['id']!r} " in launchers, f"launcher missing model id {m['id']!r}"

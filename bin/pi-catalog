@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# pi-catalog — render Pi CLI artifacts (models.json + pi-launchers.zsh) from a
+# model-aliases.json catalog (the model-gateway public contract). Source of
+# logic: ../lib/pi_catalog.py. See that module's docstring for full options.
+
+_PI_SHARED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec python3 "$_PI_SHARED_DIR/lib/pi_catalog.py" "$@"
