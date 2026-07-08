@@ -15,6 +15,9 @@ Shared pi instructions and explicitly shareable pi resources.
 - `themes/` — shared themes.
 - `bin/pi-vanilla` — recovery launcher for a vanilla Pi session when shared/local harness resources break normal startup.
 - `bin/pi-omlx-repair` — repair/wiring script for the dedicated `~/.pi-omlx/agent` Pi profile used by local oMLX/cloud model launchers.
+- `bin/pi-catalog` — render Pi CLI artifacts (`models.json` + `pi-launchers.zsh`) from a `model-aliases.json` catalog (the model-gateway public contract). The Pi-side of the model-gateway/Pi separation: the gateway owns the generic catalog, pi-catalog owns Pi-specific rendering. Install per-machine via a `~/.local/bin` symlink.
+- `lib/pi_catalog.py` — the importable module behind `bin/pi-catalog` (render functions + CLI).
+- `tests/test_pi_catalog.py` — tests for the catalog renderer (`python3 -m pytest tests/`).
 
 ## Pi launcher profiles
 
@@ -66,6 +69,37 @@ Run manually if needed:
 ```
 
 Current generated `pi-*` shell launchers call this automatically before writing models or launching Pi. Future launchers that set `PI_CODING_AGENT_DIR=~/.pi-omlx/agent` should do the same.
+
+## Pi catalog rendering (model-gateway separation)
+
+`bin/pi-catalog` renders Pi-specific artifacts from a `model-aliases.json` catalog — the public contract emitted by `model-gateway`. This keeps the gateway generic (no Pi config-schema knowledge) and Pi rendering in `pi-shared` (where the `models.json` schema lives). Either service can be installed without the other.
+
+It reads the alias file and emits:
+
+- `models.json` — a Pi provider/models config with full reasoning/thinkingFormat compat knowledge (local-qwen/glm/deepseek, fireworks-messages, zai, openrouter, openai-responses, anthropic), api_type selection, vision heuristics, and anthropic baseUrl overrides.
+- `pi-launchers.zsh` — `pi-<alias>()` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai` via `--ls99-extras`). No `claude-*`/`codex-*` — standardize on `pi`.
+
+The model id in the launcher always matches the id in `models.json` (local = alias key / omlx_id, cloud = provider_model_id), so the two can never drift.
+
+Install per-machine:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sfn ~/local_code/pi-shared/bin/pi-catalog ~/.local/bin/pi-catalog
+```
+
+Generate for the oMLX profile (ls99):
+
+```bash
+pi-catalog --aliases ~/.claude/model-aliases.json \
+  --models-out ~/.pi-omlx/agent/models.json \
+  --launchers-out ~/local_code/model-gateway-runtime/pi-launchers.zsh \
+  --pi-agent-dir ~/.pi-omlx/agent --ls99-extras
+```
+
+The generated launcher bakes in a `pi-regen()` function (the same invocation) so it can refresh itself + `models.json` after a catalog change. `pi-restart model-gw` auto-calls `pi-regen` — the gateway regenerates the alias catalog on start, then `pi-regen` refreshes the Pi artifacts. No launchd watcher needed.
+
+For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databricks directly), point `--gateway-url` at the endpoint and `--provider-name` at the Pi provider, and feed a catalog alias file from whatever source is appropriate.
 
 ## Included shared extensions
 
