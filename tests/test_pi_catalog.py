@@ -249,6 +249,81 @@ def test_no_regen_when_no_output_paths(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+def test_cloud_missing_provider_model_id_skipped_in_both(tmp_path):
+    # A cloud entry with no provider_model_id must be skipped in BOTH models.json
+    # and the launcher (no pi-<alias> emitted) — the id-agreement edge case.
+    aliases = {
+        "cloud:no-pm": {"name": "np", "alias": "np", "provider": "openai", "thinking": "optional"},  # no provider_model_id
+        "cloud:good": {"name": "g", "alias": "g", "provider": "openai", "provider_model_id": "good-id", "thinking": "optional"},
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), "--launchers-out", str(tmp_path / "l.zsh"))
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["models"]
+    ids = {m["id"] for m in models}
+    assert "good-id" in ids
+    assert "cloud:no-pm" not in ids  # skipped
+    launchers = (tmp_path / "l.zsh").read_text()
+    assert "pi-g()" in launchers
+    assert "pi-np()" not in launchers  # no launcher for the skipped model
+
+
+def test_duplicate_provider_model_id_deduped_in_both(tmp_path):
+    aliases = {
+        "cloud:a": {"name": "a", "alias": "a", "provider": "openai", "provider_model_id": "dup-id", "thinking": "optional"},
+        "cloud:b": {"name": "b", "alias": "b", "provider": "openai", "provider_model_id": "dup-id", "thinking": "optional"},
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), "--launchers-out", str(tmp_path / "l.zsh"))
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["models"]
+    assert len([m for m in models if m["id"] == "dup-id"]) == 1
+    launchers = (tmp_path / "l.zsh").read_text()
+    # only the first alias wins; second is skipped
+    assert ("pi-a()" in launchers) != ("pi-b()" in launchers)
+
+
+def test_gguf_provider_skipped_in_both(tmp_path):
+    aliases = {
+        "cloud:gg": {"name": "gg", "alias": "gg", "provider": "gguf", "provider_model_id": "gg-id", "thinking": "optional"},
+        "cloud:ok": {"name": "ok", "alias": "ok", "provider": "openai", "provider_model_id": "ok-id", "thinking": "optional"},
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), "--launchers-out", str(tmp_path / "l.zsh"))
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["models"]
+    assert {m["id"] for m in models} == {"ok-id"}
+    launchers = (tmp_path / "l.zsh").read_text()
+    assert "pi-ok()" in launchers
+    assert "pi-gg()" not in launchers
+
+
+def test_enable_thinking_false_disables_reasoning(tmp_path):
+    aliases = {
+        "qwen-mlx": {
+            "name": "qwen", "alias": "qwen", "provider": "local",
+            "thinking": "always", "thinking_format": "qwen-chat-template",
+            "enable_thinking": False,  # short-circuits reasoning to off
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["reasoning"] is False
+    assert "compat" not in m  # no thinkingFormat
+
+
+def test_provider_compat_not_shared_between_providers(tmp_path):
+    # _DEFAULT_PROVIDER_COMPAT is copied per-provider; mutation must not leak.
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"))
+    assert r.returncode == 0, r.stderr
+    prov = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]
+    assert prov["compat"]["maxTokensField"] == "max_tokens"
+
+
 def test_no_ls99_extras_omits_default_openai(tmp_path):
     aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
     p = _load_aliases(tmp_path, aliases)

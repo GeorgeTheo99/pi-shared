@@ -180,6 +180,51 @@ def _cost() -> dict:
     return {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
 
 
+def _eligible_entries(aliases: dict) -> list[tuple[str, dict]]:
+    """Yield (key, meta) for catalog entries both render_models and render_launchers
+    include — the single eligibility + dedup rule so launcher ids and models.json
+    ids can never disagree.
+
+    Rules (mirroring render_models' skip logic):
+      - skip entries with no `alias` or `supported: false`
+      - skip `provider: gguf` entries
+      - cloud entries: skip if no `provider_model_id` or a duplicate one
+      - local entries: skip duplicate keys
+    Order: alias-file iteration order is preserved; local entries come out in
+    file order, cloud entries in file order. (render_models concatenates
+    local + cloud; render_launchers sorts by alias, so order doesn't matter for
+    correctness, only for stable output.)
+    """
+    seen_local: set[str] = set()
+    seen_cloud: set[str] = set()
+    out: list[tuple[str, dict]] = []
+    for key, alias_meta in aliases.items():
+        meta = dict(alias_meta)
+        if not meta.get("alias") or meta.get("supported") is False:
+            continue
+        provider = _norm_provider(meta)
+        if provider == "gguf":
+            continue
+        if key.startswith("cloud:"):
+            pm = meta.get("provider_model_id")
+            if not pm or pm in seen_cloud:
+                continue
+            seen_cloud.add(pm)
+        else:
+            if key in seen_local:
+                continue
+            seen_local.add(key)
+        out.append((key, meta))
+    return out
+
+
+def _model_id_for(key: str, meta: dict) -> str:
+    """The model id used in BOTH models.json and the launcher (never drifts)."""
+    if key.startswith("cloud:"):
+        return meta.get("provider_model_id") or key
+    return key  # local: alias key == omlx_id
+
+
 def render_models(
     aliases: dict,
     *,
@@ -197,14 +242,8 @@ def render_models(
     gw = gateway_url.rstrip("/")
     local_models: list[dict] = []
     cloud_models: list[dict] = []
-    seen_local: set[str] = set()
-    seen_cloud: set[str] = set()
 
-    for key, alias_meta in aliases.items():
-        meta = dict(alias_meta)
-        alias = meta.get("alias")
-        if not alias or meta.get("supported") is False:
-            continue
+    for key, meta in _eligible_entries(aliases):
         status = omlx_status.get(key, {})
         ctx = int(
             meta.get("context")
@@ -219,8 +258,6 @@ def render_models(
             or 32768
         )
         provider = _norm_provider(meta)
-        if provider == "gguf":
-            continue
         kind = _reasoning_kind(key, meta, status)
         api_type = _api_type_for(kind, provider)
         is_anthropic = provider in ANTHROPIC_PROVIDERS
@@ -237,7 +274,7 @@ def render_models(
         is_vision = bool(meta.get("vision")) or "vl" in _hay or "gemma" in _hay
         desc = meta.get("desc") or key
         model: dict = {
-            "id": key,
+            "id": _model_id_for(key, meta),
             "name": desc,
             "api": api_type,
             "reasoning": False,
@@ -254,16 +291,8 @@ def render_models(
             model["baseUrl"] = gw
         _apply_reasoning(model, kind, meta)
         if key.startswith("cloud:"):
-            provider_model = meta.get("provider_model_id")
-            if not provider_model or provider_model in seen_cloud:
-                continue
-            model["id"] = provider_model
-            seen_cloud.add(provider_model)
             cloud_models.append(model)
         else:
-            if key in seen_local:
-                continue
-            seen_local.add(key)
             local_models.append(model)
 
     return {
@@ -280,12 +309,6 @@ def render_models(
 
 
 # --- Launcher rendering ------------------------------------------------------
-
-def _launcher_model_id(key: str, meta: dict) -> str:
-    """The model id passed to `pi --model`. Matches render_models exactly."""
-    if key.startswith("cloud:"):
-        return meta.get("provider_model_id") or key
-    return key  # local: alias key == omlx_id
 
 
 def render_launchers(
@@ -307,15 +330,14 @@ def render_launchers(
     launcher can refresh itself + models.json after a catalog change.
     """
     gw_host = gateway_url.rstrip("/").replace("https://", "").replace("http://", "")
-    # Build the (alias, model_id, display) rows, sorted for stable output.
+    # Build the (alias, model_id, display) rows from the SAME eligibility rule
+    # as render_models, so launcher ids and models.json ids can never disagree.
     rows: list[tuple[str, str, str]] = []
-    for key, meta in aliases.items():
-        alias = meta.get("alias")
-        if not alias or meta.get("supported") is False:
-            continue
-        model_id = _launcher_model_id(key, meta)
+    for key, meta in _eligible_entries(aliases):
+        alias = str(meta["alias"])
+        model_id = _model_id_for(key, meta)
         name = meta.get("name") or model_id
-        rows.append((str(alias), model_id, str(name)))
+        rows.append((alias, model_id, str(name)))
     rows.sort(key=lambda r: r[0])
 
     # The pi invocation. If pi_agent_dir is set, wrap with env so the launcher
@@ -394,7 +416,10 @@ def render_launchers(
             ls99_extras=ls99_extras,
         )
 
-    lines += _render_pi_restart(auto_regen=bool(models_out or launchers_out))
+    lines += _render_pi_restart(
+        auto_regen=bool(models_out or launchers_out),
+        aliases_path=aliases_path,
+    )
     if ls99_extras:
         lines += ["", _render_pi_default(), "", _render_pi_openai()]
 
@@ -429,14 +454,16 @@ def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, 
     ]
 
 
-def _render_pi_restart(*, auto_regen: bool = False) -> list[str]:
+def _render_pi_restart(*, auto_regen: bool = False, aliases_path: str | None = None) -> list[str]:
     """pi-restart() — wraps `server-ci restart --<service>` and polls the port.
 
     If auto_regen is set, a successful model-gw restart also runs `pi-regen`
     so the launcher + models.json stay in sync with the freshly-regenerated
-    alias catalog.
+    alias catalog. It first waits for the alias file mtime to advance (the
+    gateway writes aliases early in its lifespan) so pi-regen doesn't render
+    from a stale file.
     """
-    return [
+    out = [
         "pi-restart() {",
         "  # Restart model-gateway (and other services) via the canonical server-ci",
         "  # interface, which maps flags to launchd labels. Defaults to model-gw.",
@@ -492,12 +519,31 @@ def _render_pi_restart(*, auto_regen: bool = False) -> list[str]:
         "  fi",
         "  if [ $rc -eq 0 ] && [ \"$svc\" = model-gw ] && command -v pi-regen >/dev/null 2>&1; then",
         "    # model-gw restart regenerated the alias catalog; refresh Pi artifacts.",
+        "    # Wait briefly for the alias file mtime to advance so we don't render",
+        "    # from a stale file (the port-poll confirms the server is up, not that",
+        "    # exports finished).",
+    ]
+    if aliases_path:
+        out += [
+            f'    _af={aliases_path!r}',
+            '    if [ -f "$_af" ]; then',
+            '      _pre=$(stat -f %m "$_af" 2>/dev/null || echo 0)',
+            '      _w=0',
+            '      while [ $_w -lt 10 ]; do',
+            '        _post=$(stat -f %m "$_af" 2>/dev/null || echo 0)',
+            '        [ "$_post" != "$_pre" ] && break',
+            '        sleep 1; _w=$((_w + 1))',
+            '      done',
+            '    fi',
+        ]
+    out += [
         "    pi-regen --quiet 2>/dev/null || true",
         "  fi",
         "  return $rc",
         "}",
         "",
     ]
+    return out
 
 
 def _render_pi_default() -> str:
