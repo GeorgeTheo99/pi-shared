@@ -1,7 +1,7 @@
 # integration-bundles
 
 Lazy tool-bundle loader for Pi, driven by
-[`pi-shared/master_integration_list.yaml`](../../master_integration_list.yaml).
+a machine-local `master_integration_list.yaml` (resolved from `$PI_INTEGRATION_LIST` or `~/.pi/agent/master_integration_list.yaml`). The bundle definitions are domain/machine-specific and intentionally not part of pi-shared.
 
 ## Why
 
@@ -46,7 +46,7 @@ The extension keeps **three router tools always-on**:
 
 ## Configuration
 
-Edit `pi-shared/master_integration_list.yaml`. The file is the contract.
+Edit the machine-local `master_integration_list.yaml` (see resolution order above). The file is the contract.
 
 ## Compatibility
 

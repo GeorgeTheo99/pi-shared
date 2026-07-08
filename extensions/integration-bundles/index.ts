@@ -58,7 +58,6 @@ interface MasterList {
 function findMasterList(): { path: string; data: MasterList } | null {
 	const candidates = [
 		process.env.PI_INTEGRATION_LIST,
-		path.join(os.homedir(), "local_code", "pi-shared", "master_integration_list.yaml"),
 		path.join(os.homedir(), ".pi", "agent", "master_integration_list.yaml"),
 	].filter((p): p is string => Boolean(p));
 
@@ -246,8 +245,10 @@ function discoverSkillHints(): SkillBundleHint[] {
 	const hints: SkillBundleHint[] = [];
 	const roots = [
 		path.join(os.homedir(), ".pi", "agent", "skills"),
+		...(process.env.PI_SKILL_HINT_ROOTS ? process.env.PI_SKILL_HINT_ROOTS.split(":") : []),
 		path.join(os.homedir(), "local_code", "pi-shared", "skills"),
 		path.join(os.homedir(), "local_code", "pi-local", "skills"),
+		path.join(os.homedir(), "local_code", "pi-databricks", "skills"),
 		path.join(process.cwd(), ".pi", "skills"),
 	];
 	const seen = new Set<string>();
