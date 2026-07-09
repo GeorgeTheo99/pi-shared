@@ -406,17 +406,18 @@ def render_launchers(
         "# model-gateway public catalog contract). No claude-*/codex-* — pi-* only.",
         "",
     ]
-    # When targeting a dedicated Pi profile (e.g. ~/.pi-omlx/agent), run the
-    # shared repair script once at source time so the profile stays wired
-    # (pi-shared package, AGENTS.md symlink, zero-usage fallback) after Pi
-    # updates. Idempotent; silent on success.
-    if pi_agent_dir:
-        lines += [
-            f'if command -v pi-omlx-repair >/dev/null 2>&1; then',
-            f'  PI_OMLX_AGENT_DIR={pi_agent_dir!r} pi-omlx-repair >/dev/null 2>&1 || true',
-            f'fi',
-            "",
-        ]
+    # Run the shared repair script once at source time so the profile used by
+    # generated pi-* launchers stays wired after Pi updates. This also applies
+    # Pi's zero-usage context fallback to the installed runtime; use ~/.pi/agent
+    # when no dedicated profile was requested because that is what the launcher
+    # will use.
+    repair_agent_dir_expr = repr(pi_agent_dir) if pi_agent_dir else '"$HOME/.pi/agent"'
+    lines += [
+        f'if command -v pi-omlx-repair >/dev/null 2>&1; then',
+        f'  PI_OMLX_AGENT_DIR={repair_agent_dir_expr} pi-omlx-repair >/dev/null 2>&1 || true',
+        f'fi',
+        "",
+    ]
     lines += [
         "_pi_gw_launch() {",
         "  local pi_provider=\"$1\" model=\"$2\" alias_name=\"$3\"; shift 3",

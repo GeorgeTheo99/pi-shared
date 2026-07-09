@@ -23,7 +23,19 @@ _DEFAULT_PI_SHARED_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
 PI_OMLX_AGENT_DIR="${PI_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
 PI_SHARED_DIR="${PI_SHARED_DIR:-$_DEFAULT_PI_SHARED_DIR}"
 PI_LOCAL_EXTENSIONS_DIR="${PI_LOCAL_EXTENSIONS_DIR:-$HOME/local_code/pi-databricks/extensions}"
-PI_INSTALL_DIR="${PI_INSTALL_DIR:-/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent}"
+if [[ -z "${PI_INSTALL_DIR:-}" ]]; then
+  for _pi_install_candidate in \
+    "/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent" \
+    "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent" \
+    "/usr/local/lib/node_modules/@mariozechner/pi-coding-agent" \
+    "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent"; do
+    if [[ -f "$_pi_install_candidate/dist/core/compaction/compaction.js" ]]; then
+      PI_INSTALL_DIR="$_pi_install_candidate"
+      break
+    fi
+  done
+  PI_INSTALL_DIR="${PI_INSTALL_DIR:-/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent}"
+fi
 
 mkdir -p "$PI_OMLX_AGENT_DIR"
 
