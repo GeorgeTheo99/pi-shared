@@ -14,6 +14,7 @@ import {
 	readConfiguredMcpUrls,
 	type McpToolCallResult,
 } from "./mcp-client.js";
+import { normalizeCount, normalizeToolText, TOOL_OUTPUT_CHAR_LIMIT } from "./text.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -51,6 +52,19 @@ function parseMcpSearchPayload(text: string): McpSearchPayload | undefined {
 	}
 }
 
+function formatSearchResults(results: SearchResult[], numResults: number): string {
+	return results
+		.slice(0, Math.max(0, Math.floor(numResults)))
+		.map((result, index) => {
+			const rank = Number.isFinite(result.rank) ? result.rank : index + 1;
+			const title = normalizeToolText(String(result.title ?? "Untitled"), 1_000);
+			const url = normalizeToolText(String(result.url ?? ""), 4_000);
+			const snippet = normalizeToolText(String(result.snippet ?? ""), 4_000);
+			return [`${rank}. ${title}`, url, snippet].filter(Boolean).join("\n");
+		})
+		.join("\n\n");
+}
+
 function mcpErrorText(action: "Search" | "Fetch", result: McpToolCallResult): string {
 	return [
 		`${action} error: Could not reach the local-search MCP broker.`,
@@ -86,7 +100,7 @@ const webSearch = defineTool({
 	}),
 
 	async execute(_id, params, signal, _onUpdate, _ctx) {
-		const numResults = params.num_results ?? 8;
+		const numResults = normalizeCount(params.num_results ?? 8, 8);
 		const mcp = await mcpToolCall(
 			readConfiguredMcpUrls(),
 			"web_search",
@@ -111,7 +125,10 @@ const webSearch = defineTool({
 		}
 
 		const payload = parseMcpSearchPayload(mcp.text);
-		const text = payload?.text ?? mcp.text;
+		const structuredText = payload?.results?.length
+			? formatSearchResults(payload.results, numResults)
+			: undefined;
+		const text = normalizeToolText(structuredText ?? payload?.text ?? mcp.text);
 		return {
 			content: [{ type: "text" as const, text }],
 			details: {
@@ -155,7 +172,7 @@ const webFetch = defineTool({
 	}),
 
 	async execute(_id, params, signal, _onUpdate, _ctx) {
-		const maxChars = params.max_chars ?? 20000;
+		const maxChars = normalizeCount(params.max_chars ?? 20_000, 20_000);
 		const mcp = await mcpToolCall(
 			readConfiguredMcpUrls(),
 			"web_fetch",
@@ -177,8 +194,9 @@ const webFetch = defineTool({
 		}
 
 		const isError = mcp.text.startsWith("Fetch error:");
+		const text = normalizeToolText(mcp.text, Math.min(maxChars, TOOL_OUTPUT_CHAR_LIMIT));
 		return {
-			content: [{ type: "text" as const, text: mcp.text }],
+			content: [{ type: "text" as const, text }],
 			details: {
 				provider: "mcp",
 				url: params.url,
