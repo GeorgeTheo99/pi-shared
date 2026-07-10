@@ -1,6 +1,9 @@
 {
   "name": "pi-shared",
   "private": true,
+  "scripts": {
+    "test:websearch": "node --no-warnings --test tests/websearch_mcp_client.test.mts"
+  },
   "keywords": ["pi-package"],
   "pi": {
     "extensions": ["./extensions"],

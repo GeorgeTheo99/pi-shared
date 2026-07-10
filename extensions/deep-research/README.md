@@ -29,17 +29,16 @@ Shared Pi extension for brokered multi-source research through the local-search 
 
 ## MCP broker configuration
 
-Direct SearXNG is not used by this client. The local-search MCP broker is the required entry point and owns backend strategy, including local/private SearXNG and provider fallback.
+Direct SearXNG is not used by this client. The local-search MCP broker is the required entry point and owns backend strategy, including loopback/self-hosted SearXNG and policy-controlled provider fallback or supplementation.
 
-Resolution order:
+Configured URLs are collected in this order:
 
 1. `PI_WEBSEARCH_MCP_URL`
 2. `SEARCH_MCP_URL`
 3. `WEBSEARCH_MCP_URL`
 4. `~/.pi/research/config.json`
-5. local-only defaults if reachable:
-   - `http://127.0.0.1:8889/mcp`
-   - `http://localhost:8889/mcp`
+
+If any URL is explicitly configured, only those configured URLs are tried. With no configuration, the sole default is `http://127.0.0.1:8889/mcp`.
 
 Config file example:
 
@@ -50,6 +49,17 @@ Config file example:
 ```
 
 `mcpUrl` is also accepted for compatibility with other local-search clients.
+
+## Credentials and request safety
+
+Broker authentication and Tavily forwarding are separate:
+
+- Broker token (`Authorization: Bearer ...`): `PI_WEBSEARCH_MCP_API_KEY`, then `SEARCH_MCP_API_KEY`.
+- Tavily key (`X-Tavily-Key`): `PI_WEBSEARCH_TAVILY_API_KEY`, then `TAVILY_API_KEY`.
+
+A Tavily key is forwarded only for broker `web_search` calls on loopback; page-fetch calls never receive it. Broker authentication may be sent to loopback HTTP or any HTTPS endpoint; no credentials are sent to non-loopback plain HTTP. MCP redirects and embedded URL credentials are rejected, and sensitive endpoint query parameters are redacted from diagnostics.
+
+Cancellation of the LLM-callable `deep_research` tool propagates through endpoint resolution, parallel searches, and fetch fan-out instead of being converted into empty results or fetch failures. The `/research` command retains its existing no-signal behavior. Shared MCP transport behavior is covered by `npm run test:websearch` from the `pi-shared` root.
 
 ## Output
 

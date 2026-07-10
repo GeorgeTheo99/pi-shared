@@ -145,7 +145,7 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
 - `extensions/websearch` — local-search MCP-backed web tools:
   - `web_search` calls the MCP broker tool `web_search(query, num_results)`
   - `web_fetch` calls the MCP broker tool `web_fetch(url, max_chars)`
-  - the broker is the stable entry point and owns local/private SearXNG plus fallback behavior; Pi does not bypass it with direct SearXNG fallback. See `extensions/websearch/README.md`.
+  - the broker is the stable entry point and owns loopback/self-hosted SearXNG plus policy-controlled Tavily behavior; Pi does not bypass it with direct SearXNG fallback. See `extensions/websearch/README.md`.
 - `extensions/goal` — durable `/goal` loop for long-running work:
   - `/goal <objective> [--max-turns N]` starts a user-requested goal
   - `/goal status`, `/goal pause`, `/goal resume`, `/goal clear` control it
@@ -285,7 +285,7 @@ Project-local setups can instead use `./pi-shared` from `~/local_code/.pi/settin
 2. Point that machine's Pi `AGENTS.md` at this repo.
 3. Ensure project settings include `./pi-shared` as a package.
 4. Install package dependencies once.
-5. For `web_search` / `deep_research`, run/configure the local-search MCP broker on that machine. Recommended endpoint: `http://127.0.0.1:8889/mcp`; the broker owns local/private SearXNG and provider fallback. Override with `PI_WEBSEARCH_MCP_URL`, `SEARCH_MCP_URL`, `WEBSEARCH_MCP_URL`, or `~/.pi/research/config.json`.
+5. For `web_search` / `deep_research`, run/configure the local-search MCP broker on that machine. Recommended endpoint: `http://127.0.0.1:8889/mcp`; the broker owns loopback/self-hosted SearXNG and explicit Tavily disabled/fallback/supplement policy. Override with `PI_WEBSEARCH_MCP_URL`, `SEARCH_MCP_URL`, `WEBSEARCH_MCP_URL`, or `~/.pi/research/config.json`.
 6. For `app_*`, set `BROWSER_MCP_APP_BASE_URL` when the target app is not `http://127.0.0.1:8100`; optionally add `BROWSER_MCP_APP_ALLOWED_HOSTS` for additional private hosts.
 7. Install the optional `pi-vanilla` recovery launcher if desired.
 8. Run `~/local_code/pi-shared/bin/pi-omlx-repair` on machines that use generated `pi-*` oMLX/cloud launchers.

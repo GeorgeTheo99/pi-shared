@@ -1,9 +1,15 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
+import {
+  CONFIG_PATH,
+  mcpToolCall,
+  readConfiguredMcpUrls,
+  throwIfCallerAborted,
+} from "../websearch/mcp-client.js";
 
 interface ResearchOptions {
   mode: "general" | "data" | "sources";
@@ -53,17 +59,7 @@ interface ResearchBundle {
   sources: SourceRecord[];
 }
 
-interface McpToolCallResult {
-  endpointUrl?: string;
-  checked: string[];
-  text?: string;
-  result?: unknown;
-  error?: string;
-}
-
 const RESEARCH_ROOT = join(homedir(), ".pi", "research");
-const CONFIG_PATH = join(RESEARCH_ROOT, "config.json");
-const DEFAULT_LOCAL_MCP = ["http://127.0.0.1:8889/mcp", "http://localhost:8889/mcp"];
 const MAX_EXCERPT_CHARS = 5000;
 const MAX_SYNTHESIS_CHARS = 60_000;
 
@@ -96,7 +92,7 @@ function usage() {
     "MCP broker config priority:",
     "  PI_WEBSEARCH_MCP_URL, SEARCH_MCP_URL, WEBSEARCH_MCP_URL,",
     `  ${CONFIG_PATH} { \"websearchMcpUrl\": \"http://127.0.0.1:8889/mcp\" },`,
-    "  then local-only defaults http://127.0.0.1:8889/mcp and http://localhost:8889/mcp if reachable.",
+    "  Explicitly configured URLs are authoritative; otherwise http://127.0.0.1:8889/mcp is used.",
     "  Direct SearXNG is not used by this client; the broker owns backend strategy.",
   ].join("\n");
 }
@@ -207,107 +203,13 @@ function applyDepthDefaults(options: ResearchOptions): ResearchOptions {
   };
 }
 
-function normalizeBaseUrl(url: string) {
-  return url.replace(/\/+$/, "");
-}
-
-function readSearchConfig(): Record<string, unknown> {
-  if (!existsSync(CONFIG_PATH)) return {};
-  try {
-    return JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
-
-function readConfiguredMcpUrls(): string[] {
-  const envValues = [
-    process.env.PI_WEBSEARCH_MCP_URL,
-    process.env.SEARCH_MCP_URL,
-    process.env.WEBSEARCH_MCP_URL,
-  ].filter(Boolean) as string[];
-
-  const config = readSearchConfig();
-  const configValues = [config.websearchMcpUrl, config.mcpUrl].filter(
-    (value): value is string => typeof value === "string" && value.length > 0,
+async function mcpSearch(endpointUrl: string, query: string, limit: number, signal?: AbortSignal): Promise<SearchResult[]> {
+  const result = await mcpToolCall(
+    [endpointUrl],
+    "web_search",
+    { query, num_results: limit },
+    { signal, timeoutMs: 25_000, requestId: "pi-deep-research" },
   );
-
-  return [...new Set([...envValues, ...configValues, ...DEFAULT_LOCAL_MCP].map(normalizeBaseUrl))];
-}
-
-function readMcpApiKey(): string | undefined {
-  return [
-    process.env.PI_WEBSEARCH_MCP_API_KEY,
-    process.env.SEARCH_MCP_API_KEY,
-    process.env.TAVILY_API_KEY,
-  ]
-    .find((value) => typeof value === "string" && value.trim().length > 0)
-    ?.trim();
-}
-
-function mcpResultText(result: unknown): string | undefined {
-  if (result && typeof result === "object") {
-    const content = (result as { content?: unknown }).content;
-    if (Array.isArray(content)) {
-      const parts = content
-        .map((item) =>
-          item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
-            ? (item as { text: string }).text
-            : undefined,
-        )
-        .filter((part): part is string => Boolean(part));
-      if (parts.length) return parts.join("\n");
-    }
-
-    const structured = (result as { structuredContent?: unknown }).structuredContent;
-    if (structured && typeof structured === "object") return JSON.stringify(structured);
-  }
-  return result === undefined ? undefined : JSON.stringify(result);
-}
-
-async function mcpToolCall(endpointUrl: string, toolName: string, args: Record<string, unknown>, timeout = 25_000): Promise<McpToolCallResult> {
-  const apiKey = readMcpApiKey();
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    "Content-Type": "application/json",
-  };
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
-    headers["X-Tavily-Key"] = apiKey;
-  }
-
-  const payload = {
-    jsonrpc: "2.0",
-    id: "pi-deep-research",
-    method: "tools/call",
-    params: { name: toolName, arguments: args },
-  };
-
-  try {
-    const response = await fetch(endpointUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(timeout),
-    });
-    if (!response.ok) {
-      return { checked: [endpointUrl], error: `HTTP ${response.status} ${response.statusText}` };
-    }
-    const data = (await response.json()) as { result?: unknown; error?: unknown };
-    if (data.error !== undefined) {
-      return { checked: [endpointUrl], error: typeof data.error === "string" ? data.error : JSON.stringify(data.error) };
-    }
-    if (!("result" in data)) return { checked: [endpointUrl], error: "Malformed MCP response: missing result" };
-    const text = mcpResultText(data.result);
-    if (!text) return { checked: [endpointUrl], error: "Malformed MCP response: empty result content" };
-    return { endpointUrl, checked: [endpointUrl], result: data.result, text };
-  } catch (error) {
-    return { checked: [endpointUrl], error: error instanceof Error ? error.message : String(error) };
-  }
-}
-
-async function mcpSearch(endpointUrl: string, query: string, limit: number): Promise<SearchResult[]> {
-  const result = await mcpToolCall(endpointUrl, "web_search", { query, num_results: limit });
   if (!result.text) throw new Error(result.error ?? "MCP search returned no text");
   const data = JSON.parse(result.text) as { results?: Array<Record<string, unknown>>; error?: string };
   if (data.error) throw new Error(data.error);
@@ -325,20 +227,23 @@ async function mcpSearch(endpointUrl: string, query: string, limit: number): Pro
   }).filter((result) => result.url.startsWith("http://") || result.url.startsWith("https://"));
 }
 
-async function resolveMcpEndpoint(): Promise<{ endpointUrl?: string; checked: string[]; error?: string }> {
-  const candidates = readConfiguredMcpUrls();
-  const checked: string[] = [];
-  for (const candidate of candidates) {
-    checked.push(candidate);
+async function resolveMcpEndpoint(signal?: AbortSignal): Promise<{ endpointUrl?: string; checked: string[]; error?: string }> {
+  const result = await mcpToolCall(
+    readConfiguredMcpUrls(),
+    "web_search",
+    { query: "pi deep research health check", num_results: 1 },
+    { signal, timeoutMs: 25_000, requestId: "pi-deep-research" },
+  );
+  if (result.text && result.endpointUrl) {
     try {
-      await mcpSearch(candidate, "pi deep research health check", 1);
-      return { endpointUrl: candidate, checked };
+      const payload = JSON.parse(result.text) as { error?: string };
+      if (!payload.error) return { endpointUrl: result.endpointUrl, checked: result.checked };
     } catch {
-      // Try next candidate.
+      // Treat malformed broker payload as unavailable below.
     }
   }
   return {
-    checked,
+    checked: result.checked,
     error: [
       "Could not reach the local-search MCP broker.",
       "Configure one of:",
@@ -347,9 +252,10 @@ async function resolveMcpEndpoint(): Promise<{ endpointUrl?: string; checked: st
       "- WEBSEARCH_MCP_URL=http://127.0.0.1:8889/mcp",
       `- ${CONFIG_PATH} with { "websearchMcpUrl": "http://127.0.0.1:8889/mcp" }`,
       "",
-      `Checked: ${checked.join(", ")}`,
+      `Checked: ${result.checked.join(", ")}`,
+      result.error ? `MCP error: ${result.error}` : undefined,
       "Direct SearXNG is not used by this client; fix broker availability instead of bypassing it.",
-    ].join("\n"),
+    ].filter(Boolean).join("\n"),
   };
 }
 
@@ -417,13 +323,18 @@ function normalizeUrl(url: string) {
   }
 }
 
-async function fetchSource(endpointUrl: string, result: SearchResult, includeDataProfile: boolean): Promise<SourceRecord> {
+async function fetchSource(
+  endpointUrl: string,
+  result: SearchResult,
+  includeDataProfile: boolean,
+  signal?: AbortSignal,
+): Promise<SourceRecord> {
   try {
     const response = await mcpToolCall(
-      endpointUrl,
+      [endpointUrl],
       "web_fetch",
       { url: result.url, max_chars: Math.max(MAX_EXCERPT_CHARS * 2, 20_000) },
-      30_000,
+      { signal, timeoutMs: 30_000, requestId: "pi-deep-research" },
     );
     const contentType = "text/plain; source=local-search-mcp";
     if (!response.text || response.text.startsWith("Fetch error:")) {
@@ -438,6 +349,7 @@ async function fetchSource(endpointUrl: string, result: SearchResult, includeDat
       dataProfile: includeDataProfile ? inferDataProfile({ ...result, contentType, text: excerpt }) : undefined,
     };
   } catch (error) {
+    throwIfCallerAborted(signal);
     return { ...result, fetched: false, excerpt: `Fetch failed: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
@@ -581,14 +493,26 @@ function buildSynthesisPrompt(bundle: ResearchBundle, bundleDir?: string) {
     .join("\n");
 }
 
-async function runResearch(options: ResearchOptions, endpointUrl: string): Promise<ResearchBundle> {
+async function runResearch(options: ResearchOptions, endpointUrl: string, signal?: AbortSignal): Promise<ResearchBundle> {
+  throwIfCallerAborted(signal);
   const queries = buildQueries(options);
   const perQueryLimit = Math.max(8, Math.ceil((options.maxSources ?? 14) / queries.length) + 4);
-  const batches = await Promise.all(queries.map((query) => mcpSearch(endpointUrl, query, perQueryLimit).catch(() => [])));
+  const batches = await Promise.all(
+    queries.map((query) =>
+      mcpSearch(endpointUrl, query, perQueryLimit, signal).catch(() => {
+        throwIfCallerAborted(signal);
+        return [];
+      }),
+    ),
+  );
+  throwIfCallerAborted(signal);
   const results = dedupeResults(batches.flat(), options.maxSources ?? 14);
   const fetchCount = Math.min(options.fetchCount ?? 0, results.length);
   const includeDataProfile = options.mode === "data";
-  const fetched = await Promise.all(results.slice(0, fetchCount).map((result) => fetchSource(endpointUrl, result, includeDataProfile)));
+  const fetched = await Promise.all(
+    results.slice(0, fetchCount).map((result) => fetchSource(endpointUrl, result, includeDataProfile, signal)),
+  );
+  throwIfCallerAborted(signal);
   const unfetched = results.slice(fetchCount).map((result) => ({
     ...result,
     fetched: false,
@@ -712,7 +636,7 @@ export default function deepResearchExtension(pi: ExtensionAPI) {
       fetch_count: Type.Optional(Type.Number({ description: "Number of source pages to fetch and excerpt", default: 6 })),
     }),
 
-    async execute(_id, params, _signal, onUpdate, _ctx) {
+    async execute(_id, params, signal, onUpdate, _ctx) {
       const options: ResearchOptions = {
         question: params.question,
         mode: (params.mode as ResearchOptions["mode"]) ?? "general",
@@ -726,7 +650,7 @@ export default function deepResearchExtension(pi: ExtensionAPI) {
 
       onUpdate?.({ content: [{ type: "text", text: "Resolving local-search MCP broker..." }] });
 
-      const resolved = await resolveMcpEndpoint();
+      const resolved = await resolveMcpEndpoint(signal);
       if (!resolved.endpointUrl) {
         return {
           content: [{ type: "text" as const, text: resolved.error ?? "Could not resolve local-search MCP endpoint." }],
@@ -737,14 +661,17 @@ export default function deepResearchExtension(pi: ExtensionAPI) {
       onUpdate?.({ content: [{ type: "text", text: `Searching through MCP broker at ${resolved.endpointUrl}...` }] });
 
       try {
-        const bundle = await runResearch(applied, resolved.endpointUrl);
+        const bundle = await runResearch(applied, resolved.endpointUrl, signal);
+        throwIfCallerAborted(signal);
         onUpdate?.({ content: [{ type: "text", text: `Gathered ${bundle.sources.length} sources. Saving bundle...` }] });
+        throwIfCallerAborted(signal);
         const bundleDir = saveBundle(bundle);
 
         // Format results for the LLM — include excerpts up to the char budget
         const sourceLines: string[] = [];
         let charsUsed = 0;
         for (let i = 0; i < bundle.sources.length; i++) {
+          throwIfCallerAborted(signal);
           const source = bundle.sources[i];
           const fetched = source.fetched ? "✓" : "✗";
           const snippet = source.snippet ? `\n   Snippet: ${source.snippet}` : "";
@@ -776,6 +703,7 @@ export default function deepResearchExtension(pi: ExtensionAPI) {
           details: { question: params.question, bundleDir, sourceCount: bundle.sources.length, fetchedCount: bundle.sources.filter((s) => s.fetched).length },
         };
       } catch (error) {
+        throwIfCallerAborted(signal);
         return {
           content: [{ type: "text" as const, text: `Research failed: ${error instanceof Error ? error.message : String(error)}` }],
           details: { error: true },
