@@ -17,7 +17,7 @@ const questions = Array.isArray(args.questions) && args.questions.length
   ? args.questions.map(String)
   : ["Summarize the purpose of this repository."];
 
-if (questions.length > 8) throw new Error("research-fanout supports at most 8 questions");
+if (questions.length > 16) throw new Error("research-fanout supports at most 16 questions");
 
 const findings = await parallel(
   questions.map((q) => () => agent(q, { agent: "scout" })),

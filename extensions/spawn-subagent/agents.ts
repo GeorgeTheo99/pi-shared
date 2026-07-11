@@ -126,7 +126,15 @@ function mergeAgents(groups: AgentConfig[][]): AgentConfig[] {
   return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
+export interface AgentDiscoveryOptions {
+  allowProject?: boolean;
+}
+
+export function discoverAgents(
+  cwd: string,
+  scope: AgentScope,
+  options: AgentDiscoveryOptions = {},
+): AgentDiscoveryResult {
   const sharedDir = sharedAgentsDir();
   const userDir = path.join(getAgentDir(), "agents");
   const projectDir = findNearestProjectAgentsDir(cwd);
@@ -134,7 +142,9 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
   const sharedAgents = scope === "shared" || scope === "all" ? loadAgentsFromDir(sharedDir, "shared") : [];
   const userAgents = scope === "user" || scope === "all" ? loadAgentsFromDir(userDir, "user") : [];
   const projectAgents =
-    (scope === "project" || scope === "all") && projectDir ? loadAgentsFromDir(projectDir, "project") : [];
+    options.allowProject !== false && (scope === "project" || scope === "all") && projectDir
+      ? loadAgentsFromDir(projectDir, "project")
+      : [];
 
   return {
     agents: mergeAgents([sharedAgents, userAgents, projectAgents]),

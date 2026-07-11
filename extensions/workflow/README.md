@@ -36,7 +36,7 @@ The workflow body is an **async function body** (top-level `await` and `return` 
 | Global | Signature | Description |
 |---|---|---|
 | `agent` | `(prompt, opts?) => Promise<string>` | Run one Pi subagent. `opts.agent` picks a shared agent (`scout`, `planner`, `reviewer`, `worker`, `panelist`; default `worker`). `opts.model` / `opts.cwd` are optional. `opts.onProgress(text)` receives each streamed assistant update **while the subagent is still running**, so the orchestrator can observe in-progress findings. Returns the subagent's final assistant text. Throws on failure. |
-| `parallel` | `(thunks) => Promise<any[]>` | Run an array of zero-arg async functions concurrently. Max 8 lanes, concurrency capped at 4. Returns results in input order. |
+| `parallel` | `(thunks) => Promise<any[]>` | Run zero-arg async lanes concurrently. Default max 16 agent calls; actual children share the host-wide 8-slot scheduler with `spawn_subagent`. Returns results in input order. |
 | `phase` | `(title) => void` | Mark a status grouping boundary (shown in progress + result). |
 | `log` | `(message) => void` | Emit a progress note (shown in progress + result). |
 | `cache` | `(key, producer) => Promise<T>` | Resume-by-replay primitive. When journaling is enabled (`args._journal`), a completed `key`'s result is replayed from disk instead of re-running `producer`; otherwise it degrades to `await producer()`. See [Resume-by-replay](#resume-by-replay-journaling). |
@@ -81,7 +81,7 @@ The result footer reports `journal: <id> (replayed N, computed M)`.
 
 - **`script`** — inline JS string, treated as an async function body. Max 20,000 chars; use a file for larger workflows.
 - **`name`** — resolved from the **shared** workflows dir first (`pi-shared/workflows/<name>.js`), then the nearest **project** dir (`.pi/workflows/<name>.js`). Project workflows require project trust or an interactive confirmation.
-- **`scriptPath`** — explicit path to a `.js` workflow file (absolute or relative to `cwd`).
+- **`scriptPath`** — explicit `.js` file (absolute or relative to `cwd`). Shared files and trusted-project files run directly; untrusted project or external files require interactive approval. Noninteractive external paths must be under `PI_WORKFLOW_ALLOWED_SCRIPT_DIRS`.
 
 ## Saved workflows
 
@@ -144,8 +144,10 @@ Each `agent(...)` call spawns an isolated `pi --mode json -p --no-session` subpr
 
 - **Shared agents only** in v1 (`scout`, `planner`, `reviewer`, `worker`, `panelist`). No `agentScope` / project-agent selection inside workflows.
 - **Model precedence**: `opts.model` → agent frontmatter `model` → parent session model. Inheriting the parent model avoids children falling back to a default provider with no credentials.
-- **Profile**: subagents inherit the parent's `PI_CODING_AGENT_DIR`. No per-call `agentDir` override, so there is no separate trust-boundary surface.
-- **Aborts**: the workflow's abort signal propagates to every running subagent (SIGTERM → SIGKILL after 5s).
+- **Profile/model routing**: no per-call `agentDir` override. The shared runner preserves parent/profile inheritance and routes GPT-family models through the trusted OpenAI Codex subscription profile when available, matching `spawn_subagent`.
+- **Scheduling**: every `agent()` call—including calls made through direct `Promise.all`, not only `parallel()`—acquires the host-wide lease. Default request limit is 16 and host concurrency is 8.
+- **Aborts/timeouts**: workflow abort/failure/session shutdown cancels queued work and terminates running process trees (SIGTERM, then SIGKILL after the configured grace). Queue/run deadlines and output bounds match `spawn_subagent`.
+- **Nesting**: child sessions cannot delegate again by default (`PI_SUBAGENT_MAX_DEPTH=1`).
 
 ## Constraints
 
@@ -153,6 +155,7 @@ Each `agent(...)` call spawns an isolated `pi --mode json -p --no-session` subpr
 - **Resume-by-replay is opt-in** via `cache()` + `args._journal`. Without a journal id, a failed workflow re-runs from the start.
 - **No structured output schema validation.** Return whatever you want; it's serialized to JSON in the result.
 - **No per-call `agentDir` / `agentScope`.**
+- **At most 16 agent calls per workflow by default.** Change shared limits with the `PI_SUBAGENT_*` variables documented in [`../spawn-subagent/README.md`](../spawn-subagent/README.md).
 - **Steering is between steps, not mid-step.** There is no channel to inject messages into a running subagent; use the `supervisor` pattern (reviewer judges each bounded worker step) for course-correction.
 
 These are deliberate v1 scope cuts. Each can become a v2 feature once the reuse need is proven.
@@ -162,7 +165,8 @@ These are deliberate v1 scope cuts. Each can become a v2 feature once the reuse 
 Workflow scripts run **in-process** via the `AsyncFunction` constructor — equivalent trust to `bash`. Only run workflows you trust:
 
 - Shared workflows committed to `pi-shared/workflows/` — trusted by convention (they travel by git under your control).
-- Project workflows under `.pi/workflows/` — repo-controlled; require project trust or an interactive confirmation.
+- Project workflows under `.pi/workflows/` — repo-controlled; their code is not read until project trust or explicit interactive approval.
+- Explicit `scriptPath` files are canonicalized with `realpath`; symlink escapes and external paths require approval unless their directory is allowlisted with `PI_WORKFLOW_ALLOWED_SCRIPT_DIRS`.
 - Inline `script` — agent-authored; treat with the same scrutiny as any agent-issued `bash` command.
 
 There is no vm sandbox. This matches the existing trust level of `bash` and `spawn_subagent` in Pi. A sandbox can be added in v2 if workflow sources become less trusted.

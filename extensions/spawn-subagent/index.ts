@@ -1,28 +1,43 @@
-import { spawn } from "node:child_process";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import crypto from "node:crypto";
 import { StringEnum, type Message } from "@mariozechner/pi-ai";
-import { type AgentToolResult, type ExtensionAPI, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
+import { type AgentToolResult, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList } from "./agents.js";
 import {
-	JOB_STORE_PATH,
-	JOB_STORE_VERSION,
+	TERMINAL_JOB_STATUS,
+	createStoredJobIfCapacity,
+	heartbeatStoredJobs,
+	type JobOwnerLease,
 	type JobStatus,
+	readBackgroundJobStore,
+	readJobSnapshots,
+	requestStoredJobCancellation,
+	type StoredBackgroundJob,
+	upsertStoredJob,
 	isJobStatus,
-} from "../_shared/job-store.js";
+} from "../_shared/job-store.ts";
+import {
+	canSpawnSubagent,
+	formatSubagentLimits,
+	loadSubagentConfig,
+	subagentConfigError,
+	type SubagentConfig,
+} from "../_shared/subagent-config.ts";
+import {
+	createSubagentExecutionGroup,
+	type SubagentExecutionGroup,
+} from "../_shared/subagent-scheduler.ts";
+import {
+	runPiAgent,
+	untrustedSubagentProfileDirs,
+	type PiAgentResult,
+} from "../_shared/pi-agent-runner.ts";
 
-const MAX_PARALLEL_TASKS = 8;
-const MAX_CONCURRENCY = 4;
 const MAX_RETURN_CHARS = 24000;
 const MAX_PERSISTED_JOBS = 100;
 const MAX_PERSISTED_JOB_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_PERSISTED_TEXT_CHARS = 12000;
-const OPENAI_CODEX_PROVIDER = "openai-codex";
-const OPENAI_CODEX_AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
-const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
 interface UsageStats {
   input: number;
@@ -83,6 +98,10 @@ interface BackgroundSubagentJob {
   cwd?: string;
   notifiedAt?: string;
   abortController: AbortController;
+  owner?: JobOwnerLease;
+  cancelRequestedAt?: string;
+  cancelRequestedBy?: string;
+  completion?: Promise<void>;
   result?: SpawnSubagentResult;
   error?: string;
 }
@@ -125,13 +144,12 @@ interface PersistedBackgroundSubagentJob {
   notifiedAt?: string;
   result?: PersistedSpawnSubagentResult;
   error?: string;
+  owner?: JobOwnerLease;
+  cancelRequestedAt?: string;
+  cancelRequestedBy?: string;
 }
 
-interface BackgroundJobStore {
-  version: number;
-  jobs: PersistedBackgroundSubagentJob[];
-}
-
+const BACKGROUND_OWNER_ID = `${process.pid}-${crypto.randomUUID()}`;
 const backgroundJobs = new Map<string, BackgroundSubagentJob>();
 let persistedJobsRestored = false;
 
@@ -279,14 +297,15 @@ function extractResultText(result?: SpawnSubagentResult): string {
 }
 
 function persistUsage(usage?: Partial<UsageStats> | null): UsageStats {
+  const value = usage ?? {};
   return {
-    input: Number.isFinite(usage?.input) ? usage.input! : 0,
-    output: Number.isFinite(usage?.output) ? usage.output! : 0,
-    cacheRead: Number.isFinite(usage?.cacheRead) ? usage.cacheRead! : 0,
-    cacheWrite: Number.isFinite(usage?.cacheWrite) ? usage.cacheWrite! : 0,
-    cost: Number.isFinite(usage?.cost) ? usage.cost! : 0,
-    contextTokens: Number.isFinite(usage?.contextTokens) ? usage.contextTokens! : 0,
-    turns: Number.isFinite(usage?.turns) ? usage.turns! : 0,
+    input: Number.isFinite(value.input) ? value.input! : 0,
+    output: Number.isFinite(value.output) ? value.output! : 0,
+    cacheRead: Number.isFinite(value.cacheRead) ? value.cacheRead! : 0,
+    cacheWrite: Number.isFinite(value.cacheWrite) ? value.cacheWrite! : 0,
+    cost: Number.isFinite(value.cost) ? value.cost! : 0,
+    contextTokens: Number.isFinite(value.contextTokens) ? value.contextTokens! : 0,
+    turns: Number.isFinite(value.turns) ? value.turns! : 0,
   };
 }
 
@@ -387,43 +406,20 @@ function persistJob(job: BackgroundSubagentJob): PersistedBackgroundSubagentJob 
     notifiedAt: job.notifiedAt,
     result: persistResult(job.result),
     error: job.error ? sanitizePersistedText(job.error, 2000) : undefined,
+    owner: job.owner,
+    cancelRequestedAt: job.cancelRequestedAt,
+    cancelRequestedBy: job.cancelRequestedBy,
   };
 }
 
-function readBackgroundJobStore(): BackgroundJobStore {
-  try {
-    if (!fs.existsSync(JOB_STORE_PATH)) return { version: JOB_STORE_VERSION, jobs: [] };
-    const parsed = JSON.parse(fs.readFileSync(JOB_STORE_PATH, "utf8")) as Partial<BackgroundJobStore>;
-    return { version: JOB_STORE_VERSION, jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [] };
-  } catch {
-    return { version: JOB_STORE_VERSION, jobs: [] };
-  }
-}
-
-async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  await fs.promises.writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  await fs.promises.rename(tmp, filePath);
-}
-
-function shouldKeepPersistedJob(job: BackgroundSubagentJob, nowMs: number): boolean {
-  if (job.status === "running") return true;
-  const updatedMs = Date.parse(job.updatedAt);
-  if (!Number.isFinite(updatedMs)) return true;
-  return nowMs - updatedMs <= MAX_PERSISTED_JOB_AGE_MS;
-}
-
 async function saveBackgroundJobStore(): Promise<void> {
-  await withFileMutationQueue(JOB_STORE_PATH, async () => {
-    const nowMs = Date.now();
-    const jobs = Array.from(backgroundJobs.values())
-      .filter((job) => shouldKeepPersistedJob(job, nowMs))
-      .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-      .slice(-MAX_PERSISTED_JOBS)
-      .map(persistJob);
-    await atomicWriteJson(JOB_STORE_PATH, { version: JOB_STORE_VERSION, jobs });
-  });
+  const localJobs = Array.from(backgroundJobs.values()).filter((job) => job.owner?.id === BACKGROUND_OWNER_ID);
+  for (const job of localJobs) {
+    await upsertStoredJob(persistJob(job) as StoredBackgroundJob, {
+      maxJobs: MAX_PERSISTED_JOBS,
+      maxAgeMs: MAX_PERSISTED_JOB_AGE_MS,
+    });
+  }
 }
 
 function queueSaveBackgroundJobStore(): void {
@@ -445,38 +441,54 @@ function markUnfinishedResults(result: SpawnSubagentResult | undefined, status: 
   }
 }
 
+function hydrateStoredBackgroundJob(persisted: StoredBackgroundJob): BackgroundSubagentJob {
+  const now = new Date().toISOString();
+  const snapshot = readJobSnapshots().get(persisted.id);
+  const status = snapshot?.status ?? (isJobStatus(persisted.status) ? persisted.status : "failed");
+  const job: BackgroundSubagentJob = {
+    id: persisted.id,
+    status,
+    mode: isMode(persisted.mode) ? persisted.mode : "single",
+    label: typeof persisted.label === "string" ? persisted.label : "unknown background job",
+    startedAt: typeof persisted.startedAt === "string" ? persisted.startedAt : now,
+    updatedAt: typeof persisted.updatedAt === "string" ? persisted.updatedAt : now,
+    cwd: typeof persisted.cwd === "string" ? persisted.cwd : undefined,
+    notifiedAt: typeof persisted.notifiedAt === "string" ? persisted.notifiedAt : undefined,
+    abortController: new AbortController(),
+    owner: persisted.owner,
+    cancelRequestedAt: persisted.cancelRequestedAt,
+    cancelRequestedBy: persisted.cancelRequestedBy,
+    result: hydrateResult(persisted.result as PersistedSpawnSubagentResult | undefined),
+    error: snapshot?.error ?? (typeof persisted.error === "string" ? persisted.error : undefined),
+  };
+  if (status === "failed" && !TERMINAL_JOB_STATUS.has(persisted.status)) {
+    markUnfinishedResults(job.result, "failed", "background job owner lease expired");
+  }
+  return job;
+}
+
+function refreshPersistedBackgroundJobs(): void {
+  const store = readBackgroundJobStore();
+  const storedIds = new Set(store.jobs.map((job) => job.id));
+  for (const persisted of store.jobs) {
+    const existing = backgroundJobs.get(persisted.id);
+    if (existing?.owner?.id === BACKGROUND_OWNER_ID && !TERMINAL_JOB_STATUS.has(existing.status)) {
+      existing.cancelRequestedAt = persisted.cancelRequestedAt;
+      existing.cancelRequestedBy = persisted.cancelRequestedBy;
+      if (persisted.status === "canceling") existing.status = "canceling";
+      continue;
+    }
+    backgroundJobs.set(persisted.id, hydrateStoredBackgroundJob(persisted));
+  }
+  for (const [jobId, job] of backgroundJobs) {
+    if (job.owner?.id !== BACKGROUND_OWNER_ID && !storedIds.has(jobId)) backgroundJobs.delete(jobId);
+  }
+}
+
 function restorePersistedBackgroundJobs(): void {
   if (persistedJobsRestored) return;
   persistedJobsRestored = true;
-
-  const store = readBackgroundJobStore();
-  let changed = false;
-  const now = new Date().toISOString();
-  for (const persisted of store.jobs) {
-    if (!persisted || typeof persisted.id !== "string" || backgroundJobs.has(persisted.id)) continue;
-    const job: BackgroundSubagentJob = {
-      id: persisted.id,
-      status: isJobStatus(persisted.status) ? persisted.status : "failed",
-      mode: isMode(persisted.mode) ? persisted.mode : "single",
-      label: typeof persisted.label === "string" ? persisted.label : "unknown background job",
-      startedAt: typeof persisted.startedAt === "string" ? persisted.startedAt : now,
-      updatedAt: typeof persisted.updatedAt === "string" ? persisted.updatedAt : now,
-      cwd: typeof persisted.cwd === "string" ? persisted.cwd : undefined,
-      notifiedAt: typeof persisted.notifiedAt === "string" ? persisted.notifiedAt : undefined,
-      abortController: new AbortController(),
-      result: hydrateResult(persisted.result),
-      error: typeof persisted.error === "string" ? persisted.error : undefined,
-    };
-    if (job.status === "running") {
-      job.status = "failed";
-      job.updatedAt = now;
-      job.error = "Background job was still running when Pi reloaded or restarted; child process state cannot be restored.";
-      markUnfinishedResults(job.result, "failed", "background job failed because Pi restarted");
-      changed = true;
-    }
-    backgroundJobs.set(job.id, job);
-  }
-  if (changed) queueSaveBackgroundJobStore();
+  refreshPersistedBackgroundJobs();
 }
 
 function jobSuccessSummary(job: BackgroundSubagentJob): string {
@@ -487,7 +499,7 @@ function jobSuccessSummary(job: BackgroundSubagentJob): string {
 }
 
 function notifyJobFinished(job: BackgroundSubagentJob, notify?: BackgroundJobNotifier): void {
-  if (job.status === "running" || job.notifiedAt) return;
+  if (!TERMINAL_JOB_STATUS.has(job.status) || job.notifiedAt) return;
   job.notifiedAt = new Date().toISOString();
 
   if (notify) {
@@ -509,15 +521,6 @@ function sanitizedDetails(result: SpawnSubagentResult | undefined, fallback: Spa
   return hydrateResult(persistResult(result))?.details ?? fallback;
 }
 
-async function trySaveBackgroundJobStore(): Promise<string | undefined> {
-  try {
-    await saveBackgroundJobStore();
-    return undefined;
-  } catch (error: unknown) {
-    return error instanceof Error ? error.message : String(error);
-  }
-}
-
 function getFinalOutput(messages: Message[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
@@ -527,145 +530,6 @@ function getFinalOutput(messages: Message[]): string {
     }
   }
   return "";
-}
-
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
-  const currentScript = process.argv[1];
-  const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-  if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-    return { command: process.execPath, args: [currentScript, ...args] };
-  }
-
-  const execName = path.basename(process.execPath).toLowerCase();
-  const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-  if (!isGenericRuntime) return { command: process.execPath, args };
-  return { command: "pi", args };
-}
-
-function expandTilde(input: string): string {
-  if (input === "~") return os.homedir();
-  if (input.startsWith("~/")) return path.join(os.homedir(), input.slice(2));
-  return input;
-}
-
-function resolveCwd(defaultCwd: string, cwd?: string): string {
-  if (!cwd) return defaultCwd;
-  const expanded = expandTilde(cwd);
-  return path.isAbsolute(expanded) ? expanded : path.resolve(defaultCwd, expanded);
-}
-
-function canonicalAgentDir(agentDir: string): string {
-  const expanded = path.resolve(expandTilde(agentDir));
-  try {
-    return fs.realpathSync.native(expanded);
-  } catch {
-    return expanded;
-  }
-}
-
-function resolveAgentDir(agentDir?: string): string | undefined {
-  if (!agentDir) return undefined;
-  return canonicalAgentDir(agentDir);
-}
-
-function defaultAgentDir(): string {
-  return canonicalAgentDir(process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent"));
-}
-
-function authFileForAgentDir(agentDir?: string): string {
-  return path.join(agentDir ? canonicalAgentDir(agentDir) : defaultAgentDir(), "auth.json");
-}
-
-function hasOpenAICodexSubscriptionAuth(agentDir?: string): boolean {
-  try {
-    const raw = fs.readFileSync(authFileForAgentDir(agentDir), "utf8");
-    const auth = JSON.parse(raw) as Record<string, unknown>;
-    const entry = auth[OPENAI_CODEX_PROVIDER];
-    return Boolean(entry && typeof entry === "object" && (entry as { type?: unknown }).type === "oauth");
-  } catch {
-    return false;
-  }
-}
-
-function openAICodexSubscriptionAgentDir(preferredAgentDir?: string): string | undefined {
-  const candidates = [preferredAgentDir, defaultAgentDir(), OPENAI_CODEX_AGENT_DIR].filter((dir): dir is string => Boolean(dir));
-  const seen = new Set<string>();
-  for (const candidate of candidates) {
-    const canonical = canonicalAgentDir(candidate);
-    if (seen.has(canonical)) continue;
-    seen.add(canonical);
-    if (hasOpenAICodexSubscriptionAuth(canonical)) return canonical;
-  }
-  return undefined;
-}
-
-function splitThinkingSuffix(model: string): { base: string; suffix: string } {
-  const colon = model.lastIndexOf(":");
-  if (colon <= 0) return { base: model, suffix: "" };
-  const maybeLevel = model.slice(colon + 1);
-  if (!THINKING_LEVELS.has(maybeLevel)) return { base: model, suffix: "" };
-  return { base: model.slice(0, colon), suffix: model.slice(colon) };
-}
-
-function isGptModelId(modelId: string): boolean {
-  return /^(?:gpt|chatgpt|o[1-9])(?:[-.]|$)/i.test(modelId);
-}
-
-function parseProviderModel(model: string): { provider?: string; modelId: string; suffix: string } {
-  const { base, suffix } = splitThinkingSuffix(model.trim());
-  const slash = base.indexOf("/");
-  return { provider: slash > 0 ? base.slice(0, slash) : undefined, modelId: slash > 0 ? base.slice(slash + 1) : base, suffix };
-}
-
-function isGptFamilyModel(model: string | undefined): boolean {
-  if (!model) return false;
-  const { provider, modelId } = parseProviderModel(model);
-  return provider === OPENAI_CODEX_PROVIDER || isGptModelId(modelId);
-}
-
-function subagentProfileForModel(model: string | undefined, requestedAgentDir?: string): string | undefined {
-  const explicitAgentDir = resolveAgentDir(requestedAgentDir);
-  if (!isGptFamilyModel(model)) return explicitAgentDir;
-  return openAICodexSubscriptionAgentDir(explicitAgentDir) ?? explicitAgentDir;
-}
-
-function preferOpenAICodexSubscription(model: string | undefined): string | undefined {
-  if (!model) return model;
-
-  const { provider, modelId, suffix } = parseProviderModel(model);
-  if (!modelId || provider === OPENAI_CODEX_PROVIDER || !isGptModelId(modelId)) return model;
-  return `${OPENAI_CODEX_PROVIDER}/${modelId}${suffix}`;
-}
-
-function allowedAgentDirs(): Set<string> {
-  const dirs = [path.join(os.homedir(), ".pi-omlx", "agent"), OPENAI_CODEX_AGENT_DIR];
-  if (process.env.PI_CODING_AGENT_DIR) dirs.push(process.env.PI_CODING_AGENT_DIR);
-  dirs.push(...(process.env.PI_SPAWN_SUBAGENT_ALLOWED_AGENT_DIRS ?? "").split(",").map((item) => item.trim()).filter(Boolean));
-  return new Set(dirs.map(canonicalAgentDir));
-}
-
-function untrustedAgentDirs(agentDirs: Array<string | undefined>): string[] {
-  const allowed = allowedAgentDirs();
-  const seen = new Set<string>();
-  const untrusted: string[] = [];
-  for (const agentDir of agentDirs) {
-    if (!agentDir) continue;
-    const canonical = canonicalAgentDir(agentDir);
-    if (allowed.has(canonical) || seen.has(canonical)) continue;
-    seen.add(canonical);
-    untrusted.push(canonical);
-  }
-  return untrusted;
-}
-
-async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-spawn-subagent-"));
-  const safeName = agentName.replace(/[^\w.-]+/g, "_");
-  const filePath = path.join(dir, `prompt-${safeName}.md`);
-  await withFileMutationQueue(filePath, async () => {
-    await fs.promises.writeFile(filePath, prompt, { encoding: "utf8", mode: 0o600 });
-  });
-  return { dir, filePath };
 }
 
 function emptyUsage(): UsageStats {
@@ -702,6 +566,8 @@ function makeDetailsFactory(
 }
 
 async function runSingleAgent(options: {
+  config: SubagentConfig;
+  group: SubagentExecutionGroup;
   defaultCwd: string;
   agents: AgentConfig[];
   agentName: string;
@@ -715,268 +581,33 @@ async function runSingleAgent(options: {
   onUpdate?: OnUpdateCallback;
   makeDetails: (results: SingleResult[]) => SpawnSubagentDetails;
 }): Promise<SingleResult> {
-  const agent = options.agents.find((candidate) => candidate.name === options.agentName);
-  if (!agent) {
-    const available = options.agents.map((candidate) => `"${candidate.name}"`).join(", ") || "none";
-    return {
-      agent: options.agentName,
-      agentSource: "unknown",
-      task: options.task,
-      exitCode: 1,
-      messages: [],
-      stderr: `Unknown agent: "${options.agentName}". Available agents: ${available}.`,
-      usage: emptyUsage(),
-      step: options.step,
-      status: "failed",
-      completedAt: new Date().toISOString(),
-      lastEvent: "unknown agent",
-    };
-  }
-
-  const args = ["--mode", "json", "-p", "--no-session"];
-  // Model precedence: explicit call param > agent frontmatter > parent session model.
-  // Inheriting the parent model avoids spawning children that fall back to a
-  // default provider with no usable credentials (e.g. Databricks-routed parents
-  // where OPENAI_API_KEY is a sentinel value). GPT-family child models are
-  // always routed through the ChatGPT/Codex subscription provider, not the
-  // OpenAI API provider.
-  const requestedModel = options.model ?? agent.model ?? options.parentModel;
-  const agentDir = subagentProfileForModel(requestedModel, options.agentDir);
-  const model = preferOpenAICodexSubscription(requestedModel);
-  if (model) args.push("--model", model);
-  if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
-
-  let tmpPromptDir: string | null = null;
-  let tmpPromptPath: string | null = null;
-
-  const currentResult: SingleResult = {
-    agent: agent.name,
-    agentSource: agent.source,
-    task: options.task,
-    exitCode: -1,
-    messages: [],
-    stderr: "",
-    usage: emptyUsage(),
-    model,
-    step: options.step,
-    status: "starting",
-    startedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    lastEvent: "preparing subagent process",
-  };
-
   let lastEmitMs = 0;
-  const emitUpdate = (force = false) => {
-    const now = Date.now();
-    if (!force && now - lastEmitMs < 250) return;
-    lastEmitMs = now;
-    options.onUpdate?.({
-      content: [{ type: "text", text: formatProgressContent("single", [currentResult]) }],
-      details: options.makeDetails([currentResult]),
-    });
-  };
-
-  emitUpdate(true);
-
-  try {
-    if (agent.systemPrompt.trim()) {
-      const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
-      tmpPromptDir = tmp.dir;
-      tmpPromptPath = tmp.filePath;
-      args.push("--append-system-prompt", tmpPromptPath);
-    }
-
-    args.push(`Task: ${options.task}`);
-    const cwd = resolveCwd(options.defaultCwd, options.cwd);
-    let wasAborted = false;
-
-    const exitCode = await new Promise<number>((resolve) => {
-      const invocation = getPiInvocation(args);
-      const proc = spawn(invocation.command, invocation.args, {
-        cwd,
-        env: agentDir ? { ...process.env, PI_CODING_AGENT_DIR: agentDir } : process.env,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
+  const toSingleResult = (partial: PiAgentResult): SingleResult => ({ ...partial, step: options.step });
+  const result = await runPiAgent({
+    config: options.config,
+    group: options.group,
+    defaultCwd: options.defaultCwd,
+    agents: options.agents,
+    agentName: options.agentName,
+    task: options.task,
+    cwd: options.cwd,
+    model: options.model,
+    parentModel: options.parentModel,
+    agentDir: options.agentDir,
+    signal: options.signal,
+    onUpdate: (partial) => {
+      const now = Date.now();
+      const terminal = partial.status === "completed" || partial.status === "failed" || partial.status === "canceled";
+      if (!terminal && now - lastEmitMs < 250) return;
+      lastEmitMs = now;
+      const current = toSingleResult(partial);
+      options.onUpdate?.({
+        content: [{ type: "text", text: formatProgressContent("single", [current]) }],
+        details: options.makeDetails([current]),
       });
-      updateResultProgress(currentResult, {
-        status: "running",
-        lastEvent: proc.pid ? `started child process pid ${proc.pid}` : "started child process",
-      });
-      emitUpdate(true);
-      let buffer = "";
-
-      const processLine = (line: string) => {
-        if (!line.trim()) return;
-        let event: any;
-        try {
-          event = JSON.parse(line);
-        } catch {
-          return;
-        }
-
-        if (event.type === "message_update" && event.message) {
-          const text = extractMessageText(event.message as Message);
-          updateResultProgress(currentResult, {
-            status: "running",
-            lastEvent: "streaming assistant response",
-            lastText: text || currentResult.lastText,
-          });
-          emitUpdate();
-        }
-
-        if (event.type === "tool_execution_start") {
-          updateResultProgress(currentResult, {
-            status: "running",
-            activeTool: String(event.toolName ?? "unknown"),
-            activeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
-            lastEvent: `running tool ${String(event.toolName ?? "unknown")}`,
-          });
-          emitUpdate(true);
-        }
-
-        if (event.type === "tool_execution_update") {
-          const text = extractToolResultText(event.partialResult);
-          updateResultProgress(currentResult, {
-            status: "running",
-            activeTool: String(event.toolName ?? currentResult.activeTool ?? "unknown"),
-            activeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : currentResult.activeToolCallId,
-            lastEvent: `tool ${String(event.toolName ?? currentResult.activeTool ?? "unknown")} update`,
-            lastText: text || currentResult.lastText,
-          });
-          emitUpdate();
-        }
-
-        if (event.type === "tool_execution_end") {
-          const text = extractToolResultText(event.result);
-          updateResultProgress(currentResult, {
-            status: "running",
-            activeTool: undefined,
-            activeToolCallId: undefined,
-            lastEvent: `tool ${String(event.toolName ?? "unknown")} ${event.isError ? "failed" : "completed"}`,
-            lastText: text || currentResult.lastText,
-          });
-          emitUpdate(true);
-        }
-
-        if (event.type === "message_end" && event.message) {
-          const message = event.message as Message;
-          currentResult.messages.push(message);
-          if (message.role === "assistant") {
-            currentResult.usage.turns++;
-            const usage = message.usage;
-            if (usage) {
-              currentResult.usage.input += usage.input || 0;
-              currentResult.usage.output += usage.output || 0;
-              currentResult.usage.cacheRead += usage.cacheRead || 0;
-              currentResult.usage.cacheWrite += usage.cacheWrite || 0;
-              currentResult.usage.cost += usage.cost?.total || 0;
-              currentResult.usage.contextTokens = usage.totalTokens || 0;
-            }
-            if (!currentResult.model && message.model) currentResult.model = message.model;
-            if (message.stopReason) currentResult.stopReason = message.stopReason;
-            if (message.errorMessage) currentResult.errorMessage = message.errorMessage;
-            updateResultProgress(currentResult, {
-              status: "running",
-              lastEvent: "assistant turn completed",
-              lastText: extractMessageText(message) || currentResult.lastText,
-            });
-          }
-          emitUpdate(true);
-        }
-
-        if (event.type === "tool_result_end" && event.message) {
-          currentResult.messages.push(event.message as Message);
-          updateResultProgress(currentResult, {
-            status: "running",
-            lastEvent: "tool result captured",
-            lastText: extractMessageText(event.message as Message) || currentResult.lastText,
-          });
-          emitUpdate(true);
-        }
-      };
-
-      proc.stdout.on("data", (data) => {
-        buffer += data.toString();
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) processLine(line);
-      });
-
-      proc.stderr.on("data", (data) => {
-        currentResult.stderr += data.toString();
-        updateResultProgress(currentResult, {
-          status: "running",
-          lastEvent: "stderr output received",
-          lastText: compactLine(currentResult.stderr, 500),
-        });
-        emitUpdate();
-      });
-
-      proc.on("close", (code) => {
-        if (buffer.trim()) processLine(buffer);
-        resolve(code ?? 0);
-      });
-
-      proc.on("error", (error) => {
-        updateResultProgress(currentResult, {
-          status: "failed",
-          errorMessage: error.message,
-          lastEvent: `failed to start child process: ${error.message}`,
-        });
-        emitUpdate(true);
-        resolve(1);
-      });
-
-      if (options.signal) {
-        const killProc = () => {
-          wasAborted = true;
-          updateResultProgress(currentResult, { status: "canceled", stopReason: "aborted", lastEvent: "abort requested" });
-          emitUpdate(true);
-          proc.kill("SIGTERM");
-          setTimeout(() => {
-            if (!proc.killed) proc.kill("SIGKILL");
-          }, 5000).unref?.();
-        };
-        if (options.signal.aborted) killProc();
-        else options.signal.addEventListener("abort", killProc, { once: true });
-      }
-    });
-
-    currentResult.exitCode = exitCode;
-    if (wasAborted) currentResult.stopReason = "aborted";
-    updateResultProgress(currentResult, {
-      status: wasAborted ? "canceled" : exitCode === 0 ? "completed" : "failed",
-      completedAt: new Date().toISOString(),
-      activeTool: undefined,
-      activeToolCallId: undefined,
-      lastEvent: wasAborted ? "subagent aborted" : exitCode === 0 ? "subagent completed" : `subagent exited with code ${exitCode}`,
-    });
-    emitUpdate(true);
-    return currentResult;
-  } finally {
-    if (tmpPromptPath) await fs.promises.unlink(tmpPromptPath).catch(() => undefined);
-    if (tmpPromptDir) await fs.promises.rmdir(tmpPromptDir).catch(() => undefined);
-  }
-}
-
-async function mapWithConcurrencyLimit<TIn, TOut>(
-  items: TIn[],
-  concurrency: number,
-  fn: (item: TIn, index: number) => Promise<TOut>,
-): Promise<TOut[]> {
-  const results = new Array<TOut>(items.length);
-  let nextIndex = 0;
-  const workerCount = Math.max(1, Math.min(concurrency, items.length));
-  await Promise.all(
-    new Array(workerCount).fill(null).map(async () => {
-      while (true) {
-        const index = nextIndex++;
-        if (index >= items.length) return;
-        results[index] = await fn(items[index], index);
-      }
-    }),
-  );
-  return results;
+    },
+  });
+  return toSingleResult(result);
 }
 
 const TaskItem = Type.Object({
@@ -1107,14 +738,78 @@ function renderSpawnSubagentResult(result: SpawnSubagentResult, options: { expan
 }
 
 export default function spawnSubagentExtension(pi: ExtensionAPI) {
+  const config = loadSubagentConfig();
+  if (config.errors.length === 0 && !canSpawnSubagent(config)) return;
+
+  const lifecycleAbort = new AbortController();
+  let backgroundHeartbeat: NodeJS.Timeout | undefined;
+
+  const localActiveJobs = () =>
+    Array.from(backgroundJobs.values()).filter(
+      (job) => job.owner?.id === BACKGROUND_OWNER_ID && !TERMINAL_JOB_STATUS.has(job.status),
+    );
+
+  const stopBackgroundHeartbeatIfIdle = () => {
+    if (localActiveJobs().length > 0 || !backgroundHeartbeat) return;
+    clearInterval(backgroundHeartbeat);
+    backgroundHeartbeat = undefined;
+  };
+
+  const ensureBackgroundHeartbeat = () => {
+    if (backgroundHeartbeat) return;
+    backgroundHeartbeat = setInterval(() => {
+      const heartbeatAt = new Date();
+      for (const job of localActiveJobs()) {
+        if (!job.owner) continue;
+        job.owner.heartbeatAt = heartbeatAt.toISOString();
+        job.owner.leaseExpiresAt = new Date(heartbeatAt.getTime() + config.leaseMs).toISOString();
+        job.updatedAt = heartbeatAt.toISOString();
+      }
+      void heartbeatStoredJobs(BACKGROUND_OWNER_ID, config.leaseMs, {
+        maxJobs: MAX_PERSISTED_JOBS,
+        maxAgeMs: MAX_PERSISTED_JOB_AGE_MS,
+      })
+        .then((cancelRequested) => {
+          for (const jobId of cancelRequested) {
+            const job = backgroundJobs.get(jobId);
+            if (!job || TERMINAL_JOB_STATUS.has(job.status)) continue;
+            job.status = "canceling";
+            job.cancelRequestedAt = job.cancelRequestedAt ?? new Date().toISOString();
+            job.abortController.abort(new Error("Background job cancellation requested."));
+          }
+        })
+        .catch(() => undefined);
+    }, config.heartbeatMs);
+    backgroundHeartbeat.unref?.();
+  };
+
+  pi.on("session_shutdown", async () => {
+    lifecycleAbort.abort(new Error("Pi session is shutting down."));
+    const active = localActiveJobs();
+    for (const job of active) {
+      job.status = "canceling";
+      job.cancelRequestedAt = job.cancelRequestedAt ?? new Date().toISOString();
+      job.abortController.abort(new Error("Pi session is shutting down."));
+    }
+    const completions = active.map((job) => job.completion).filter((item): item is Promise<void> => Boolean(item));
+    if (completions.length > 0) {
+      await Promise.race([
+        Promise.allSettled(completions),
+        new Promise((resolve) => setTimeout(resolve, config.termGraceMs + 1000)),
+      ]);
+    }
+    if (backgroundHeartbeat) clearInterval(backgroundHeartbeat);
+    backgroundHeartbeat = undefined;
+  });
+
   restorePersistedBackgroundJobs();
 
-  pi.on("before_agent_start", async (event) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     const selectedTools = event.systemPromptOptions?.selectedTools ?? [];
     if (!selectedTools.includes("spawn_subagent")) return;
 
     const cwd = event.systemPromptOptions?.cwd ?? process.cwd();
-    const discovery = discoverAgents(cwd, "all");
+    const discovery = discoverAgents(cwd, "all", { allowProject: ctx.isProjectTrusted() });
     if (discovery.agents.length === 0) return;
 
     const roster = discovery.agents
@@ -1134,7 +829,21 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
         send(pi, "Usage: /subagents [shared|user|project|all]");
         return;
       }
-      const discovery = discoverAgents(ctx.cwd, scope as AgentScope);
+      const projectRequested = scope === "project" || scope === "all";
+      let allowProject = ctx.isProjectTrusted();
+      if (projectRequested && !allowProject) {
+        if (!ctx.hasUI) {
+          send(pi, "Project-local agents require project trust or an explicit interactive approval.");
+          return;
+        }
+        const safeDiscovery = discoverAgents(ctx.cwd, scope as AgentScope, { allowProject: false });
+        allowProject = await ctx.ui.confirm(
+          "Read project-local subagents?",
+          `Source: ${safeDiscovery.projectAgentsDir ?? "no .pi/agents directory found"}\n\nProject agent files are repo-controlled prompts. Continue only for a repository you trust.`,
+        );
+        if (!allowProject) return;
+      }
+      const discovery = discoverAgents(ctx.cwd, scope as AgentScope, { allowProject });
       send(
         pi,
         [
@@ -1156,6 +865,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
       "Spawn one or more isolated Pi subagents and return their final outputs.",
       "Supports single agent, parallel tasks, sequential chains with {previous} placeholder handoff, and background jobs.",
       "Default agentScope is shared, using bundled pi-shared agents. Use project/all only for trusted repos.",
+      `Effective limits: ${formatSubagentLimits(config)}.`,
     ].join(" "),
     promptSnippet: "Spawn isolated Pi subagents for parallel investigation, review, planning, or implementation.",
     promptGuidelines: [
@@ -1179,8 +889,11 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
         ? ((ui) => (message: string, type: "info" | "warning" | "error") => ui.notify(message, type))(ctx.ui)
         : undefined;
       const agentScope: AgentScope = params.agentScope ?? "shared";
-      const discovery = discoverAgents(toolCwd, agentScope);
-      const agents = discovery.agents;
+      const projectRequested = agentScope === "project" || agentScope === "all";
+      let allowProject = ctx.isProjectTrusted();
+      let projectApprovalWasPrompted = false;
+      let discovery = discoverAgents(toolCwd, agentScope, { allowProject });
+      let agents = discovery.agents;
       const confirmProjectAgents = params.confirmProjectAgents ?? true;
       const parentModel = toolModel ? `${toolModel.provider}/${toolModel.id}` : undefined;
 
@@ -1189,9 +902,10 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
       const hasSingle = Boolean(params.agent && params.task);
       const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
       const mode: SpawnSubagentDetails["mode"] = hasChain ? "chain" : hasTasks ? "parallel" : "single";
-      const makeDetails = makeDetailsFactory(mode, agentScope, discovery);
+      let makeDetails = makeDetailsFactory(mode, agentScope, discovery);
 
       if (params.jobAction) {
+        refreshPersistedBackgroundJobs();
         if (params.jobAction === "list") {
           return { content: [{ type: "text", text: formatJobList() }], details: makeDetails([]) };
         }
@@ -1202,15 +916,16 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
         }
 
         if (params.jobAction === "cancel") {
-          if (job.status === "running") {
-            job.status = "canceled";
-            job.error = job.error ?? "Canceled by request.";
+          if (!TERMINAL_JOB_STATUS.has(job.status)) {
+            const persisted = await requestStoredJobCancellation(job.id, BACKGROUND_OWNER_ID, {
+              maxJobs: MAX_PERSISTED_JOBS,
+              maxAgeMs: MAX_PERSISTED_JOB_AGE_MS,
+            });
+            job.status = "canceling";
+            job.cancelRequestedAt = persisted?.cancelRequestedAt ?? new Date().toISOString();
+            job.cancelRequestedBy = BACKGROUND_OWNER_ID;
             job.updatedAt = new Date().toISOString();
-            markUnfinishedResults(job.result, "canceled", "background job canceled by request");
-            job.abortController.abort();
-            notifyJobFinished(job, completionNotify);
-          } else {
-            await saveBackgroundJobStore();
+            if (job.owner?.id === BACKGROUND_OWNER_ID) job.abortController.abort(new Error("Background job cancellation requested."));
           }
           return { content: [{ type: "text", text: `Background subagent job ${job.id} is ${job.status}.` }], details: sanitizedDetails(job.result, makeDetails([])) };
         }
@@ -1219,6 +934,27 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
         const error = job.error ? `Error: ${sanitizePersistedText(job.error, 2000)}` : "";
         const body = [`${formatJobLine(job)}`, error, output ? `\n${output}` : ""].filter(Boolean).join("\n");
         return { content: [{ type: "text", text: limitText(body) }], details: sanitizedDetails(job.result, makeDetails([])) };
+      }
+
+      if (projectRequested && !allowProject) {
+        if (!ctx.hasUI) {
+          return {
+            content: [{ type: "text", text: "Project-local subagents require project trust or an explicit interactive approval." }],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+        projectApprovalWasPrompted = true;
+        allowProject = await ctx.ui.confirm(
+          "Read and run project-local subagents?",
+          `Source: ${discovery.projectAgentsDir ?? "no .pi/agents directory found"}\n\nProject agent files are repo-controlled prompts with access to their declared tools. Continue only for a repository you trust.`,
+        );
+        if (!allowProject) {
+          return { content: [{ type: "text", text: "Canceled: project-local subagents were not approved." }], details: makeDetails([]) };
+        }
+        discovery = discoverAgents(toolCwd, agentScope, { allowProject: true });
+        agents = discovery.agents;
+        makeDetails = makeDetailsFactory(mode, agentScope, discovery);
       }
 
       if (modeCount !== 1) {
@@ -1233,7 +969,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
         };
       }
 
-      if ((agentScope === "project" || agentScope === "all") && confirmProjectAgents && ctx.hasUI) {
+      if (projectRequested && confirmProjectAgents && ctx.hasUI && !projectApprovalWasPrompted) {
         const requested = new Set<string>();
         if (params.agent) requested.add(params.agent);
         for (const task of params.tasks ?? []) requested.add(task.agent);
@@ -1258,7 +994,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
       }
 
       const requestedAgentDirs = [params.agentDir, ...(params.tasks ?? []).map((task) => task.agentDir), ...(params.chain ?? []).map((step) => step.agentDir)];
-      const untrustedDirs = untrustedAgentDirs(requestedAgentDirs);
+      const untrustedDirs = untrustedSubagentProfileDirs(requestedAgentDirs);
       if (untrustedDirs.length > 0) {
         const message = `Subagent agentDir profile(s) are not allowlisted:\n${untrustedDirs.map((dir) => `- ${dir}`).join("\n")}\n\nA Pi profile can load its own settings/extensions. Continue only for trusted profiles.`;
         if (!ctx.hasUI) {
@@ -1273,7 +1009,26 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
         }
       }
 
-      const runRequest = async (runSignal: AbortSignal, runOnUpdate?: OnUpdateCallback): Promise<SpawnSubagentResult> => {
+      const configurationError = subagentConfigError(config);
+      if (configurationError) {
+        return { content: [{ type: "text", text: configurationError }], details: makeDetails([]), isError: true };
+      }
+      const requestedRuns = params.chain?.length ?? params.tasks?.length ?? 1;
+      if (requestedRuns > config.maxFanout) {
+        return {
+          content: [{ type: "text", text: `Too many subagent runs (${requestedRuns}). Max is ${config.maxFanout}.` }],
+          details: makeDetails([]),
+          isError: true,
+        };
+      }
+
+      const runRequest = async (runSignal?: AbortSignal, runOnUpdate?: OnUpdateCallback): Promise<SpawnSubagentResult> => {
+        const group = createSubagentExecutionGroup(
+          config,
+          `spawn_subagent ${mode}`,
+          [runSignal, lifecycleAbort.signal],
+        );
+        try {
         if (params.chain && params.chain.length > 0) {
           const results: SingleResult[] = [];
           let previousOutput = "";
@@ -1282,6 +1037,8 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
             const step = params.chain[i];
             const task = step.task.replace(/\{previous\}/g, previousOutput);
             const result = await runSingleAgent({
+              config,
+              group,
               defaultCwd: toolCwd,
               agents,
               agentName: step.agent,
@@ -1321,9 +1078,9 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
         }
 
         if (params.tasks && params.tasks.length > 0) {
-          if (params.tasks.length > MAX_PARALLEL_TASKS) {
+          if (params.tasks.length > config.maxFanout) {
             return {
-              content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }],
+              content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${config.maxFanout}.` }],
               details: makeDetails([]),
             };
           }
@@ -1356,8 +1113,10 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
 
           emitParallelUpdate(true);
 
-          const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (task, index) => {
+          const results = await Promise.all(params.tasks.map(async (task, index) => {
             const result = await runSingleAgent({
+              config,
+              group,
               defaultCwd: toolCwd,
               agents,
               agentName: task.agent,
@@ -1378,7 +1137,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
             liveResults[index] = result;
             emitParallelUpdate(true);
             return result;
-          });
+          }));
 
           const successCount = results.filter((result) => !isFailure(result)).length;
           const summaries = results.map((result) => {
@@ -1401,6 +1160,8 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
 
         if (params.agent && params.task) {
           const result = await runSingleAgent({
+            config,
+            group,
             defaultCwd: toolCwd,
             agents,
             agentName: params.agent,
@@ -1431,10 +1192,14 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
           content: [{ type: "text", text: `Invalid parameters.\n\nAvailable agents:\n${formatAgentList(agents)}` }],
           details: makeDetails([]),
         };
+        } finally {
+          await group.drain();
+        }
       };
 
       if (params.background) {
-        const now = new Date().toISOString();
+        const started = new Date();
+        const now = started.toISOString();
         const job: BackgroundSubagentJob = {
           id: makeJobId(),
           status: "running",
@@ -1444,46 +1209,91 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
           updatedAt: now,
           cwd: toolCwd,
           abortController: new AbortController(),
+          owner: {
+            id: BACKGROUND_OWNER_ID,
+            pid: process.pid,
+            startedAt: now,
+            heartbeatAt: now,
+            leaseExpiresAt: new Date(started.getTime() + config.leaseMs).toISOString(),
+          },
         };
+
+        let reservation: { created: boolean; activeJobs: number };
+        try {
+          reservation = await createStoredJobIfCapacity(
+            persistJob(job) as StoredBackgroundJob,
+            config.maxBackgroundJobs,
+            { maxJobs: MAX_PERSISTED_JOBS, maxAgeMs: MAX_PERSISTED_JOB_AGE_MS },
+          );
+        } catch (error: unknown) {
+          return {
+            content: [{ type: "text", text: `Could not persist background job safely: ${error instanceof Error ? error.message : String(error)}` }],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+        if (!reservation.created) {
+          return {
+            content: [{ type: "text", text: `Too many active background subagent jobs (${reservation.activeJobs}). Max is ${config.maxBackgroundJobs}.` }],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+
         backgroundJobs.set(job.id, job);
-        const persistenceWarning = await trySaveBackgroundJobStore();
+        ensureBackgroundHeartbeat();
         let lastBackgroundProgressSaveMs = 0;
         const updateBackgroundProgress = (partial: SpawnSubagentResult) => {
           job.result = partial;
           job.updatedAt = new Date().toISOString();
           const nowMs = Date.now();
-          if (nowMs - lastBackgroundProgressSaveMs >= 5000) {
+          if (nowMs - lastBackgroundProgressSaveMs >= config.heartbeatMs) {
             lastBackgroundProgressSaveMs = nowMs;
             queueSaveBackgroundJobStore();
           }
         };
 
-        void runRequest(job.abortController.signal, updateBackgroundProgress)
-          .then((result) => {
+        const completion = runRequest(job.abortController.signal, updateBackgroundProgress)
+          .then(async (result) => {
             job.result = result;
-            if (job.status !== "canceled") {
+            const canceled = job.status === "canceling" || Boolean(job.cancelRequestedAt) || job.abortController.signal.aborted;
+            if (canceled) {
+              job.status = "canceled";
+              job.error = job.error ?? "Canceled by request.";
+              markUnfinishedResults(job.result, "canceled", "background job canceled after child shutdown");
+            } else {
               job.status = result.details.results.some(isFailure) ? "failed" : "completed";
             }
             job.updatedAt = new Date().toISOString();
+            await upsertStoredJob(persistJob(job) as StoredBackgroundJob, {
+              maxJobs: MAX_PERSISTED_JOBS,
+              maxAgeMs: MAX_PERSISTED_JOB_AGE_MS,
+            });
             notifyJobFinished(job, completionNotify);
-            queueSaveBackgroundJobStore();
           })
-          .catch((error: unknown) => {
-            job.error = error instanceof Error ? error.message : String(error);
-            if (job.status !== "canceled") {
-              job.status = "failed";
-              markUnfinishedResults(job.result, "failed", "background job failed");
-            }
+          .catch(async (error: unknown) => {
+            const canceled = job.status === "canceling" || job.abortController.signal.aborted;
+            job.error = canceled ? job.error ?? "Canceled by request." : error instanceof Error ? error.message : String(error);
+            job.status = canceled ? "canceled" : "failed";
+            markUnfinishedResults(job.result, canceled ? "canceled" : "failed", canceled ? "background job canceled after child shutdown" : "background job failed");
             job.updatedAt = new Date().toISOString();
+            await upsertStoredJob(persistJob(job) as StoredBackgroundJob, {
+              maxJobs: MAX_PERSISTED_JOBS,
+              maxAgeMs: MAX_PERSISTED_JOB_AGE_MS,
+            }).catch(() => undefined);
             notifyJobFinished(job, completionNotify);
-            queueSaveBackgroundJobStore();
+          })
+          .finally(() => {
+            stopBackgroundHeartbeatIfIdle();
           });
+        job.completion = completion;
+        void completion;
 
         return {
           content: [
             {
               type: "text",
-              text: `Started background subagent job ${job.id} (${job.mode}: ${sanitizePersistedText(job.label, 500)}). Poll with {"jobAction":"status","jobId":"${job.id}"}; list jobs with {"jobAction":"list"}; cancel with {"jobAction":"cancel","jobId":"${job.id}"}.${persistenceWarning ? ` Warning: initial job persistence failed: ${sanitizePersistedText(persistenceWarning, 500)}` : ""}`,
+              text: `Started background subagent job ${job.id} (${job.mode}: ${sanitizePersistedText(job.label, 500)}). Poll with {"jobAction":"status","jobId":"${job.id}"}; list jobs with {"jobAction":"list"}; cancel with {"jobAction":"cancel","jobId":"${job.id}"}.`,
             },
           ],
           details: makeDetails([]),

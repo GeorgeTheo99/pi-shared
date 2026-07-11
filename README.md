@@ -159,9 +159,11 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - `spawn_subagent` spawns isolated `pi --mode json -p --no-session` subprocesses for single, parallel, or chained specialist work
   - parallel tasks and chain steps may specify task-level `model` and `agentDir` overrides for multi-model/multi-profile workflows
   - bundled shared agents: `scout`, `planner`, `reviewer`, `worker`, `panelist`
-  - background job completion is a UI notification in interactive/RPC sessions, never an injected LLM-context message; fetch/list jobs with `jobAction: "status"` / `"list"`
+  - default fan-out is 16 tasks with a host-wide 8-child concurrency lease shared by `spawn_subagent`, `workflow`, background jobs, and independent Pi processes; limits are environment-configurable
+  - background job completion is a UI notification in interactive/RPC sessions, never an injected LLM-context message; fetch/list/cancel jobs with `jobAction: "status"` / `"list"` / `"cancel"`
+  - background records use locked, atomic, owner-leased persistence so one Pi process cannot falsely fail or overwrite another process's live jobs
   - `/subagents [shared|user|project|all]` lists available agents
-  - project-local `.pi/agents` are disabled by default unless `agentScope` is `project` or `all` and confirmed in UI
+  - project-local `.pi/agents` are not read unless the project is trusted or the user grants explicit interactive approval
 - `extensions/panel` — user-invoked alternate-model second opinions:
   - `/panel` asks a runtime-selected alternate model for a second opinion on the current conversation or an explicit task
   - `/panel --compare` runs multiple model families through `spawn_subagent` in parallel and asks the main session to synthesize
@@ -170,10 +172,10 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
 - `extensions/workflow` — trusted JS workflow runner on top of Pi subagents:
   - `workflow` runs a JavaScript workflow body (inline `script`, saved `name`, or `scriptPath`) whose primitives are Pi subagent calls
   - workflow globals: `agent(prompt, opts?)`, `parallel(thunks)`, `phase(title)`, `log(message)`, `args`, `cwd`
-  - shared agents only in v1 (`scout`, `planner`, `reviewer`, `worker`, `panelist`); each `agent()` call spawns an isolated `pi --mode json -p --no-session` subprocess, mirroring `spawn_subagent` single mode
+  - shared agents only in v1 (`scout`, `planner`, `reviewer`, `worker`, `panelist`); each `agent()` call uses the same scheduler, managed process lifecycle, model/profile routing, and bounds as `spawn_subagent`
   - saved workflows: `pi-shared/workflows/<name>.js` (shared, committed) or `.pi/workflows/<name>.js` (project, requires trust); `/workflows` lists them
   - use for repeatable, multi-phase, scriptable orchestration; use `spawn_subagent` for ordinary one-off single/parallel/chain delegation
-  - v1 scope: Pi-backed subagents only, no external backends, no resume-by-replay, no schema validation
+  - v1 scope: Pi-backed subagents only, optional resume-by-replay via `cache()`/`args._journal`, and no structured-output schema validation
 - `extensions/integration-bundles` — lazy enterprise tool-bundle loader driven by a machine-local `master_integration_list.yaml`:
   - keeps GPT / o-series safely under OpenAI's 128-tool API limit by exposing only a router toolset by default and loading bundles (jira, slack, glean, salesforce, google-workspace, databricks-aidk, ...) on demand
   - injects an `<available_bundles>` block into the system prompt with NL `description` text so the model can self-discover when to load each bundle

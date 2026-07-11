@@ -37,7 +37,7 @@ import {
 	type JobSnapshot,
 	TERMINAL_JOB_STATUS,
 	readJobSnapshots,
-} from "../_shared/job-store.js";
+} from "../_shared/job-store.ts";
 
 const DEFAULT_POLL_INTERVAL = 10;
 const MIN_POLL_INTERVAL = 1;

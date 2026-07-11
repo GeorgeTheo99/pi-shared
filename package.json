@@ -2,7 +2,9 @@
   "name": "pi-shared",
   "private": true,
   "scripts": {
-    "test:websearch": "node --no-warnings --test tests/websearch_mcp_client.test.mts"
+    "test": "npm run test:websearch && npm run test:subagents",
+    "test:websearch": "node --no-warnings --test tests/websearch_mcp_client.test.mts",
+    "test:subagents": "node --no-warnings --test tests/subagent_*.test.mts"
   },
   "keywords": ["pi-package"],
   "pi": {

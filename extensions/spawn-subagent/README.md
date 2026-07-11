@@ -65,12 +65,35 @@ Lists available agents for the selected scope.
 - Renders custom TUI rows for `spawn_subagent` calls so the visible tool card shows mode, agent/task summary, per-agent progress, active tools, and final output previews instead of only the generic tool name.
 - Background jobs return a job id immediately and keep running in the current Pi extension process; poll with `jobAction=status`, list with `jobAction=list`, and cancel with `jobAction=cancel`.
 - Background job status polling includes the latest live partial result while the job is still running.
-- Background jobs emit a visible completion message when they transition to `completed`, `failed`, or `canceled`; the message includes the job id, mode/label, success count, and a truncated preview.
-- Background job metadata and truncated/redacted result summaries persist to `~/.pi/agent/spawn-subagent/jobs.json` by default (`PI_SPAWN_SUBAGENT_DIR` overrides the directory), capped to the most recent 100 jobs and jobs updated in the last 30 days.
-- Persisted `running` jobs from a previous Pi process are marked `failed` on reload/restart because child process state cannot be restored.
-- Propagates aborts to child Pi processes; background jobs can be canceled by job id and the canceled state is persisted.
-- Limits parallel mode to 8 tasks with max concurrency 4.
+- Background jobs emit a visible UI notification when they transition to `completed`, `failed`, or `canceled`; it includes the job id and success summary, while full output remains available through `jobAction: "status"`.
+- Background job metadata and truncated/redacted result summaries persist to `~/.pi/agent/spawn-subagent/jobs.json` by default (`PI_SUBAGENT_STATE_DIR` or legacy `PI_SPAWN_SUBAGENT_DIR` overrides the directory). Active records are never evicted; terminal history is limited to the newest records within the 100-job / 30-day retention bounds.
+- Background records are merged under an interprocess lock and published atomically. Running jobs carry owner PID/heartbeat leases, so loading another Pi process does not mark live foreign jobs failed. Expired/dead owners are reconciled to `failed`.
+- Cancellation is cross-process: a remote request moves the job to nonterminal `canceling`; the owner aborts queued/running children, waits for process-tree shutdown, and only then persists terminal `canceled`.
+- Parallel and chain requests allow 16 runs by default. A host-wide lease scheduler caps actual children at 8 across `spawn_subagent`, `workflow`, background jobs, and separate Pi processes sharing the state directory.
+- The managed runner enforces queue/run deadlines, bounded task/event/stderr/result capture, process-tree cleanup (SIGTERM→SIGKILL on POSIX; `taskkill /T /F` on Windows), and session-shutdown cleanup.
+- Nested subagent/workflow delegation is disabled by default (`max depth = 1`) and also excluded in child CLI arguments.
 - Does not create git worktrees or branches; use normal git/worktree workflows explicitly when needed.
+
+## Limits and configuration
+
+Defaults are conservative and can be changed before Pi starts. Invalid or out-of-range values fail closed instead of silently launching with unintended limits.
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `PI_SUBAGENT_MAX_FANOUT` | `16` | Maximum parallel tasks, chain steps, or outstanding workflow agents per request (hard range `1..64`) |
+| `PI_SUBAGENT_MAX_CONCURRENCY` | `8` | Host-wide active child leases (hard range `1..32`) |
+| `PI_SUBAGENT_MAX_BACKGROUND_JOBS` | `8` | Active background requests across the shared job store |
+| `PI_SUBAGENT_MAX_DEPTH` | `1` | Delegation generations; `1` permits root→child and blocks child→grandchild |
+| `PI_SUBAGENT_QUEUE_TIMEOUT_MS` | `1800000` | Maximum wait for a global execution slot |
+| `PI_SUBAGENT_RUN_TIMEOUT_MS` | `3600000` | Maximum runtime after child start |
+| `PI_SUBAGENT_TERM_GRACE_MS` | `5000` | SIGTERM grace before process-tree SIGKILL |
+| `PI_SUBAGENT_MAX_TASK_BYTES` | `262144` | Delegated task/handoff size |
+| `PI_SUBAGENT_MAX_EVENT_BYTES` | `4194304` | Maximum NDJSON event line from child Pi |
+| `PI_SUBAGENT_MAX_CAPTURE_BYTES` | `1048576` | Retained child result detail per run |
+| `PI_SUBAGENT_MAX_STDERR_BYTES` | `65536` | Retained stderr tail per run |
+| `PI_SUBAGENT_STATE_DIR` | `~/.pi/agent/spawn-subagent` | Scheduler and job-store directory |
+
+`PI_SUBAGENT_DEPTH`, heartbeat, and lease variables are internal/runtime controls; normally leave them unset. All Pi processes that should share the host cap must use the same state directory.
 
 ## Delegation Gates
 
@@ -117,4 +140,4 @@ The `ROUTING_TABLE` is the only manual coordination point. It lives in this file
 - **deep-research**: Registered as both a `/research` command and a `deep_research` tool. The routing table routes deep research questions to it instead of repeated `web_search`+`web_fetch` calls.
 - **websearch**: `web_search` and `web_fetch` `promptGuidelines` explicitly redirect to `deep_research` for deep tasks.
 
-Run `/reload` or restart Pi after changing this extension.
+Run `npm run test:subagents` after changing the shared scheduler, runner, job store, trust handling, or either orchestration extension. Run `/reload` or restart Pi only after tests pass; an already-running session keeps its previously loaded extension code until then.

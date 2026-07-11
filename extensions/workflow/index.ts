@@ -33,20 +33,35 @@
  * See README.md for the full guide and examples.
  */
 
-import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Type, type Message } from "@mariozechner/pi-ai";
+import { Type } from "@mariozechner/pi-ai";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { discoverAgents, formatAgentList, type AgentConfig } from "../spawn-subagent/agents.js";
+import {
+	canSpawnSubagent,
+	formatSubagentLimits,
+	loadSubagentConfig,
+	subagentConfigError,
+	type SubagentConfig,
+} from "../_shared/subagent-config.ts";
+import {
+	createSubagentExecutionGroup,
+	type SubagentExecutionGroup,
+} from "../_shared/subagent-scheduler.ts";
+import { getFinalAssistantOutput, runPiAgent } from "../_shared/pi-agent-runner.ts";
+import { PromiseTracker } from "./promise-tracker.ts";
+import {
+	approveWorkflowSource,
+	configuredWorkflowScriptDirs,
+	resolveWorkflowSource,
+	type ReadyWorkflowSource,
+} from "./source.ts";
 
-const MAX_PARALLEL = 8;
-const MAX_CONCURRENCY = 4;
 const MAX_RETURN_CHARS = 24000;
-const MAX_INLINE_SCRIPT_CHARS = 20000;
 const PROGRESS_THROTTLE_MS = 250;
 
 type AgentStatus = "queued" | "running" | "completed" | "failed";
@@ -153,60 +168,6 @@ function compactLine(text: string, maxChars = 140): string {
   return `${compact.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
-function getFinalOutput(messages: Message[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message.role !== "assistant") continue;
-    for (const part of message.content) {
-      if (part.type === "text") return part.text;
-    }
-  }
-  return "";
-}
-
-function extractMessageText(message: Message | undefined): string {
-  if (!message) return "";
-  const parts = Array.isArray(message.content) ? message.content : [];
-  return parts
-    .map((part: any) => (part?.type === "text" && typeof part.text === "string" ? part.text : ""))
-    .filter(Boolean)
-    .join("\n");
-}
-
-function expandTilde(input: string): string {
-  if (input === "~") return os.homedir();
-  if (input.startsWith("~/")) return path.join(os.homedir(), input.slice(2));
-  return input;
-}
-
-function resolveCwd(defaultCwd: string, cwd?: string): string {
-  if (!cwd) return defaultCwd;
-  const expanded = expandTilde(cwd);
-  return path.isAbsolute(expanded) ? expanded : path.resolve(defaultCwd, expanded);
-}
-
-/** Build the `pi` invocation the same way spawn_subagent does, so workflow
- * subagents behave identically to `spawn_subagent` single mode. */
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
-  const currentScript = process.argv[1];
-  const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-  if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-    return { command: process.execPath, args: [currentScript, ...args] };
-  }
-  const execName = path.basename(process.execPath).toLowerCase();
-  const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-  if (!isGenericRuntime) return { command: process.execPath, args };
-  return { command: "pi", args };
-}
-
-async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-workflow-"));
-  const safeName = agentName.replace(/[^\w.-]+/g, "_");
-  const filePath = path.join(dir, `prompt-${safeName}.md`);
-  await fs.promises.writeFile(filePath, prompt, { encoding: "utf8", mode: 0o600 });
-  return { dir, filePath };
-}
-
 interface AgentExecResult {
   output: string;
   exitCode: number;
@@ -215,10 +176,9 @@ interface AgentExecResult {
   errorMessage?: string;
 }
 
-/** Spawn one Pi subagent and return its final assistant text. Mirrors the
- * subprocess contract of spawn_subagent's runSingleAgent, trimmed to what
- * workflow needs (no per-tool progress, just status + final output). */
 async function runAgent(options: {
+  config: SubagentConfig;
+  group: SubagentExecutionGroup;
   defaultCwd: string;
   agents: AgentConfig[];
   agentName: string;
@@ -228,140 +188,51 @@ async function runAgent(options: {
   parentModel?: string;
   signal?: AbortSignal;
   onStatus: (patch: Partial<AgentRun>) => void;
-  // Optional live-stream sink: invoked with each streamed assistant text as it
-  // arrives, so the orchestrator layer (workflow JS) can observe in-progress
-  // findings, not just the final output.
   onStream?: (text: string) => void;
 }): Promise<AgentExecResult> {
-  const agent = options.agents.find((candidate) => candidate.name === options.agentName);
-  if (!agent) {
-    const available = options.agents.map((candidate) => `"${candidate.name}"`).join(", ") || "none";
-    return { output: "", exitCode: 1, stderr: `Unknown agent: "${options.agentName}". Available agents: ${available}.`, errorMessage: "unknown agent" };
-  }
-
-  const args = ["--mode", "json", "-p", "--no-session"];
-  // Model precedence: explicit call param > agent frontmatter > parent session model.
-  const model = options.model ?? agent.model ?? options.parentModel;
-  if (model) args.push("--model", model);
-  if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
-
-  let tmpPromptDir: string | null = null;
-  let tmpPromptPath: string | null = null;
-  const messages: Message[] = [];
-  let stderr = "";
-  let wasAborted = false;
   let updateCount = 0;
-
-  try {
-    if (agent.systemPrompt.trim()) {
-      const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
-      tmpPromptDir = tmp.dir;
-      tmpPromptPath = tmp.filePath;
-      args.push("--append-system-prompt", tmpPromptPath);
-    }
-    args.push(`Task: ${options.task}`);
-
-    const cwd = resolveCwd(options.defaultCwd, options.cwd);
-    const exitCode = await new Promise<number>((resolve) => {
-      const invocation = getPiInvocation(args);
-      const proc = spawn(invocation.command, invocation.args, {
-        cwd,
-        env: process.env,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      options.onStatus({ status: "running", startedAt: new Date().toISOString() });
-
-      let buffer = "";
-      const processLine = (line: string) => {
-        if (!line.trim()) return;
-        let event: any;
-        try {
-          event = JSON.parse(line);
-        } catch {
-          return;
-        }
-        if (event.type === "message_update" && event.message) {
-          const text = extractMessageText(event.message as Message);
-          if (text) {
-            updateCount++;
-            options.onStatus({ lastText: text, updateCount, lastUpdateAt: new Date().toISOString() });
-            options.onStream?.(text);
-          }
-        }
-        if (event.type === "message_end" && event.message) {
-          messages.push(event.message as Message);
-          const text = extractMessageText(event.message as Message);
-          if (text) {
-            updateCount++;
-            options.onStatus({ lastText: text, updateCount, lastUpdateAt: new Date().toISOString() });
-            options.onStream?.(text);
-          }
-        }
-      };
-
-      proc.stdout.on("data", (data) => {
-        buffer += data.toString();
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) processLine(line);
-      });
-      proc.stderr.on("data", (data) => {
-        stderr += data.toString();
-      });
-      proc.on("close", (code) => {
-        if (buffer.trim()) processLine(buffer);
-        resolve(code ?? 0);
-      });
-      proc.on("error", (error) => {
-        stderr += error.message;
-        resolve(1);
-      });
-
-      if (options.signal) {
-        const killProc = () => {
-          wasAborted = true;
-          proc.kill("SIGTERM");
-          setTimeout(() => {
-            if (!proc.killed) proc.kill("SIGKILL");
-          }, 5000).unref?.();
-        };
-        if (options.signal.aborted) killProc();
-        else options.signal.addEventListener("abort", killProc, { once: true });
+  let previousText = "";
+  const result = await runPiAgent({
+    config: options.config,
+    group: options.group,
+    defaultCwd: options.defaultCwd,
+    agents: options.agents,
+    agentName: options.agentName,
+    task: options.task,
+    cwd: options.cwd,
+    model: options.model,
+    parentModel: options.parentModel,
+    signal: options.signal,
+    onUpdate: (partial) => {
+      const text = partial.lastText ?? "";
+      if (text && text !== previousText) {
+        previousText = text;
+        updateCount++;
+        options.onStream?.(text);
       }
-    });
-
-    const errorMessage = wasAborted ? "aborted" : undefined;
-    return {
-      output: wasAborted ? "" : getFinalOutput(messages),
-      exitCode,
-      stderr,
-      errorMessage,
-    };
-  } finally {
-    if (tmpPromptPath) await fs.promises.unlink(tmpPromptPath).catch(() => undefined);
-    if (tmpPromptDir) await fs.promises.rmdir(tmpPromptDir).catch(() => undefined);
-  }
-}
-
-async function mapWithConcurrencyLimit<TIn, TOut>(
-  items: TIn[],
-  concurrency: number,
-  fn: (item: TIn, index: number) => Promise<TOut>,
-): Promise<TOut[]> {
-  const results = new Array<TOut>(items.length);
-  let nextIndex = 0;
-  const workerCount = Math.max(1, Math.min(concurrency, items.length));
-  await Promise.all(
-    new Array(workerCount).fill(null).map(async () => {
-      while (true) {
-        const index = nextIndex++;
-        if (index >= items.length) return;
-        results[index] = await fn(items[index], index);
-      }
-    }),
-  );
-  return results;
+      options.onStatus({
+        status:
+          partial.status === "completed"
+            ? "completed"
+            : partial.status === "failed" || partial.status === "canceled"
+              ? "failed"
+              : partial.status === "queued"
+                ? "queued"
+                : "running",
+        startedAt: partial.startedAt,
+        lastText: text || undefined,
+        updateCount,
+        lastUpdateAt: partial.updatedAt,
+      });
+    },
+  });
+  return {
+    output: result.status === "canceled" ? "" : getFinalAssistantOutput(result.messages),
+    exitCode: result.exitCode,
+    stderr: result.stderr,
+    model: result.model,
+    errorMessage: result.errorMessage,
+  };
 }
 
 function findNearestProjectWorkflowsDir(cwd: string): string | null {
@@ -379,87 +250,9 @@ function findNearestProjectWorkflowsDir(cwd: string): string | null {
   }
 }
 
-interface ResolvedSource {
-  code: string;
-  source: "inline" | "saved" | "path";
-  name?: string;
-  scriptPath?: string;
-}
-
-function readWorkflowFile(filePath: string): string {
-  return fs.readFileSync(filePath, "utf8");
-}
-
-/** Resolve the workflow script from exactly one of script/name/scriptPath. */
-function resolveSource(params: any, ctx: ExtensionContext): { ok: true; value: ResolvedSource } | { ok: false; error: string } {
-  const hasScript = typeof params.script === "string" && params.script.trim().length > 0;
-  const hasName = typeof params.name === "string" && params.name.trim().length > 0;
-  const hasPath = typeof params.scriptPath === "string" && params.scriptPath.trim().length > 0;
-  const count = Number(hasScript) + Number(hasName) + Number(hasPath);
-  if (count !== 1) {
-    return { ok: false, error: "Provide exactly one of `script` (inline JS), `name` (saved workflow), or `scriptPath` (workflow file path)." };
-  }
-
-  if (hasScript) {
-    const code = params.script as string;
-    if (code.length > MAX_INLINE_SCRIPT_CHARS) {
-      return { ok: false, error: `Inline script is ${code.length} chars; max is ${MAX_INLINE_SCRIPT_CHARS}. Use scriptPath or a saved workflow.` };
-    }
-    return { ok: true, value: { code, source: "inline" } };
-  }
-
-  if (hasPath) {
-    const filePath = resolveCwd(ctx.cwd, params.scriptPath as string);
-    if (!fs.existsSync(filePath)) return { ok: false, error: `Workflow file not found: ${filePath}` };
-    try {
-      const code = readWorkflowFile(filePath);
-      return { ok: true, value: { code, source: "path", scriptPath: filePath } };
-    } catch (err: unknown) {
-      return { ok: false, error: `Could not read workflow file ${filePath}: ${err instanceof Error ? err.message : String(err)}` };
-    }
-  }
-
-  // name resolution: shared dir first, then nearest project .pi/workflows
-  const name = (params.name as string).trim();
-  const safeName = name.replace(/[\\/]+/g, ""); // prevent path traversal
-  const sharedDir = sharedWorkflowsDir();
-  const sharedPath = path.join(sharedDir, `${safeName}.js`);
-  if (fs.existsSync(sharedPath)) {
-    try {
-      const code = readWorkflowFile(sharedPath);
-      return { ok: true, value: { code, source: "saved", name, scriptPath: sharedPath } };
-    } catch (err: unknown) {
-      return { ok: false, error: `Could not read shared workflow "${name}": ${err instanceof Error ? err.message : String(err)}` };
-    }
-  }
-
-  const projectDir = findNearestProjectWorkflowsDir(ctx.cwd);
-  if (projectDir) {
-    const projectPath = path.join(projectDir, `${safeName}.js`);
-    if (fs.existsSync(projectPath)) {
-      // Project workflows are repo-controlled scripts. Only run them when the
-      // project is trusted, or the user explicitly confirms in the UI.
-      if (!ctx.isProjectTrusted() && ctx.hasUI) {
-        // Defer confirmation to the caller (execute) so it can await ctx.ui.
-        return { ok: false, error: `__confirm_project__:${projectPath}` };
-      }
-      if (!ctx.isProjectTrusted() && !ctx.hasUI) {
-        return { ok: false, error: `Project workflow "${name}" requires project trust. Trust this project or run from an interactive session.` };
-      }
-      try {
-        const code = readWorkflowFile(projectPath);
-        return { ok: true, value: { code, source: "saved", name, scriptPath: projectPath } };
-      } catch (err: unknown) {
-        return { ok: false, error: `Could not read project workflow "${name}": ${err instanceof Error ? err.message : String(err)}` };
-      }
-    }
-  }
-
-  const lookedIn = [sharedDir, projectDir].filter(Boolean).map((d) => `- ${d}`).join("\n");
-  return { ok: false, error: `Saved workflow "${name}" not found. Looked in:\n${lookedIn || "(no workflow dirs found)"}` };
-}
-
 interface RuntimeOptions {
+  config: SubagentConfig;
+  group: SubagentExecutionGroup;
   args: Record<string, unknown>;
   cwd: string;
   agents: AgentConfig[];
@@ -471,7 +264,7 @@ interface RuntimeOptions {
 }
 
 function buildRuntime(opts: RuntimeOptions) {
-  const { args, cwd, agents, parentModel, signal, details, onUpdate, journal } = opts;
+  const { config, group, args, cwd, agents, parentModel, signal, details, onUpdate, journal } = opts;
   let lastEmitMs = 0;
   const emit = (force = false) => {
     const now = Date.now();
@@ -484,11 +277,17 @@ function buildRuntime(opts: RuntimeOptions) {
   };
 
   const recordAgent = (run: AgentRun) => {
+    if (details.agents.length >= config.maxFanout) {
+      throw new Error(`Workflow exceeds the maximum of ${config.maxFanout} agent calls.`);
+    }
     details.agents.push(run);
     emit(true);
   };
 
-  const agent = async (
+  const pendingAgents = new PromiseTracker<string>();
+  let acceptingAgents = true;
+
+  const runAgentCall = async (
     prompt: string,
     agentOpts?: { agent?: string; model?: string; cwd?: string; onProgress?: (text: string) => void },
   ): Promise<string> => {
@@ -497,6 +296,8 @@ function buildRuntime(opts: RuntimeOptions) {
     const run: AgentRun = { agent: agentName, task: prompt, status: "queued" };
     recordAgent(run);
     const result = await runAgent({
+      config,
+      group,
       defaultCwd: cwd,
       agents,
       agentName,
@@ -538,19 +339,37 @@ function buildRuntime(opts: RuntimeOptions) {
     return result.output;
   };
 
+  const agent = (
+    prompt: string,
+    agentOpts?: { agent?: string; model?: string; cwd?: string; onProgress?: (text: string) => void },
+  ): Promise<string> => {
+    if (!acceptingAgents) return Promise.reject(new Error("Workflow is no longer accepting agent calls."));
+    return pendingAgents.track(runAgentCall(prompt, agentOpts));
+  };
+
+  const sealAgents = () => {
+    acceptingAgents = false;
+  };
+
+  const drainAgents = () => pendingAgents.drain();
+
   const parallel = async <T,>(thunks: Array<() => Promise<T>>): Promise<T[]> => {
     if (!Array.isArray(thunks)) throw new Error("parallel(thunks): thunks must be an array of functions");
-    if (thunks.length > MAX_PARALLEL) throw new Error(`parallel(): ${thunks.length} thunks exceeds max of ${MAX_PARALLEL}`);
-    return mapWithConcurrencyLimit(thunks, MAX_CONCURRENCY, (thunk) => thunk());
+    if (thunks.length > config.maxFanout) {
+      throw new Error(`parallel(): ${thunks.length} thunks exceeds max of ${config.maxFanout}`);
+    }
+    return Promise.all(thunks.map((thunk) => thunk()));
   };
 
   const phase = (title: string) => {
-    details.phases.push(String(title));
+    if (details.phases.length >= 100) throw new Error("Workflow exceeds the maximum of 100 phase markers.");
+    details.phases.push(limitText(String(title), 500));
     emit(true);
   };
 
   const log = (message: string) => {
-    details.logs.push(String(message));
+    details.logs.push(limitText(String(message), 4000));
+    if (details.logs.length > 200) details.logs.splice(0, details.logs.length - 200);
     emit(true);
   };
 
@@ -573,7 +392,8 @@ function buildRuntime(opts: RuntimeOptions) {
     }
     const value = await producer();
     if (journal) {
-      journal.entries.set(cacheKey, { key: cacheKey, value, completedAt: new Date().toISOString() });
+      const persistedValue = safeDetailValue(value, config.maxCaptureBytes);
+      journal.entries.set(cacheKey, { key: cacheKey, value: persistedValue, completedAt: new Date().toISOString() });
       persistJournal(journal);
       details.computedKeys = details.computedKeys ?? [];
       if (!details.computedKeys.includes(cacheKey)) details.computedKeys.push(cacheKey);
@@ -581,7 +401,7 @@ function buildRuntime(opts: RuntimeOptions) {
     return value;
   };
 
-  return { agent, parallel, phase, log, cache, args, cwd };
+  return { agent, parallel, phase, log, cache, sealAgents, drainAgents, args, cwd };
 }
 
 function cloneDetails(details: WorkflowDetails): WorkflowDetails {
@@ -612,6 +432,29 @@ function formatProgress(details: WorkflowDetails): string {
     for (const l of details.logs.slice(-5)) lines.push(`  · ${compactLine(l, 140)}`);
   }
   return limitText(lines.join("\n"), 4000);
+}
+
+function truncateUtf8Value(value: string, maxBytes: number): string {
+  const source = Buffer.from(value, "utf8");
+  if (source.length <= maxBytes) return value;
+  const marker = Buffer.from(`\n[workflow value truncated at ${maxBytes} bytes]`, "utf8");
+  const keep = Math.max(0, maxBytes - marker.length);
+  let text = source.subarray(0, keep).toString("utf8");
+  while (Buffer.byteLength(text, "utf8") > keep) text = text.slice(0, -1);
+  return `${text}${marker.toString("utf8")}`;
+}
+
+function safeDetailValue(value: unknown, maxBytes: number): unknown {
+  if (value === undefined || value === null || typeof value === "boolean" || typeof value === "number") return value;
+  if (typeof value === "string") return truncateUtf8Value(value, maxBytes);
+  try {
+    const serialized = JSON.stringify(value);
+    const bytes = Buffer.byteLength(serialized, "utf8");
+    if (bytes > maxBytes) return `[workflow value omitted: ${bytes} bytes exceeds ${maxBytes}-byte capture limit]`;
+    return JSON.parse(serialized);
+  } catch {
+    return `[workflow value is not JSON-serializable: ${String(value).slice(0, 500)}]`;
+  }
 }
 
 function serializeReturnValue(value: unknown): string {
@@ -667,7 +510,8 @@ const WORKFLOW_ROUTING = `Workflow vs spawn_subagent routing:
 - Inside a workflow, \`agent(prompt, {agent, onProgress})\` runs one Pi subagent (shared agents: scout, planner, reviewer, worker, panelist; default worker) and returns its final text; pass \`onProgress(text)\` to observe its streamed output mid-run. \`parallel(thunks)\` runs lanes concurrently. \`phase(title)\` and \`log(msg)\` annotate progress. \`cache(key, fn)\` enables resume-by-replay when \`args._journal\` is set.
 - Keep workflows small and focused. Prefer saving repeatable workflows under pi-shared/workflows/<name>.js (shared) or .pi/workflows/<name>.js (project) and invoking them by \`name\`.`;
 
-const workflowTool = defineTool({
+function makeWorkflowTool(config: SubagentConfig, lifecycleAbort: AbortController) {
+return defineTool({
   name: "workflow",
   label: "Workflow",
   description: [
@@ -675,54 +519,64 @@ const workflowTool = defineTool({
     "Pass args._journal=<run id> to enable resume-by-replay: cache(key, fn) results are persisted, and re-invoking with the same _journal id replays completed steps and resumes a failed run from the first incomplete step.",
     "Provide exactly one source: `script` (inline JS), `name` (saved workflow), or `scriptPath` (workflow file). Optional `args` object is passed through to the workflow.",
     "Use for repeatable, multi-phase, scriptable orchestration on top of existing Pi subagents. For ordinary one-off single/parallel/chain delegation, prefer spawn_subagent.",
+    `Effective limits: ${formatSubagentLimits(config)}.`,
   ].join(" "),
   promptSnippet: "Run a trusted JS workflow of Pi subagent calls (agent/parallel/phase/log) for repeatable multi-phase orchestration.",
   promptGuidelines: [
     "Use `workflow` for repeatable, scriptable, multi-phase orchestration (interleaved phases, conditional lanes, gathered results fed into later steps) or patterns worth saving/reusing as a named workflow.",
     "Use `spawn_subagent` for ordinary one-off single/parallel/chain delegation where a declarative task list is enough; do not reach for `workflow` for a simple fan-out.",
-    "Inside a workflow: `agent(prompt, {agent})` runs one Pi subagent (shared agents: scout, planner, reviewer, worker, panelist; default worker) and returns its final text. `parallel(thunks)` runs lanes concurrently (max 8). `phase(title)` and `log(msg)` annotate progress.",
+    `Inside a workflow: \`agent(prompt, {agent})\` runs one Pi subagent (shared agents: scout, planner, reviewer, worker, panelist; default worker) and returns its final text. \`parallel(thunks)\` runs lanes concurrently (max ${config.maxFanout}; host concurrency ${config.maxConcurrency}). \`phase(title)\` and \`log(msg)\` annotate progress.`,
     "Save repeatable workflows under `pi-shared/workflows/<name>.js` (shared, committed) or `.pi/workflows/<name>.js` (project) and invoke them by `name`.",
     "Workflow scripts run in-process with the same trust level as bash; only run workflows you trust (committed shared workflows or agent-authored inline scripts).",
   ],
   parameters: WorkflowParams,
 
   async execute(_toolCallId, params, signal, onUpdate, ctx) {
+    const configurationError = subagentConfigError(config);
+    if (configurationError) {
+      const details = emptyDetails("inline");
+      details.status = "failed";
+      details.error = configurationError;
+      return { content: [{ type: "text", text: configurationError }], details, isError: true };
+    }
     const parentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
     const agents = discoverAgents(ctx.cwd, "shared").agents;
     const args = (params.args && typeof params.args === "object" ? params.args : {}) as Record<string, unknown>;
 
-    let resolved = resolveSource(params, ctx);
+    let resolved = resolveWorkflowSource({
+      params,
+      cwd: ctx.cwd,
+      sharedDir: sharedWorkflowsDir(),
+      projectDir: findNearestProjectWorkflowsDir(ctx.cwd),
+      projectTrusted: ctx.isProjectTrusted(),
+      allowedScriptDirs: configuredWorkflowScriptDirs(),
+    });
 
-    // Project workflow confirmation deferred from resolveSource (needs async UI).
-    if (!resolved.ok && resolved.error.startsWith("__confirm_project__:")) {
-      const projectPath = resolved.error.slice("__confirm_project__:".length);
-      if (ctx.hasUI) {
-        const ok = await ctx.ui.confirm(
-          "Run project-local workflow?",
-          `Workflow: ${path.basename(projectPath)}\nSource: ${projectDirLabel(projectPath)}\n\nProject workflows are repo-controlled scripts that run in-process with bash-level trust. Continue only for trusted repositories.`,
-        );
-        if (!ok) {
-          return { content: [{ type: "text", text: "Canceled: project-local workflow was not approved." }], details: emptyDetails("saved") };
-        }
-        try {
-          const code = readWorkflowFile(projectPath);
-          resolved = { ok: true, value: { code, source: "saved", name: (params.name as string)?.trim(), scriptPath: projectPath } };
-        } catch (err: unknown) {
-          resolved = { ok: false, error: `Could not read project workflow: ${err instanceof Error ? err.message : String(err)}` };
-        }
-      } else {
-        resolved = { ok: false, error: `Project workflow requires project trust. Trust this project or run from an interactive session: ${projectPath}` };
+    if (resolved.kind === "approval") {
+      if (!ctx.hasUI) {
+        const details = emptyDetails(resolved.source);
+        details.status = "failed";
+        details.error = `${resolved.reason === "project" ? "Project" : "External"} workflow requires explicit interactive approval: ${resolved.scriptPath}`;
+        return { content: [{ type: "text", text: `Error: ${details.error}` }], details, isError: true };
       }
+      const ok = await ctx.ui.confirm(
+        resolved.reason === "project" ? "Run project-local workflow?" : "Run external workflow file?",
+        `Workflow: ${path.basename(resolved.scriptPath)}\nSource: ${path.dirname(resolved.scriptPath)}\n\nWorkflow files execute in-process with bash-level trust. Continue only if you trust this file.`,
+      );
+      if (!ok) {
+        return { content: [{ type: "text", text: "Canceled: workflow file was not approved." }], details: emptyDetails(resolved.source) };
+      }
+      resolved = approveWorkflowSource(resolved);
     }
 
-    if (!resolved.ok) {
+    if (resolved.kind === "error") {
       const details = emptyDetails("inline");
       details.status = "failed";
       details.error = resolved.error;
       return { content: [{ type: "text", text: `Error: ${resolved.error}` }], details, isError: true };
     }
 
-    const source = resolved.value;
+    const source: ReadyWorkflowSource = resolved;
     const details: WorkflowDetails = {
       source: source.source,
       name: source.name,
@@ -763,7 +617,14 @@ const workflowTool = defineTool({
       details.computedKeys = [];
     }
 
+    const group = createSubagentExecutionGroup(
+      config,
+      `workflow ${source.name ?? source.source}`,
+      [signal, lifecycleAbort.signal],
+    );
     const runtime = buildRuntime({
+      config,
+      group,
       args,
       cwd: ctx.cwd,
       agents,
@@ -785,14 +646,23 @@ const workflowTool = defineTool({
         runtime.args,
         runtime.cwd,
       );
-      details.returnValue = returnValue;
+      details.returnValue = safeDetailValue(returnValue, config.maxCaptureBytes);
       details.status = "completed";
     } catch (err: unknown) {
       details.status = "failed";
       details.error = err instanceof Error ? err.message : String(err);
+    } finally {
+      runtime.sealAgents();
+      if (details.status === "failed") group.cancel(details.error);
+      const pending = await runtime.drainAgents();
+      await group.drain();
+      if (details.status === "completed" && pending.failed) {
+        details.status = "failed";
+        details.error = pending.error instanceof Error ? pending.error.message : String(pending.error);
+      }
     }
 
-    const returnText = serializeReturnValue(returnValue);
+    const returnText = serializeReturnValue(details.returnValue);
     const body = formatResult(details, details.status === "completed" ? returnText : "");
     const result: any = {
       content: [{ type: "text", text: body }],
@@ -822,13 +692,10 @@ const workflowTool = defineTool({
     return new Text(theme.fg("success", `✓ `) + text, 0, 0);
   },
 });
+}
 
 function emptyDetails(source: WorkflowDetails["source"]): WorkflowDetails {
   return { source, phases: [], logs: [], agents: [], status: "running" };
-}
-
-function projectDirLabel(projectPath: string): string {
-  return path.dirname(projectPath);
 }
 
 function listWorkflows(ctx: ExtensionContext): string {
@@ -837,10 +704,13 @@ function listWorkflows(ctx: ExtensionContext): string {
   const lines: string[] = [];
   lines.push(`Shared workflows: ${sharedDir}`);
   lines.push(...listDir(sharedDir).map((f) => `  ${f}`));
-  if (projectDir) {
+  if (projectDir && ctx.isProjectTrusted()) {
     lines.push("");
     lines.push(`Project workflows: ${projectDir}`);
     lines.push(...listDir(projectDir).map((f) => `  ${f}`));
+  } else if (projectDir) {
+    lines.push("");
+    lines.push(`Project workflows: ${projectDir} (hidden until project trust is granted)`);
   } else {
     lines.push("");
     lines.push("Project workflows: (none — add .pi/workflows/<name>.js)");
@@ -861,6 +731,14 @@ function listDir(dir: string): string[] {
 }
 
 export default function workflowExtension(pi: ExtensionAPI) {
+  const config = loadSubagentConfig();
+  if (config.errors.length === 0 && !canSpawnSubagent(config)) return;
+
+  const lifecycleAbort = new AbortController();
+  pi.on("session_shutdown", async () => {
+    lifecycleAbort.abort(new Error("Pi session is shutting down."));
+  });
+
   pi.on("before_agent_start", async (event) => {
     const selectedTools = event.systemPromptOptions?.selectedTools ?? [];
     if (!selectedTools.includes("workflow")) return;
@@ -874,5 +752,5 @@ export default function workflowExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool(workflowTool);
+  pi.registerTool(makeWorkflowTool(config, lifecycleAbort));
 }

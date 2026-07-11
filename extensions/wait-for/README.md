@@ -77,7 +77,7 @@ wait_for({
 | `any_success` | the first job reaches `completed` |
 | `any_failure` | the first job reaches `failed` or `canceled` |
 
-Terminal statuses are `completed`, `failed`, `canceled`. While waiting, the TUI shows `N/M terminal` plus a per‑job status block on each poll. `wait_for` reads the same persisted job store (`~/.pi/agent/spawn-subagent/jobs.json`, overridable via `PI_SPAWN_SUBAGENT_DIR`) that `jobAction: "status"` uses, so it works across the main session and survives Pi reloads of the store.
+Terminal statuses are `completed`, `failed`, `canceled`; `canceling` remains nonterminal until the owner has actually stopped and reaped its child processes. While waiting, the TUI shows `N/M terminal` plus a per-job status block on each poll. `wait_for` reads the same owner-leased, atomically written job store (`~/.pi/agent/spawn-subagent/jobs.json`, overridable via `PI_SUBAGENT_STATE_DIR` or legacy `PI_SPAWN_SUBAGENT_DIR`) that `jobAction: "status"` uses, so it works across sessions/processes and treats expired owner leases as failed instead of hanging indefinitely.
 
 ## Beyond `wait_for`: event‑driven resume (documented pattern, not built)
 
