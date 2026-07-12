@@ -300,9 +300,15 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 		setUi(ctx);
 	});
 
-	pi.on("before_agent_start", async (event) => ({
-		systemPrompt: `${event.systemPrompt}\n\nWork planning protocol:\n- For non-trivial implementation, refactor, debugging, or multi-step UI work, maintain a visible work plan with the work_plan tool.\n- Create or update the plan before doing substantial work; keep exactly one active item when possible.\n- Mark dependencies with blockedBy so blocked items render as \"blocked by #N\".\n- Update the plan as soon as a task becomes active, done, or blocked.\n- Older done items are condensed automatically into a single \"✔ N earlier tasks done\" line; full state is preserved on disk, so you do not need to delete or rewrite finished items to keep the plan readable.\n- Do not use work_plan for tiny one-shot answers or trivial edits.`,
-	}));
+	pi.on("before_agent_start", async (event, ctx) => {
+		// Stock Pi may apply newSession.setup() after the replacement extension's
+		// initial session_start. Re-read transferred state before the first prompt.
+		restore(ctx);
+		setUi(ctx);
+		return {
+			systemPrompt: `${event.systemPrompt}\n\nWork planning protocol:\n- For non-trivial implementation, refactor, debugging, or multi-step UI work, maintain a visible work plan with the work_plan tool.\n- Create or update the plan before doing substantial work; keep exactly one active item when possible.\n- Mark dependencies with blockedBy so blocked items render as \"blocked by #N\".\n- Update the plan as soon as a task becomes active, done, or blocked.\n- Older done items are condensed automatically into a single \"✔ N earlier tasks done\" line; full state is preserved on disk, so you do not need to delete or rewrite finished items to keep the plan readable.\n- Do not use work_plan for tiny one-shot answers or trivial edits.`,
+		};
+	});
 
 	// Pause the active-item timer when the agent is idle. The widget timer
 	// represents agent work spent on the active task, not wall-clock time since
@@ -334,6 +340,8 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 	pi.registerCommand("plan", {
 		description: "Show or clear the current work plan. Usage: /plan [clear]",
 		handler: async (args, ctx) => {
+			restore(ctx);
+			setUi(ctx);
 			const verb = args.trim().toLowerCase();
 			if (verb === "clear") {
 				state = emptyState();

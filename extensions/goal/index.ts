@@ -1,7 +1,33 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import {
+  type ExtensionAPI,
+  type ExtensionContext,
+  SessionManager,
+} from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
+import {
+  type HandoffChildFailureEvent,
+  type HandoffGateEvent,
+  inspectSelfHandoffRecords,
+  latestGoalState,
+  makeHandoffRecord,
+  reduceSelfHandoffRequest,
+  SELF_HANDOFF_BEGIN_EVENT,
+  SELF_HANDOFF_CHILD_FAILURE_EVENT,
+  SELF_HANDOFF_ROLLBACK_EVENT,
+  SELF_HANDOFF_STATE_TYPE,
+  type SessionEntryLike,
+  withSelfHandoffLock,
+} from "../self-handoff/state.ts";
 
-type GoalStatus = "active" | "paused" | "complete" | "blocked" | "budget_limited" | "cleared";
+type GoalStatus =
+  | "active"
+  | "paused"
+  | "complete"
+  | "blocked"
+  | "budget_limited"
+  | "cleared"
+  | "transferring"
+  | "transferred";
 
 type GoalLogEntry = {
   timestamp: number;
@@ -20,6 +46,8 @@ type GoalState = {
   maxTurns: number;
   turnsCompleted: number;
   budgetNoticeSent?: boolean;
+  handoffId?: string;
+  handoffTargetSessionFile?: string;
   progressLog: GoalLogEntry[];
   /**
    * Count of consecutive turns where the model returned no text and no tool
@@ -327,40 +355,274 @@ function setStatus(ctx: ExtensionContext) {
   if (!ctx.hasUI) return;
   if (goal && goal.status === "active") ctx.ui.setStatus("goal", `goal ${goal.turnsCompleted}/${goal.maxTurns}`);
   else if (goal && goal.status === "paused") ctx.ui.setStatus("goal", "goal paused");
+  else if (goal && goal.status === "transferring") ctx.ui.setStatus("goal", "goal transferring");
+  else if (goal && goal.status === "transferred") ctx.ui.setStatus("goal", "goal transferred");
   else ctx.ui.setStatus("goal", undefined);
 }
 
-function queueGoalPrompt(pi: ExtensionAPI, prompt: string) {
-  // IMPORTANT: agent_end fires while pi-agent-core's `isStreaming` flag may
-  // still be true. sendCustomMessage() routes by isStreaming first:
-  //   isStreaming + deliverAs:"followUp"  -> agent.followUp() (queue only,
-  //                                          no auto-trigger after stream ends)
-  //   !isStreaming + triggerTurn:true     -> agent.prompt() (starts a new turn)
-  // If we call sendMessage synchronously from agent_end with triggerTurn:true,
-  // the queue branch wins because isStreaming hasn't flipped yet, the message
-  // sits in followUpQueue, the loop has just exited, and nothing ever drains
-  // it. The session silently goes idle. This was the autopilot-stall bug.
-  //
-  // Defer to a macrotask so the agent's run lifecycle has settled and
-  // isStreaming is false, then sendMessage hits the triggerTurn branch and
-  // actually starts the next turn.
-  setTimeout(() => {
-    void pi.sendMessage(
+type HandoffGate = {
+  sessionId?: string;
+  attemptId?: string;
+  heldPrompt?: string;
+  closed: boolean;
+  timers: Set<ReturnType<typeof setTimeout>>;
+};
+
+function isHandoffGateEvent(value: unknown): value is HandoffGateEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<HandoffGateEvent>;
+  return typeof event.attemptId === "string" && typeof event.sessionId === "string";
+}
+
+function isChildFailureEvent(value: unknown): value is HandoffChildFailureEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<HandoffChildFailureEvent>;
+  return (
+    typeof event.requestId === "string" &&
+    typeof event.sessionId === "string" &&
+    (event.goalId === undefined || typeof event.goalId === "string")
+  );
+}
+
+function latestHandoffForRequest(
+  entries: readonly SessionEntryLike[],
+  requestId: string,
+) {
+  const audit = inspectSelfHandoffRecords(entries);
+  if (audit.malformed) return { malformed: true, record: undefined };
+  const candidate = audit.records.find((record) => record.request.id === requestId);
+  if (!candidate) return { malformed: false, record: undefined };
+  const reduction = reduceSelfHandoffRequest(entries, candidate.request);
+  return {
+    malformed: reduction.conflict !== undefined,
+    record: reduction.conflict ? undefined : reduction.record,
+  };
+}
+
+function unresolvedChildOwnership(
+  ctx: ExtensionContext,
+  goalId?: string,
+): string | undefined {
+  const entries = ctx.sessionManager.getEntries();
+  const audit = inspectSelfHandoffRecords(entries);
+  if (audit.malformed) return "the session contains a malformed self-handoff audit record";
+  const requestIds = new Set(
+    audit.records
+      .filter(
+        (record) =>
+          record.targetSessionId === ctx.sessionManager.getSessionId() &&
+          record.targetSessionFile === ctx.sessionManager.getSessionFile() &&
+          record.request.originSessionFile !== ctx.sessionManager.getSessionFile(),
+      )
+      .map((record) => record.request.id),
+  );
+  for (const requestId of requestIds) {
+    const lookup = latestHandoffForRequest(entries, requestId);
+    if (lookup.malformed) {
+      return "the session contains conflicting self-handoff ownership records";
+    }
+    const record = lookup.record;
+    if (
+      record &&
+      (record.status === "received" || record.status === "failed") &&
+      (goalId === undefined || record.request.goalId === goalId)
+    ) {
+      return "the transferred child has not finalized ownership with its parent";
+    }
+  }
+  return undefined;
+}
+
+function outboundGoalOwnership(
+  ctx: ExtensionContext,
+  goalId?: string,
+): string | undefined {
+  const entries = ctx.sessionManager.getEntries();
+  const audit = inspectSelfHandoffRecords(entries);
+  if (audit.malformed) return "the session contains a malformed self-handoff audit record";
+  const requestIds = new Set(
+    audit.records
+      .filter(
+        (record) =>
+          record.request.goalTransferred &&
+          record.request.originSessionId === ctx.sessionManager.getSessionId() &&
+          record.request.originSessionFile === ctx.sessionManager.getSessionFile() &&
+          (goalId === undefined || record.request.goalId === goalId),
+      )
+      .map((record) => record.request.id),
+  );
+  for (const requestId of requestIds) {
+    const lookup = latestHandoffForRequest(entries, requestId);
+    if (lookup.malformed) {
+      return "the session contains conflicting self-handoff ownership records";
+    }
+    const record = lookup.record;
+    if (
+      record &&
+      (record.status === "prepared" ||
+        record.status === "child_created" ||
+        (goalId !== undefined && record.status === "transferred"))
+    ) {
+      return "this parent session no longer owns the durable goal";
+    }
+  }
+  return undefined;
+}
+
+function reactivationBlockReason(
+  ctx: ExtensionContext,
+  goalId: string,
+): string | undefined {
+  const outboundReason = outboundGoalOwnership(ctx, goalId);
+  if (outboundReason) return outboundReason;
+  const reason = unresolvedChildOwnership(ctx, goalId);
+  if (!reason) return undefined;
+  const entries = ctx.sessionManager.getEntries();
+  const audit = inspectSelfHandoffRecords(entries);
+  if (audit.malformed) return reason;
+  for (const candidate of audit.records) {
+    if (
+      candidate.request.goalId !== goalId ||
+      candidate.targetSessionId !== ctx.sessionManager.getSessionId() ||
+      candidate.targetSessionFile !== ctx.sessionManager.getSessionFile()
+    ) {
+      continue;
+    }
+    const sessionLookup = latestHandoffForRequest(entries, candidate.request.id);
+    if (sessionLookup.malformed || sessionLookup.record?.status !== "received") {
+      continue;
+    }
+    const branchLookup = latestHandoffForRequest(
+      ctx.sessionManager.getBranch(),
+      candidate.request.id,
+    );
+    if (!branchLookup.malformed && branchLookup.record?.status === "received") {
+      return undefined;
+    }
+  }
+  return reason;
+}
+
+function sendGoalPrompt(pi: ExtensionAPI, prompt: string, handoffGate: HandoffGate) {
+  if (handoffGate.closed) return;
+  try {
+    pi.sendMessage(
       { customType: "goal-autopilot", content: prompt, display: false },
       { deliverAs: "followUp", triggerTurn: true },
     );
+  } catch {
+    // The session shut down between the guard and the send.
+  }
+}
+
+function queueGoalPrompt(pi: ExtensionAPI, prompt: string, handoffGate: HandoffGate) {
+  // agent_end still reports streaming synchronously. Defer one macrotask so a
+  // normal continuation starts from idle. A user-invoked /self-handoff opens
+  // the gate first, causing this prompt to be held until cancellation or
+  // discarded with the old extension runtime after a successful replacement.
+  const timer = setTimeout(() => {
+    handoffGate.timers.delete(timer);
+    if (handoffGate.closed) return;
+    if (handoffGate.attemptId) {
+      handoffGate.heldPrompt = prompt;
+      return;
+    }
+    sendGoalPrompt(pi, prompt, handoffGate);
   }, 0);
+  handoffGate.timers.add(timer);
 }
 
 export default function goalExtension(pi: ExtensionAPI) {
+  const handoffGate: HandoffGate = { closed: false, timers: new Set() };
+  let currentContext: ExtensionContext | undefined;
+  const stopBeginListener = pi.events.on(SELF_HANDOFF_BEGIN_EVENT, (value) => {
+    if (!isHandoffGateEvent(value) || value.sessionId !== handoffGate.sessionId) return;
+    handoffGate.attemptId = value.attemptId;
+  });
+  const stopRollbackListener = pi.events.on(SELF_HANDOFF_ROLLBACK_EVENT, (value) => {
+    if (!isHandoffGateEvent(value) || value.attemptId !== handoffGate.attemptId) return;
+    handoffGate.attemptId = undefined;
+    const heldPrompt = handoffGate.heldPrompt;
+    handoffGate.heldPrompt = undefined;
+    if (heldPrompt) sendGoalPrompt(pi, heldPrompt, handoffGate);
+  });
+  const stopChildFailureListener = pi.events.on(SELF_HANDOFF_CHILD_FAILURE_EVENT, (value) => {
+    if (
+      !isChildFailureEvent(value) ||
+      value.sessionId !== handoffGate.sessionId ||
+      !currentContext ||
+      !goal ||
+      goal.id !== value.goalId
+    ) {
+      return;
+    }
+    const handoffLookup = latestHandoffForRequest(
+      currentContext.sessionManager.getEntries(),
+      value.requestId,
+    );
+    const handoff = handoffLookup.record;
+    if (
+      !handoffLookup.malformed &&
+      (handoff?.status !== "received" ||
+        handoff.request.id !== value.requestId ||
+        handoff.request.goalId !== value.goalId ||
+        handoff.targetSessionId !== value.sessionId ||
+        handoff.targetSessionFile !== currentContext.sessionManager.getSessionFile())
+    ) {
+      return;
+    }
+    for (const timer of handoffGate.timers) clearTimeout(timer);
+    handoffGate.timers.clear();
+    handoffGate.attemptId = undefined;
+    handoffGate.heldPrompt = undefined;
+    if (goal.status !== "paused") {
+      goal.completedAt = undefined;
+      goal.budgetNoticeSent = false;
+      record(pi, "paused", "Paused because self-handoff parent ownership could not be finalized.");
+      if (currentContext) setStatus(currentContext);
+    }
+  });
+
   pi.on("session_start", async (_event, ctx) => {
+    currentContext = ctx;
+    handoffGate.closed = false;
+    handoffGate.sessionId = ctx.sessionManager.getSessionId();
     restore(ctx);
     setStatus(ctx);
   });
 
+  pi.on("before_agent_start", async (_event, ctx) => {
+    currentContext = ctx;
+    // Stock Pi runs newSession.setup() outside the initial extension restore
+    // boundary. Re-read custom state before the child's first kickoff turn.
+    restore(ctx);
+    if (goal?.status === "active") {
+      const reason = reactivationBlockReason(ctx, goal.id);
+      if (reason) {
+        record(pi, "paused", `Paused because ${reason}.`);
+        if (ctx.hasUI) ctx.ui.notify(`Goal paused: ${reason}.`, "warning");
+      }
+    }
+    setStatus(ctx);
+  });
+
+  pi.on("session_shutdown", async () => {
+    handoffGate.closed = true;
+    for (const timer of handoffGate.timers) clearTimeout(timer);
+    handoffGate.timers.clear();
+    stopBeginListener();
+    stopRollbackListener();
+    stopChildFailureListener();
+    currentContext = undefined;
+    handoffGate.attemptId = undefined;
+    handoffGate.heldPrompt = undefined;
+  });
+
   pi.registerCommand("goal", {
-    description: "Set, inspect, pause, resume, or clear a durable long-running goal.",
+    description: "Set, inspect, pause, resume, reclaim, or clear a durable long-running goal.",
     handler: async (args, ctx) => {
+      restore(ctx);
+      setStatus(ctx);
       const trimmed = args.trim();
       const [verbRaw] = trimmed.split(/\s+/, 1);
       const verb = verbRaw?.toLowerCase();
@@ -372,14 +634,97 @@ export default function goalExtension(pi: ExtensionAPI) {
 
       if (verb === "pause") {
         if (!goal) return void ctx.ui.notify("No goal to pause.", "info");
+        if (goal.status === "transferring" || goal.status === "transferred") {
+          return void ctx.ui.notify("This goal is owned by a self-handoff flow and cannot be paused here.", "warning");
+        }
         record(pi, "paused", "Paused by user.");
         setStatus(ctx);
         ctx.ui.notify("Goal paused.", "info");
         return;
       }
 
+      if (verb === "reclaim") {
+        if (!goal) return void ctx.ui.notify("No goal to reclaim.", "info");
+        if (goal.status !== "transferring") {
+          return void ctx.ui.notify("Only a goal left transferring by an interrupted handoff can be reclaimed.", "warning");
+        }
+        const parentFile = ctx.sessionManager.getSessionFile();
+        const parentLeafId = ctx.sessionManager.getLeafId();
+        const reclaimGoal = goal;
+        if (!parentFile || !parentLeafId || !reclaimGoal.handoffId) {
+          return void ctx.ui.notify("The transferring goal has no persisted handoff identity; refusing an unsafe reclaim.", "warning");
+        }
+        try {
+          withSelfHandoffLock(parentFile, () => {
+            const persistedParent = SessionManager.open(parentFile);
+            if (persistedParent.getSessionId() !== ctx.sessionManager.getSessionId()) {
+              throw new Error("The persisted parent session identity changed");
+            }
+            const handoffLookup = latestHandoffForRequest(
+              persistedParent.getEntries(),
+              reclaimGoal.handoffId as string,
+            );
+            const handoff = handoffLookup.record;
+            if (!persistedParent.getEntry(parentLeafId)) {
+              throw new Error("The persisted parent branch no longer exists");
+            }
+            const persistedGoal = latestGoalState(
+              persistedParent.getBranch(parentLeafId),
+            );
+            if (
+              handoffLookup.malformed ||
+              !handoff ||
+              handoff.request.id !== reclaimGoal.handoffId ||
+              handoff.request.goalId !== reclaimGoal.id ||
+              handoff.request.originSessionId !== ctx.sessionManager.getSessionId() ||
+              handoff.request.originSessionFile !== parentFile ||
+              (handoff.status !== "prepared" && handoff.status !== "child_created") ||
+              persistedGoal?.status !== "transferring" ||
+              persistedGoal.id !== reclaimGoal.id ||
+              persistedGoal.handoffId !== reclaimGoal.handoffId
+            ) {
+              throw new Error("The persisted parent no longer has the matching in-progress ownership state");
+            }
+            pi.appendEntry(
+              SELF_HANDOFF_STATE_TYPE,
+              makeHandoffRecord(handoff.request, "failed", {
+                targetSessionFile: handoff.targetSessionFile,
+                targetSessionId: handoff.targetSessionId,
+                note: "The user reclaimed the parent goal after an interrupted handoff.",
+              }),
+            );
+            goal = cloneState(reclaimGoal);
+            goal.status = "active";
+            goal.updatedAt = now();
+            goal.completedAt = undefined;
+            delete goal.handoffId;
+            delete goal.handoffTargetSessionFile;
+            goal.progressLog.push({ timestamp: goal.updatedAt, status: "active", note: "Reclaimed after an interrupted self-handoff." });
+            save(pi, goal);
+          });
+        } catch (error) {
+          return void ctx.ui.notify(
+            `Unsafe goal reclaim refused: ${error instanceof Error ? error.message : String(error)}`,
+            "warning",
+          );
+        }
+        setStatus(ctx);
+        if (goal) queueGoalPrompt(pi, continuationPrompt(goal), handoffGate);
+        return;
+      }
+
       if (verb === "resume") {
         if (!goal) return void ctx.ui.notify("No goal to resume.", "info");
+        const reactivationError = reactivationBlockReason(ctx, goal.id);
+        if (reactivationError) {
+          return void ctx.ui.notify(`Goal resume refused because ${reactivationError}.`, "warning");
+        }
+        if (goal.status === "transferring") {
+          return void ctx.ui.notify("This goal is mid-handoff. Run /goal reclaim only if the child session is unusable.", "warning");
+        }
+        if (goal.status === "transferred") {
+          return void ctx.ui.notify("This goal belongs to its self-handoff child and cannot be resumed here.", "warning");
+        }
         goal.status = "active";
         goal.updatedAt = now();
         goal.completedAt = undefined;
@@ -387,11 +732,17 @@ export default function goalExtension(pi: ExtensionAPI) {
         goal.progressLog.push({ timestamp: goal.updatedAt, status: "active", note: "Resumed by user." });
         save(pi, goal);
         setStatus(ctx);
-        queueGoalPrompt(pi, continuationPrompt(goal));
+        queueGoalPrompt(pi, continuationPrompt(goal), handoffGate);
         return;
       }
 
       if (verb === "clear") {
+        if (goal?.status === "transferring") {
+          return void ctx.ui.notify(
+            "This goal is mid-handoff. Run /goal reclaim only if the child session is unusable.",
+            "warning",
+          );
+        }
         if (goal) record(pi, "cleared", "Cleared by user.");
         goal = null;
         save(pi, null);
@@ -406,10 +757,16 @@ export default function goalExtension(pi: ExtensionAPI) {
         return;
       }
 
+      const unresolvedOwnership =
+        unresolvedChildOwnership(ctx, goal?.id) ??
+        outboundGoalOwnership(ctx, goal?.id);
+      if (unresolvedOwnership) {
+        return void ctx.ui.notify(`New goal refused because ${unresolvedOwnership}.`, "warning");
+      }
       goal = createGoal(objective, maxTurns, "Goal created by user.");
       save(pi, goal);
       setStatus(ctx);
-      queueGoalPrompt(pi, continuationPrompt(goal));
+      queueGoalPrompt(pi, continuationPrompt(goal), handoffGate);
     },
   });
 
@@ -433,8 +790,17 @@ export default function goalExtension(pi: ExtensionAPI) {
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const objective = params.objective.trim();
       if (!objective) throw new Error("Goal objective is required.");
-      if (goal && (goal.status === "active" || goal.status === "paused")) {
-        throw new Error("A durable goal is already active or paused. Use update_goal, /goal status, or /goal clear before starting a new one.");
+      const unresolvedOwnership =
+        unresolvedChildOwnership(ctx, goal?.id) ??
+        outboundGoalOwnership(ctx, goal?.id);
+      if (unresolvedOwnership) {
+        throw new Error(`Cannot start a goal because ${unresolvedOwnership}.`);
+      }
+      if (
+        goal &&
+        (goal.status === "active" || goal.status === "paused" || goal.status === "transferring" || goal.status === "transferred")
+      ) {
+        throw new Error("A durable goal is already active, paused, or owned by a self-handoff. Use update_goal, /goal status, or /goal clear before starting a new one.");
       }
 
       const reason = params.reason?.trim();
@@ -473,6 +839,15 @@ export default function goalExtension(pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       if (!goal) throw new Error("No active goal. Start one with /goal <objective> or start_goal.");
+      if (goal.status === "transferring" || goal.status === "transferred") {
+        throw new Error("This goal is owned by a self-handoff flow and cannot be updated in this session.");
+      }
+      if (params.status === "active") {
+        const reactivationError = reactivationBlockReason(ctx, goal.id);
+        if (reactivationError) {
+          throw new Error(`Goal reactivation refused because ${reactivationError}.`);
+        }
+      }
       record(pi, params.status as GoalStatus, params.note, params.evidence);
       setStatus(ctx);
 
@@ -556,7 +931,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 
       save(pi, goal);
       setStatus(ctx);
-      queueGoalPrompt(pi, emptyStopNudgePrompt(goal, streak));
+      queueGoalPrompt(pi, emptyStopNudgePrompt(goal, streak), handoffGate);
       return;
     }
 
@@ -617,7 +992,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       }
       save(pi, goal);
       setStatus(ctx);
-      queueGoalPrompt(pi, summaryStallNudgePrompt(goal, lastAssistantText));
+      queueGoalPrompt(pi, summaryStallNudgePrompt(goal, lastAssistantText), handoffGate);
       return;
     }
 
@@ -634,10 +1009,10 @@ export default function goalExtension(pi: ExtensionAPI) {
       goal.progressLog.push({ timestamp: goal.updatedAt, status: "budget_limited", note: "Goal turn budget reached." });
       save(pi, goal);
       setStatus(ctx);
-      queueGoalPrompt(pi, budgetPrompt(goal));
+      queueGoalPrompt(pi, budgetPrompt(goal), handoffGate);
       return;
     }
 
-    queueGoalPrompt(pi, continuationPrompt(goal));
+    queueGoalPrompt(pi, continuationPrompt(goal), handoffGate);
   });
 }

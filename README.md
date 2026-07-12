@@ -7,7 +7,7 @@ Shared pi instructions and explicitly shareable pi resources.
 ## Contents
 
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
-- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), local-search MCP-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
+- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), same-process fresh-session handoff (`/self-handoff`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), local-search MCP-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
 - `knowledge/software-engineering/` — curated software engineering classics source catalog and local searchable corpus. Future state: ingest public/open texts and user-supplied lawful private copies for copyrighted books; metadata-only until then.
 - `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-databricks/skills`.
 - `prompts/` — shared prompt templates.
@@ -148,9 +148,14 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - the broker is the stable entry point and owns loopback/self-hosted SearXNG plus policy-controlled Tavily behavior; Pi does not bypass it with direct SearXNG fallback. See `extensions/websearch/README.md`.
 - `extensions/goal` — durable `/goal` loop for long-running work:
   - `/goal <objective> [--max-turns N]` starts a user-requested goal
-  - `/goal status`, `/goal pause`, `/goal resume`, `/goal clear` control it
+  - `/goal status`, `/goal pause`, `/goal resume`, `/goal reclaim`, `/goal clear` control it
   - `start_goal` lets the agent create a durable goal from a normal session when the user explicitly requests or strongly implies multi-turn/autonomous tracking
   - `update_goal` lets the agent log progress, mark completion after evidence audit, or stop when blocked
+- `extensions/self-handoff` — user-invoked stock-Pi fresh-session continuation:
+  - `/self-handoff [focus]` in interactive TUI mode with an existing persisted session file waits for idle, generates a best-effort-redacted continuation for user review, then creates a fresh session in the same Pi process and submits the reviewed prompt
+  - transfers the latest active goal while preserving its identity and remaining turn budget, and copies the latest non-empty work plan into the child; exact parent/child IDs and paths, session-wide audit checks, and an exclusive ownership lock gate goal finalization/reclaim
+  - intentionally is not an LLM tool: stock Pi exposes session replacement only to user command contexts
+  - see `extensions/self-handoff/README.md` for cancellation, `/goal reclaim`, and stock Pi's non-transactional replacement limits
 - `extensions/pi-browser-capture` — shared Playwright runtimes for browser work and local app testing:
   - canonical `browser_*` tools for actual public web browsing: `browser_open`, `browser_navigate`, `browser_open_tab`, `browser_list_tabs`, `browser_switch_tab`, `browser_close_tab`, `browser_click`, `browser_type`, `browser_wait_for`, `browser_extract_text`, `browser_screenshot`, `browser_export_pdf`, `browser_console_logs`, `browser_page_state`, `browser_close`
   - `app_*` tools for local/private web app testing: `app_open`, `app_click`, `app_type_text`, `app_wait_for`, `app_extract_text`, `app_screenshot`, `app_console_logs`, `app_network_log`, `app_api_request`, `app_page_state`, and tab helpers
