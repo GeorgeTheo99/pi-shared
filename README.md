@@ -366,3 +366,27 @@ npx playwright install chromium
 ```
 
 After pulling updates, restart Pi or run `/reload`.
+
+## Troubleshooting
+
+### Literal key sequences and repeated aborts in tmux
+
+If a busy or long-running Pi session prints fragments such as `[27;5;106~`, reports repeated `Operation aborted`, and then continues working, check tmux's extended-key format. The fragment is the tail of an xterm `modifyOtherKeys` sequence. Under load, a delayed or split leading Escape byte can be interpreted by Pi as `app.interrupt`, while the remaining bytes are inserted literally.
+
+Configure tmux to use CSI-u instead:
+
+```tmux
+# ~/.config/tmux/tmux.conf (or ~/.tmux.conf)
+set -g extended-keys on
+set -g extended-keys-format csi-u
+```
+
+Apply and verify the setting:
+
+```bash
+tmux source-file ~/.config/tmux/tmux.conf
+tmux show-options -g extended-keys
+tmux show-options -g extended-keys-format
+```
+
+The expected format is `extended-keys-format csi-u`. This is a terminal/tmux input-encoding quirk, not a `pi-shared` extension failure.
