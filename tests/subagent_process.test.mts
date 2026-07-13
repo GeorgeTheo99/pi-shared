@@ -101,6 +101,38 @@ test("leader exit during termination cannot leak a stubborn descendant", async (
 	assert.equal(await waitUntilDead(childPid!), true, `descendant ${childPid} survived after its leader exited`);
 });
 
+test("abort settles when an orphaned descendant keeps output pipes open", { skip: process.platform === "win32" }, async (t) => {
+	const fixture = path.join(import.meta.dirname, "fixtures", "subagent_orphaned_pipe.mjs");
+	assert.equal(fs.existsSync(fixture), true);
+	const controller = new AbortController();
+	let childPid: number | undefined;
+	t.after(() => {
+		if (!childPid) return;
+		try {
+			process.kill(childPid, "SIGKILL");
+		} catch {
+			// Already dead.
+		}
+	});
+	const startedAt = Date.now();
+	const run = runManagedProcess({
+		...baseOptions,
+		command: process.execPath,
+		args: [fixture],
+		signal: controller.signal,
+		termGraceMs: 100,
+		onStdoutLine: (line) => {
+			childPid = JSON.parse(line).childPid;
+			setTimeout(() => controller.abort(), 25);
+		},
+	});
+	const result = await run;
+	assert.equal(result.terminationReason, "aborted");
+	assert.ok(Date.now() - startedAt < 1500, "managed process did not settle after forced termination");
+	assert.ok(childPid);
+	assert.equal(await waitUntilDead(childPid!), true, `descendant ${childPid} survived forced settlement`);
+});
+
 test("timeout escalates to SIGKILL for a stubborn process tree", { skip: process.platform === "win32" }, async () => {
 	const fixture = path.join(import.meta.dirname, "fixtures", "subagent_stubborn_tree.mjs");
 	assert.equal(fs.existsSync(fixture), true);

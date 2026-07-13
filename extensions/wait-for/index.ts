@@ -32,7 +32,7 @@
 import { Type } from "@mariozechner/pi-ai";
 import { defineTool, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
-import { spawn } from "node:child_process";
+import { runShellProcess } from "../_shared/shell-process.ts";
 import {
 	type JobSnapshot,
 	TERMINAL_JOB_STATUS,
@@ -132,51 +132,6 @@ function errorResult(text: string, details: WaitForDetails) {
 		details,
 		isError: true,
 	};
-}
-
-interface ShellResult {
-	code: number;
-	stdout: string;
-	stderr: string;
-}
-
-/** Run a shell command with `sh -c` in cwd; never throws. Exit 0 = success. */
-function runShell(command: string, cwd: string, timeoutMs: number): Promise<ShellResult> {
-	return new Promise((resolve) => {
-		let proc: ReturnType<typeof spawn>;
-		try {
-			proc = spawn("sh", ["-c", command], {
-				cwd,
-				stdio: ["ignore", "pipe", "pipe"],
-				env: process.env,
-			});
-		} catch (err) {
-			resolve({ code: -1, stdout: "", stderr: err instanceof Error ? err.message : String(err) });
-			return;
-		}
-
-		let stdout = "";
-		let stderr = "";
-		proc.stdout?.on("data", (data) => (stdout += data.toString()));
-		proc.stderr?.on("data", (data) => (stderr += data.toString()));
-
-		const timer = setTimeout(() => {
-			try {
-				proc.kill("SIGKILL");
-			} catch {
-				// ignore
-			}
-		}, timeoutMs);
-
-		proc.on("error", (err) => {
-			clearTimeout(timer);
-			resolve({ code: -1, stdout, stderr: stderr + (stderr ? "\n" : "") + err.message });
-		});
-		proc.on("close", (code) => {
-			clearTimeout(timer);
-			resolve({ code: code ?? -1, stdout, stderr });
-		});
-	});
 }
 
 /** Sleep that resolves early if the abort signal fires. Rejects with AbortError. */
@@ -371,7 +326,8 @@ const waitForTool = defineTool({
 						(missing.length ? `\n(not yet in store: ${missing.join(", ")})` : "");
 					lastStderr = "";
 				} else {
-					const cond = await runShell(condition!, cwd, MAX_CONDITION_TIMEOUT * 1000);
+					const cond = await runShellProcess(condition!, cwd, MAX_CONDITION_TIMEOUT * 1000, signal);
+					if (cond.aborted || signal?.aborted) throw new AbortError();
 					lastStdout = cond.stdout;
 					lastStderr = cond.stderr;
 					done = cond.code === 0;
@@ -399,7 +355,8 @@ const waitForTool = defineTool({
 
 				// Not yet: gather optional progress (condition mode only), then stream an update.
 				if (!useJobs && progress) {
-					const prog = await runShell(progress, cwd, MAX_CONDITION_TIMEOUT * 1000);
+					const prog = await runShellProcess(progress, cwd, MAX_CONDITION_TIMEOUT * 1000, signal);
+					if (prog.aborted || signal?.aborted) throw new AbortError();
 					lastProgress = prog.stdout;
 				}
 				emitProgress();
@@ -431,7 +388,7 @@ const waitForTool = defineTool({
 			const elapsedMs = Date.now() - startedAt;
 			if (aborted) {
 				return textResult(
-					`Wait aborted after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}).`,
+					`Wait aborted after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}).${useJobs ? " Background jobs continue; cancel them explicitly with spawn_subagent jobAction=cancel." : " Active condition/progress processes were terminated."}`,
 					{ ...baseDetails, aborted: true, checks, elapsedMs, lastStdout, lastStderr, lastProgress },
 				);
 			}

@@ -13,7 +13,9 @@ export interface ManagedProcessOptions {
 	maxStderrBytes: number;
 	maxEventBytes: number;
 	onSpawn?: (pid: number | undefined) => void;
+	onStdoutChunk?: (chunk: string) => void;
 	onStdoutLine?: (line: string) => void;
+	limitStdoutEvents?: boolean;
 }
 
 export interface ManagedProcessResult {
@@ -97,6 +99,7 @@ export async function runManagedProcess(options: ManagedProcessOptions): Promise
 		let terminationReason: ManagedTerminationReason | undefined;
 		let errorMessage: string | undefined;
 		let forceKillTimer: NodeJS.Timeout | undefined;
+		let settlementTimer: NodeJS.Timeout | undefined;
 		let runTimer: NodeJS.Timeout | undefined;
 		let proc: ReturnType<typeof spawn>;
 
@@ -109,6 +112,7 @@ export async function runManagedProcess(options: ManagedProcessOptions): Promise
 			// successful leader shutdown cannot leak the rest of the tree.
 			if (terminationReason) terminateProcessTree(proc?.pid, "SIGKILL");
 			if (forceKillTimer) clearTimeout(forceKillTimer);
+			if (settlementTimer) clearTimeout(settlementTimer);
 			if (runTimer) clearTimeout(runTimer);
 			options.signal?.removeEventListener("abort", onAbort);
 			if (stdoutBuffer.trim() && Buffer.byteLength(stdoutBuffer, "utf8") <= options.maxEventBytes) {
@@ -130,7 +134,18 @@ export async function runManagedProcess(options: ManagedProcessOptions): Promise
 			errorMessage = message;
 			terminateProcessTree(proc?.pid, "SIGTERM");
 			forceKillTimer = setTimeout(() => {
-				if (!closed) terminateProcessTree(proc?.pid, "SIGKILL");
+				if (closed) return;
+				terminateProcessTree(proc?.pid, "SIGKILL");
+				// A descendant can inherit stdout/stderr after the process-group leader
+				// exits, preventing Node's `close` event forever. Bound that wait so an
+				// aborted tool cannot keep the Pi session alive indefinitely.
+				settlementTimer = setTimeout(() => {
+					if (closed) return;
+					proc.stdout?.destroy();
+					proc.stderr?.destroy();
+					finish(1, "SIGKILL");
+				}, options.termGraceMs);
+				settlementTimer.unref?.();
 			}, options.termGraceMs);
 			forceKillTimer.unref?.();
 		};
@@ -158,8 +173,10 @@ export async function runManagedProcess(options: ManagedProcessOptions): Promise
 		proc.stdout!.setEncoding("utf8");
 		proc.stdout!.on("data", (chunk: string) => {
 			if (closed) return;
+			options.onStdoutChunk?.(chunk);
+			if (!options.onStdoutLine && options.limitStdoutEvents === false) return;
 			stdoutBuffer += chunk;
-			if (Buffer.byteLength(stdoutBuffer, "utf8") > options.maxEventBytes && !stdoutBuffer.includes("\n")) {
+			if (options.limitStdoutEvents !== false && Buffer.byteLength(stdoutBuffer, "utf8") > options.maxEventBytes && !stdoutBuffer.includes("\n")) {
 				requestTermination(
 					"output_limit",
 					`Subagent emitted an unterminated JSON event larger than ${options.maxEventBytes} bytes.`,
@@ -170,7 +187,7 @@ export async function runManagedProcess(options: ManagedProcessOptions): Promise
 			const lines = stdoutBuffer.split("\n");
 			stdoutBuffer = lines.pop() ?? "";
 			for (const line of lines) {
-				if (Buffer.byteLength(line, "utf8") > options.maxEventBytes) {
+				if (options.limitStdoutEvents !== false && Buffer.byteLength(line, "utf8") > options.maxEventBytes) {
 					requestTermination("output_limit", `Subagent JSON event exceeded ${options.maxEventBytes} bytes.`);
 					continue;
 				}
