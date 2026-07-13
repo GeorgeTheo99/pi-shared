@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { complete, type Message } from "@mariozechner/pi-ai/compat";
+import { complete, type Message } from "@mariozechner/pi-ai";
 import {
 	BorderedLoader,
 	type ExtensionAPI,
