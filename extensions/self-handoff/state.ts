@@ -22,6 +22,19 @@ export type HandoffChildFailureEvent = {
 	goalId?: string;
 };
 
+export type SelfHandoffSessionStartReason =
+	| "startup"
+	| "reload"
+	| "new"
+	| "resume"
+	| "fork";
+
+export function shouldRecoverChildOrientation(
+	reason: SelfHandoffSessionStartReason,
+): boolean {
+	return reason !== "new" && reason !== "fork";
+}
+
 export type SelfHandoffStatus =
 	| "prepared"
 	| "child_created"

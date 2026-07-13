@@ -21,6 +21,7 @@ import {
 	redactSensitiveText,
 	reduceSelfHandoffRequest,
 	SELF_HANDOFF_STATE_TYPE,
+	shouldRecoverChildOrientation,
 	type SelfHandoffRequest,
 	type SessionEntryLike,
 	transferredGoal,
@@ -462,6 +463,14 @@ test("exact child state gates orientation and waiting until explicit release", (
 	);
 });
 
+test("orientation recovery skips fresh and forked session bindings", () => {
+	assert.equal(shouldRecoverChildOrientation("new"), false);
+	assert.equal(shouldRecoverChildOrientation("fork"), false);
+	assert.equal(shouldRecoverChildOrientation("startup"), true);
+	assert.equal(shouldRecoverChildOrientation("reload"), true);
+	assert.equal(shouldRecoverChildOrientation("resume"), true);
+});
+
 test("malformed child audit fails the orientation gate closed", () => {
 	const malformed = custom(SELF_HANDOFF_STATE_TYPE, {
 		version: 1,
@@ -686,6 +695,16 @@ test("implementation is a stock command with a settled orientation gate", async 
 	assert.doesNotMatch(source, /registerTool\s*\(/);
 	assert.doesNotMatch(source, /queueExtensionCommand/);
 	assert.match(source, /ctx\.newSession\s*\(/);
+	assert.match(
+		source,
+		/if \(!shouldRecoverChildOrientation\(event\.reason\)\) return/,
+		"fresh-child rebinding must not be mistaken for interrupted-session recovery",
+	);
+	assert.doesNotMatch(
+		source,
+		/setImmediate/,
+		"handoff correctness must not depend on a timing yield",
+	);
 	assert.match(source, /setup:/);
 	assert.match(source, /withSession:/);
 	assert.match(source, /pi\.on\("input"/);

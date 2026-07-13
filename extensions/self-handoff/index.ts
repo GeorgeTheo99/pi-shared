@@ -37,6 +37,7 @@ import {
 	type SelfHandoffRecord,
 	type SelfHandoffRequest,
 	sameSelfHandoffRequest,
+	shouldRecoverChildOrientation,
 	type TransferState,
 	transferredGoal,
 	transferringGoal,
@@ -733,7 +734,12 @@ export default function selfHandoffExtension(pi: ExtensionAPI) {
 	let pendingReleaseRequestId: string | undefined;
 	let parentInvalidated = false;
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		// A fresh child is rebound after setup and before withSession. Its "new"
+		// event is not an interrupted-session recovery and must not mutate the
+		// single received record that the ownership check validates.
+		if (!shouldRecoverChildOrientation(event.reason)) return;
+
 		const branch = ctx.sessionManager.getBranch();
 		const orientation = inspectChildHandoffOrientation(
 			ctx.sessionManager.getEntries(),
@@ -1472,9 +1478,6 @@ export default function selfHandoffExtension(pi: ExtensionAPI) {
 					parentSession,
 					setup: async (sessionManager) => {
 						mutableChildSession = sessionManager;
-						// Stock dispatches session_start before setup but does not await every
-						// extension handler. Yield once so their synchronous audit writes settle.
-						await new Promise<void>((resolve) => setImmediate(resolve));
 						const childSessionFile = sessionManager.getSessionFile();
 						const childSessionId = sessionManager.getSessionId();
 						if (!childSessionFile) {
