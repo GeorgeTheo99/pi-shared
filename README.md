@@ -152,8 +152,9 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - `start_goal` lets the agent create a durable goal from a normal session when the user explicitly requests or strongly implies multi-turn/autonomous tracking
   - `update_goal` lets the agent log progress, mark completion after evidence audit, or stop when blocked
 - `extensions/self-handoff` — user-invoked stock-Pi fresh-session continuation:
-  - `/self-handoff [focus]` in interactive TUI mode with an existing persisted session file waits for idle, generates a best-effort-redacted continuation for user review, then creates a fresh session in the same Pi process and submits the reviewed prompt
-  - transfers the latest active goal while preserving its identity and remaining turn budget, and copies the latest non-empty work plan into the child; exact parent/child IDs and paths, session-wide audit checks, and an exclusive ownership lock gate goal finalization/reclaim
+  - `/self-handoff [focus]` in interactive TUI mode with an existing persisted session file waits for idle, generates a best-effort-redacted continuation for user review, then creates a fresh session in the same Pi process
+  - the fresh child uses an orientation-only first turn to show a concise handoff summary and numbered proposed next steps, then waits for the user's next explicit message before beginning work
+  - transfers the latest active goal while preserving its identity and remaining turn budget without charging the orientation turn, and copies the latest non-empty work plan into the child; exact parent/child IDs and paths, session-wide audit checks, and an exclusive ownership lock gate goal finalization/reclaim
   - intentionally is not an LLM tool: stock Pi exposes session replacement only to user command contexts
   - see `extensions/self-handoff/README.md` for cancellation, `/goal reclaim`, and stock Pi's non-transactional replacement limits
 - `extensions/pi-browser-capture` — shared Playwright runtimes for browser work and local app testing:

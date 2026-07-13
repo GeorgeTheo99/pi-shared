@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { Text, truncateToWidth } from "@mariozechner/pi-tui";
+import { inspectChildHandoffOrientation } from "../self-handoff/state.ts";
 
 type PlanStatus = "todo" | "active" | "done" | "blocked";
 type PlanAction = "set" | "add" | "update" | "activate" | "complete" | "block" | "unblock" | "clear" | "list";
@@ -218,6 +219,17 @@ function restore(ctx: ExtensionContext) {
 	}
 }
 
+function selfHandoffPending(ctx: ExtensionContext) {
+	return (
+		inspectChildHandoffOrientation(
+			ctx.sessionManager.getEntries(),
+			ctx.sessionManager.getBranch(),
+			ctx.sessionManager.getSessionId(),
+			ctx.sessionManager.getSessionFile(),
+		).status !== "none"
+	);
+}
+
 function setUi(ctx: ExtensionContext) {
 	if (!ctx.hasUI) return;
 	if (state.items.length === 0) {
@@ -314,6 +326,7 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 	// represents agent work spent on the active task, not wall-clock time since
 	// the task was first activated.
 	pi.on("agent_start", async (_event, ctx) => {
+		if (selfHandoffPending(ctx)) return;
 		const active = activeItem();
 		if (active && !active.runStartedAt) {
 			active.runStartedAt = now();
@@ -322,6 +335,7 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
+		if (selfHandoffPending(ctx)) return;
 		let changed = false;
 		for (const item of state.items) {
 			if (item.runStartedAt) {
@@ -344,6 +358,13 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 			setUi(ctx);
 			const verb = args.trim().toLowerCase();
 			if (verb === "clear") {
+				if (selfHandoffPending(ctx)) {
+					ctx.ui.notify(
+						"Work-plan changes are held until the self-handoff orientation is released by an explicit user message.",
+						"warning",
+					);
+					return;
+				}
 				state = emptyState();
 				save(pi);
 				setUi(ctx);

@@ -7,6 +7,7 @@ import { Type } from "typebox";
 import {
   type HandoffChildFailureEvent,
   type HandoffGateEvent,
+  inspectChildHandoffOrientation,
   inspectSelfHandoffRecords,
   latestGoalState,
   makeHandoffRecord,
@@ -61,6 +62,8 @@ const CUSTOM_TYPE = "pi-goal-state";
 const DEFAULT_MAX_TURNS = 60;
 const MAX_LOG_ENTRIES = 50;
 const MAX_EMPTY_STOP_RETRIES = 2;
+const RECLAIMED_HANDOFF_NOTE =
+  "The user reclaimed the parent goal after an interrupted handoff.";
 
 // Tools that, on their own, do not advance the goal toward the objective.
 // A turn whose only tool calls are these (and which produced a status-y
@@ -424,7 +427,9 @@ function unresolvedChildOwnership(
     const record = lookup.record;
     if (
       record &&
-      (record.status === "received" || record.status === "failed") &&
+      (record.status === "received" ||
+        record.status === "awaiting_user" ||
+        record.status === "failed") &&
       (goalId === undefined || record.request.goalId === goalId)
     ) {
       return "the transferred child has not finalized ownership with its parent";
@@ -489,14 +494,22 @@ function reactivationBlockReason(
       continue;
     }
     const sessionLookup = latestHandoffForRequest(entries, candidate.request.id);
-    if (sessionLookup.malformed || sessionLookup.record?.status !== "received") {
+    if (
+      sessionLookup.malformed ||
+      (sessionLookup.record?.status !== "received" &&
+        sessionLookup.record?.status !== "awaiting_user")
+    ) {
       continue;
     }
     const branchLookup = latestHandoffForRequest(
       ctx.sessionManager.getBranch(),
       candidate.request.id,
     );
-    if (!branchLookup.malformed && branchLookup.record?.status === "received") {
+    if (
+      !branchLookup.malformed &&
+      (branchLookup.record?.status === "received" ||
+        branchLookup.record?.status === "awaiting_user")
+    ) {
       return undefined;
     }
   }
@@ -563,7 +576,8 @@ export default function goalExtension(pi: ExtensionAPI) {
     const handoff = handoffLookup.record;
     if (
       !handoffLookup.malformed &&
-      (handoff?.status !== "received" ||
+      ((handoff?.status !== "received" &&
+        handoff?.status !== "awaiting_user") ||
         handoff.request.id !== value.requestId ||
         handoff.request.goalId !== value.goalId ||
         handoff.targetSessionId !== value.sessionId ||
@@ -632,6 +646,21 @@ export default function goalExtension(pi: ExtensionAPI) {
         return;
       }
 
+      const orientation = inspectChildHandoffOrientation(
+        ctx.sessionManager.getEntries(),
+        ctx.sessionManager.getBranch(),
+        ctx.sessionManager.getSessionId(),
+        ctx.sessionManager.getSessionFile(),
+        goal?.id,
+      );
+      if (orientation.status !== "none") {
+        ctx.ui.notify(
+          "Goal changes are held until the self-handoff orientation is released by an explicit user message.",
+          "warning",
+        );
+        return;
+      }
+
       if (verb === "pause") {
         if (!goal) return void ctx.ui.notify("No goal to pause.", "info");
         if (goal.status === "transferring" || goal.status === "transferred") {
@@ -671,6 +700,10 @@ export default function goalExtension(pi: ExtensionAPI) {
             const persistedGoal = latestGoalState(
               persistedParent.getBranch(parentLeafId),
             );
+            const reclaimAuditCommitted =
+              handoff?.status === "failed" && handoff.note === RECLAIMED_HANDOFF_NOTE;
+            const reclaimAuditPending =
+              handoff?.status === "prepared" || handoff?.status === "child_created";
             if (
               handoffLookup.malformed ||
               !handoff ||
@@ -678,21 +711,23 @@ export default function goalExtension(pi: ExtensionAPI) {
               handoff.request.goalId !== reclaimGoal.id ||
               handoff.request.originSessionId !== ctx.sessionManager.getSessionId() ||
               handoff.request.originSessionFile !== parentFile ||
-              (handoff.status !== "prepared" && handoff.status !== "child_created") ||
+              (!reclaimAuditPending && !reclaimAuditCommitted) ||
               persistedGoal?.status !== "transferring" ||
               persistedGoal.id !== reclaimGoal.id ||
               persistedGoal.handoffId !== reclaimGoal.handoffId
             ) {
               throw new Error("The persisted parent no longer has the matching in-progress ownership state");
             }
-            pi.appendEntry(
-              SELF_HANDOFF_STATE_TYPE,
-              makeHandoffRecord(handoff.request, "failed", {
-                targetSessionFile: handoff.targetSessionFile,
-                targetSessionId: handoff.targetSessionId,
-                note: "The user reclaimed the parent goal after an interrupted handoff.",
-              }),
-            );
+            if (reclaimAuditPending) {
+              pi.appendEntry(
+                SELF_HANDOFF_STATE_TYPE,
+                makeHandoffRecord(handoff.request, "failed", {
+                  targetSessionFile: handoff.targetSessionFile,
+                  targetSessionId: handoff.targetSessionId,
+                  note: RECLAIMED_HANDOFF_NOTE,
+                }),
+              );
+            }
             goal = cloneState(reclaimGoal);
             goal.status = "active";
             goal.updatedAt = now();
@@ -873,6 +908,15 @@ export default function goalExtension(pi: ExtensionAPI) {
 
   pi.on("agent_end", async (event, ctx) => {
     if (!goal || goal.status !== "active") return;
+
+    const orientation = inspectChildHandoffOrientation(
+      ctx.sessionManager.getEntries(),
+      ctx.sessionManager.getBranch(),
+      ctx.sessionManager.getSessionId(),
+      ctx.sessionManager.getSessionFile(),
+      goal.id,
+    );
+    if (orientation.status !== "none") return;
 
     goal.turnsCompleted += 1;
     goal.updatedAt = now();

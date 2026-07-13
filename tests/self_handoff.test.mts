@@ -9,10 +9,14 @@ import {
 	collectTransferState,
 	GOAL_STATE_TYPE,
 	handoffBashOutput,
+	inspectChildHandoffOrientation,
+	inspectOrientationOutcome,
 	inspectSelfHandoffRecords,
+	isOrientationKickoff,
 	latestCustomEntryData,
 	latestSelfHandoffRecord,
 	makeHandoffRecord,
+	orientationKickoffHash,
 	pausedGoalAfterHandoffFailure,
 	redactSensitiveText,
 	reduceSelfHandoffRequest,
@@ -261,7 +265,7 @@ test("invalid or exhausted active goal budgets block transfer", () => {
 	);
 });
 
-test("kickoff prompt labels generated context and transferred state", () => {
+test("kickoff prompt labels context and requires a waiting orientation", () => {
 	const prompt = buildKickoffPrompt(
 		"## Exact next action\nRun the focused test.",
 		request(),
@@ -271,7 +275,230 @@ test("kickoff prompt labels generated context and transferred state", () => {
 	assert.match(prompt, /Run the focused test/);
 	assert.match(prompt, /remaining turn budget were transferred/);
 	assert.match(prompt, /non-empty work plan was transferred/);
+	assert.match(prompt, /## Handoff summary/);
+	assert.match(prompt, /numbered "## Proposed next steps" list/);
+	assert.match(prompt, /reply "Proceed" or provide adjustments/);
+	assert.match(prompt, /Do not call tools/);
+	assert.match(prompt, /wait.*new explicit user message/is);
 	assert.match(prompt, /do not create a duplicate goal/);
+	assert.doesNotMatch(prompt, /Continue immediately/);
+});
+
+test("orientation completion is bound to the exact kickoff and required response", () => {
+	const draftRequest = request();
+	const kickoff = buildKickoffPrompt("Continue the focused fix.", draftRequest);
+	const expected = request({ kickoffHash: orientationKickoffHash(kickoff) });
+	assert.equal(buildKickoffPrompt("Continue the focused fix.", expected), kickoff);
+	assert.equal(isOrientationKickoff(kickoff, expected), true);
+	assert.equal(isOrientationKickoff(`${kickoff}\nAltered`, expected), false);
+	const delimiter = `SELF-HANDOFF-${expected.contextNonce}`;
+	assert.equal(
+		isOrientationKickoff(
+			`--- END ${delimiter} ---\n--- BEGIN ${delimiter} ---`,
+			request(),
+		),
+		false,
+	);
+	const userEntry: SessionEntryLike = {
+		type: "message",
+		message: { role: "user", content: kickoff },
+	};
+	const successEntry: SessionEntryLike = {
+		type: "message",
+		message: {
+			role: "assistant",
+			stopReason: "stop",
+			content: [
+				{
+					type: "text",
+					text: "## Handoff summary\nThe fix is ready to continue.\n\n## Proposed next steps\n1. Re-ground the failing test.\n2. Apply and verify the fix.\n\nReply Proceed or provide adjustments.",
+				},
+			],
+		},
+	};
+	assert.equal(
+		inspectOrientationOutcome([userEntry, successEntry], expected).status,
+		"success",
+	);
+
+	const errorEntry: SessionEntryLike = {
+		type: "message",
+		message: { role: "assistant", stopReason: "error", content: [] },
+	};
+	const providerError = inspectOrientationOutcome(
+		[userEntry, errorEntry],
+		expected,
+	);
+	assert.equal(providerError.status, "incomplete");
+	if (providerError.status === "incomplete") {
+		assert.match(providerError.reason, /ended with error/);
+		assert.equal(providerError.kickoff, kickoff);
+	}
+
+	const malformedEntry: SessionEntryLike = {
+		type: "message",
+		message: {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text: "I will begin now." }],
+		},
+	};
+	const malformed = inspectOrientationOutcome(
+		[userEntry, malformedEntry],
+		expected,
+	);
+	assert.equal(malformed.status, "incomplete");
+	if (malformed.status === "incomplete") {
+		assert.match(malformed.reason, /required summary/);
+	}
+
+	const queuedUser: SessionEntryLike = {
+		type: "message",
+		message: { role: "user", content: "Proceed" },
+	};
+	const unrelated = inspectOrientationOutcome(
+		[userEntry, successEntry, queuedUser, successEntry],
+		expected,
+	);
+	assert.equal(unrelated.status, "incomplete");
+	if (unrelated.status === "incomplete") {
+		assert.match(unrelated.reason, /unexpected user message/);
+	}
+});
+
+test("exact child state gates orientation and waiting until explicit release", () => {
+	const expected = request();
+	const received = makeHandoffRecord(expected, "received", {
+		targetSessionFile: "/tmp/child.jsonl",
+		targetSessionId: "child-session",
+	});
+	const receivedEntry = custom(SELF_HANDOFF_STATE_TYPE, received);
+	const pending = inspectChildHandoffOrientation(
+		[receivedEntry],
+		[receivedEntry],
+		"child-session",
+		"/tmp/child.jsonl",
+		"goal-1",
+	);
+	assert.equal(pending.status, "pending");
+	if (pending.status === "pending") {
+		assert.equal(pending.phase, "orienting");
+		assert.equal(pending.record.request.id, received.request.id);
+		assert.equal(pending.record.targetSessionFile, "/tmp/child.jsonl");
+	}
+	assert.equal(
+		inspectChildHandoffOrientation(
+			[receivedEntry],
+			[receivedEntry],
+			"child-session",
+			"/tmp/child.jsonl",
+			"other-goal",
+		).status,
+		"none",
+	);
+	const preAuditBranch = inspectChildHandoffOrientation(
+		[receivedEntry],
+		[],
+		"child-session",
+		"/tmp/child.jsonl",
+		"goal-1",
+	);
+	assert.equal(preAuditBranch.status, "invalid");
+	if (preAuditBranch.status === "invalid") {
+		assert.match(preAuditBranch.reason, /predates the pending self-handoff audit/);
+	}
+
+	const awaitingEntry = custom(
+		SELF_HANDOFF_STATE_TYPE,
+		makeHandoffRecord(expected, "awaiting_user", {
+			targetSessionFile: "/tmp/child.jsonl",
+			targetSessionId: "child-session",
+		}),
+	);
+	const waiting = inspectChildHandoffOrientation(
+		[receivedEntry, awaitingEntry],
+		[receivedEntry, awaitingEntry],
+		"child-session",
+		"/tmp/child.jsonl",
+		"goal-1",
+	);
+	assert.equal(waiting.status, "pending");
+	if (waiting.status === "pending") {
+		assert.equal(waiting.phase, "awaiting_user");
+	}
+	const historicalWaiting = inspectChildHandoffOrientation(
+		[receivedEntry, awaitingEntry],
+		[receivedEntry],
+		"child-session",
+		"/tmp/child.jsonl",
+		"goal-1",
+	);
+	assert.equal(historicalWaiting.status, "pending");
+	if (historicalWaiting.status === "pending") {
+		assert.equal(
+			historicalWaiting.phase,
+			"awaiting_user",
+			"session-wide waiting state must dominate a historical received branch",
+		);
+	}
+
+	const transferredEntry = custom(
+		SELF_HANDOFF_STATE_TYPE,
+		makeHandoffRecord(expected, "transferred", {
+			targetSessionFile: "/tmp/child.jsonl",
+			targetSessionId: "child-session",
+		}),
+	);
+	assert.equal(
+		inspectChildHandoffOrientation(
+			[receivedEntry, awaitingEntry, transferredEntry],
+			[receivedEntry, awaitingEntry],
+			"child-session",
+			"/tmp/child.jsonl",
+			"goal-1",
+		).status,
+		"none",
+		"session-wide transferred state must release a historical waiting branch",
+	);
+});
+
+test("malformed child audit fails the orientation gate closed", () => {
+	const malformed = custom(SELF_HANDOFF_STATE_TYPE, {
+		version: 1,
+		request: null,
+	});
+	const state = inspectChildHandoffOrientation(
+		[malformed],
+		[malformed],
+		"child-session",
+		"/tmp/child.jsonl",
+	);
+	assert.equal(state.status, "invalid");
+	if (state.status === "invalid") assert.match(state.reason, /malformed/);
+});
+
+test("hashed received records persist the exact retry kickoff", () => {
+	const draft = request();
+	const kickoff = buildKickoffPrompt("Continue safely.", draft);
+	const hashed = request({ kickoffHash: orientationKickoffHash(kickoff) });
+	const missing = makeHandoffRecord(hashed, "received", {
+		targetSessionFile: "/tmp/child.jsonl",
+		targetSessionId: "child-session",
+	});
+	assert.equal(
+		latestSelfHandoffRecord([custom(SELF_HANDOFF_STATE_TYPE, missing)]),
+		undefined,
+	);
+	const exact = makeHandoffRecord(hashed, "received", {
+		targetSessionFile: "/tmp/child.jsonl",
+		targetSessionId: "child-session",
+		kickoff,
+		retryAllowed: true,
+	});
+	assert.equal(
+		latestSelfHandoffRecord([custom(SELF_HANDOFF_STATE_TYPE, exact)])?.kickoff,
+		kickoff,
+	);
 });
 
 test("handoff audit records round-trip through custom entries", () => {
@@ -313,7 +540,25 @@ test("per-request reduction rejects identity conflicts and terminal regressions"
 		targetSessionFile: "/tmp/child.jsonl",
 		targetSessionId: "child-session",
 	});
+	const awaiting = makeHandoffRecord(expected, "awaiting_user", {
+		targetSessionFile: "/tmp/child.jsonl",
+		targetSessionId: "child-session",
+	});
 	const transferred = makeHandoffRecord(expected, "transferred", {
+		targetSessionFile: "/tmp/child.jsonl",
+		targetSessionId: "child-session",
+	});
+	assert.match(
+		reduceSelfHandoffRequest(
+			[
+				custom(SELF_HANDOFF_STATE_TYPE, received),
+				custom(SELF_HANDOFF_STATE_TYPE, transferred),
+			],
+			expected,
+		).conflict ?? "",
+		/received -> transferred/,
+	);
+	const transferredAfterWaiting = makeHandoffRecord(expected, "transferred", {
 		targetSessionFile: "/tmp/child.jsonl",
 		targetSessionId: "child-session",
 	});
@@ -321,7 +566,8 @@ test("per-request reduction rejects identity conflicts and terminal regressions"
 		reduceSelfHandoffRequest(
 			[
 				custom(SELF_HANDOFF_STATE_TYPE, received),
-				custom(SELF_HANDOFF_STATE_TYPE, transferred),
+				custom(SELF_HANDOFF_STATE_TYPE, awaiting),
+				custom(SELF_HANDOFF_STATE_TYPE, transferredAfterWaiting),
 			],
 			expected,
 		).record?.status,
@@ -331,7 +577,8 @@ test("per-request reduction rejects identity conflicts and terminal regressions"
 	const regressed = reduceSelfHandoffRequest(
 		[
 			custom(SELF_HANDOFF_STATE_TYPE, received),
-			custom(SELF_HANDOFF_STATE_TYPE, transferred),
+			custom(SELF_HANDOFF_STATE_TYPE, awaiting),
+			custom(SELF_HANDOFF_STATE_TYPE, transferredAfterWaiting),
 			custom(
 				SELF_HANDOFF_STATE_TYPE,
 				makeHandoffRecord(expected, "failed", {
@@ -415,12 +662,21 @@ test("common credentials are redacted before generation or persistence", () => {
 	assert.match(value, /\[REDACTED/);
 });
 
-test("implementation is a stock command, not an autonomous tool or custom-core bridge", async () => {
+test("implementation is a stock command with a settled orientation gate", async () => {
 	const indexUrl = new URL(
 		"../extensions/self-handoff/index.ts",
 		import.meta.url,
 	);
-	const source = await readFile(indexUrl, "utf8");
+	const goalUrl = new URL("../extensions/goal/index.ts", import.meta.url);
+	const workPlanUrl = new URL(
+		"../extensions/work-plan/index.ts",
+		import.meta.url,
+	);
+	const [source, goalSource, workPlanSource] = await Promise.all([
+		readFile(indexUrl, "utf8"),
+		readFile(goalUrl, "utf8"),
+		readFile(workPlanUrl, "utf8"),
+	]);
 	assert.match(source, /registerCommand\("self-handoff"/);
 	assert.match(source, /ctx\.mode !== "tui"/);
 	assert.match(source, /requires an existing persisted session/);
@@ -432,4 +688,38 @@ test("implementation is a stock command, not an autonomous tool or custom-core b
 	assert.match(source, /ctx\.newSession\s*\(/);
 	assert.match(source, /setup:/);
 	assert.match(source, /withSession:/);
+	assert.match(source, /pi\.on\("input"/);
+	assert.match(source, /orientation\.phase === "orienting"/);
+	assert.match(source, /event\.source === "extension"/);
+	assert.match(source, /orientation\.record\.retryAllowed === true/);
+	assert.match(source, /event\.images\?\.length/);
+	assert.match(source, /Orientation kickoff retries cannot include images/);
+	assert.match(source, /pendingReleaseRequestId/);
+	assert.match(source, /makeHandoffRecord\([^)]*"transferred"/s);
+	assert.match(source, /pi\.on\("tool_call"/);
+	assert.match(source, /Self-handoff orientation is read-only/);
+	assert.match(source, /pi\.on\("agent_settled"/);
+	assert.match(source, /if \(!ctx\.isIdle\(\)\) return/);
+	assert.match(source, /inspectOrientationOutcome\(/);
+	assert.doesNotMatch(source, /pi\.on\("agent_end"/);
+
+	const agentEnd = goalSource.indexOf('pi.on("agent_end"');
+	const orientationGuard = goalSource.indexOf(
+		"inspectChildHandoffOrientation(",
+		agentEnd,
+	);
+	const turnIncrement = goalSource.indexOf("goal.turnsCompleted += 1", agentEnd);
+	assert.ok(agentEnd >= 0);
+	assert.ok(orientationGuard > agentEnd);
+	assert.ok(turnIncrement > orientationGuard);
+	assert.match(
+		goalSource.slice(orientationGuard, turnIncrement),
+		/orientation\.status !== "none"\) return/,
+	);
+	assert.match(goalSource, /Goal changes are held until the self-handoff/);
+	assert.match(workPlanSource, /if \(selfHandoffPending\(ctx\)\) return/);
+	assert.match(
+		workPlanSource,
+		/Work-plan changes are held until the self-handoff/,
+	);
 });
