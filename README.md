@@ -149,6 +149,7 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
 - `extensions/goal` — durable `/goal` loop for long-running work:
   - `/goal <objective> [--max-turns N]` starts a user-requested goal
   - `/goal status`, `/goal pause`, `/goal resume`, `/goal reclaim`, `/goal clear` control it
+  - pressing Escape while an active goal's agent turn is running pauses autopilot without consuming the interrupted turn; run `/goal resume` to continue
   - `start_goal` lets the agent create a durable goal from a normal session when the user explicitly requests or strongly implies multi-turn/autonomous tracking
   - `update_goal` lets the agent log progress, mark completion after evidence audit, or stop when blocked
 - `extensions/self-handoff` — user-invoked stock-Pi fresh-session continuation:

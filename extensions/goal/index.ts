@@ -4,6 +4,7 @@ import {
   SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
+import { latestAssistantMessage } from "./agent-end.ts";
 import {
   type HandoffChildFailureEvent,
   type HandoffGateEvent,
@@ -918,6 +919,14 @@ export default function goalExtension(pi: ExtensionAPI) {
     );
     if (orientation.status !== "none") return;
 
+    const lastAssistant = latestAssistantMessage(event.messages);
+    if (lastAssistant?.stopReason === "aborted") {
+      record(pi, "paused", "Paused because the user interrupted the active turn.");
+      setStatus(ctx);
+      if (ctx.hasUI) ctx.ui.notify("Goal paused after interrupt. Run /goal resume to continue.", "info");
+      return;
+    }
+
     goal.turnsCompleted += 1;
     goal.updatedAt = now();
 
@@ -926,20 +935,6 @@ export default function goalExtension(pi: ExtensionAPI) {
     // databricks-gpt-5-5 after a tool result) that silently stalls autopilot.
     // Re-prompt with an explicit nudge for a few attempts, then bail to blocked
     // so we never spin forever in a silent loop.
-    type AssistantLike = {
-      role: "assistant";
-      stopReason?: string;
-      content?: Array<{ type?: string; text?: string }>;
-    };
-    const messagesArr = (event.messages ?? []) as ReadonlyArray<{ role?: string }>;
-    let lastAssistant: AssistantLike | undefined;
-    for (let i = messagesArr.length - 1; i >= 0; i--) {
-      const m = messagesArr[i];
-      if (m && m.role === "assistant") {
-        lastAssistant = m as AssistantLike;
-        break;
-      }
-    }
     const isEmptyStop =
       !!lastAssistant &&
       lastAssistant.stopReason === "stop" &&
