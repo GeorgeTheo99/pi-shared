@@ -7,7 +7,7 @@ Shared pi instructions and explicitly shareable pi resources.
 ## Contents
 
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
-- `extensions/` — shared pi extensions, including project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), same-process fresh-session handoff (`/self-handoff`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), local-search MCP-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
+- `extensions/` — shared pi extensions, including oversized tool-result summarization (`tool_result_recall`, `/tool-summary`), project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), same-process fresh-session handoff (`/self-handoff`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), local-search MCP-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
 - `knowledge/software-engineering/` — curated software engineering classics source catalog and local searchable corpus. Future state: ingest public/open texts and user-supplied lawful private copies for copyrighted books; metadata-only until then.
 - `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-databricks/skills`.
 - `prompts/` — shared prompt templates.
@@ -136,6 +136,12 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
 
 ## Included shared extensions
 
+- `extensions/tool-summary` — raw-first oversized tool-result summaries:
+  - leaves exact originals intact in session JSONL/history and substitutes only through Pi's ephemeral `context` hook after one raw provider exposure
+  - uses the active session model through `@earendil-works/pi-ai/compat` with low summarizer reasoning where supported, while leaving the main session thinking level unchanged
+  - freezes the first valid summary by tool-call ID, raw SHA-256, and policy version; persists summaries/config/exposure/non-worthwhile markers as non-context custom entries; rejects stale branch/session completions
+  - defaults to 8K standard and 16K high-fidelity thresholds, deterministic structured/log/error reductions, a 3K summary target, a 4K hard cap, and a 40% minimum savings requirement
+  - provides exact bounded `tool_result_recall` search/head/tail/line-range retrieval plus live `/tool-summary on|pause|off|status|threshold|reset` controls; see `extensions/tool-summary/README.md`
 - `extensions/memory` — machine-local, project-only memory:
   - stores canonical JSON in `~/.pi/memory/projects/`
   - injects active memories into the prompt as untrusted project context
