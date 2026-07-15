@@ -6,7 +6,7 @@
     "test:websearch": "node --no-warnings --test tests/websearch_mcp_client.test.mts",
     "test:goal": "node --no-warnings --experimental-loader ./tests/fixtures/goal_test_loader.mjs --test tests/goal_abort.test.mts",
     "test:self-handoff": "node --no-warnings --test tests/self_handoff.test.mts",
-    "test:subagents": "node --no-warnings --test tests/subagent_*.test.mts"
+    "test:subagents": "node --no-warnings --experimental-loader ./tests/fixtures/subagent_test_loader.mjs --test tests/subagent_*.test.mts"
   },
   "keywords": ["pi-package"],
   "pi": {

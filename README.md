@@ -163,11 +163,14 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - `app_*` tools for local/private web app testing: `app_open`, `app_click`, `app_type_text`, `app_wait_for`, `app_extract_text`, `app_screenshot`, `app_console_logs`, `app_network_log`, `app_api_request`, `app_page_state`, and tab helpers
   - `browser_*` private hosts are blocked by default; use `app_*` tools for local app testing or set `BROWSER_MCP_WEB_ALLOW_PRIVATE_HOSTS=true`
 - `extensions/spawn-subagent` — native subagent delegation:
-  - `spawn_subagent` spawns isolated `pi --mode json -p --no-session` subprocesses for single, parallel, or chained specialist work
+  - `spawn_subagent` keeps existing isolated `pi --mode json -p --no-session` behavior for non-interactive single, parallel, or chained specialist work
+  - opt-in single-mode `interactive:true` uses one persistent RPC child for up to 20 correlated `ask_parent` exchanges; resume with `jobAction:"answer"`, the current `jobId`, and exact `questionId`
+  - questions/answers are bounded and explicitly untrusted tool-result data; parked children release the scheduler lease and reacquire it before an answer resumes work
   - parallel tasks and chain steps may specify task-level `model` and `agentDir` overrides for multi-model/multi-profile workflows
   - bundled shared agents: `scout`, `planner`, `reviewer`, `worker`, `panelist`
   - default fan-out is 16 tasks with a host-wide 8-child concurrency lease shared by `spawn_subagent`, `workflow`, background jobs, and independent Pi processes; limits are environment-configurable
   - background job completion is a UI notification in interactive/RPC sessions, never an injected LLM-context message; fetch/list/cancel jobs with `jobAction: "status"` / `"list"` / `"cancel"`
+  - `wait_for({jobs:[...]})` wakes on `awaiting_answer` as well as terminal completion, preventing parent/child wait deadlocks
   - background records use locked, atomic, owner-leased persistence so one Pi process cannot falsely fail or overwrite another process's live jobs
   - `/subagents [shared|user|project|all]` lists available agents
   - project-local `.pi/agents` are not read unless the project is trusted or the user grants explicit interactive approval

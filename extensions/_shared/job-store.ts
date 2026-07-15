@@ -22,14 +22,29 @@ export const JOB_STORE_DIR = resolveStateDir(
 );
 export const JOB_STORE_PATH = path.join(JOB_STORE_DIR, "jobs.json");
 export const JOB_STORE_LOCK_PATH = path.join(JOB_STORE_DIR, "jobs.lock");
-export const JOB_STORE_VERSION = 2;
+export const JOB_STORE_VERSION = 3;
 
-export type JobStatus = "running" | "canceling" | "completed" | "failed" | "canceled";
+export type JobStatus = "running" | "awaiting_answer" | "canceling" | "completed" | "failed" | "canceled";
 
 export const TERMINAL_JOB_STATUS: ReadonlySet<JobStatus> = new Set(["completed", "failed", "canceled"]);
 
 export function isJobStatus(value: unknown): value is JobStatus {
-	return value === "running" || value === "canceling" || value === "completed" || value === "failed" || value === "canceled";
+	return (
+		value === "running" ||
+		value === "awaiting_answer" ||
+		value === "canceling" ||
+		value === "completed" ||
+		value === "failed" ||
+		value === "canceled"
+	);
+}
+
+export interface StoredJobQuestion {
+	id: string;
+	exchange: number;
+	text: string;
+	askedAt: string;
+	untrusted: true;
 }
 
 export interface JobOwnerLease {
@@ -54,6 +69,11 @@ export interface StoredBackgroundJob {
 	owner?: JobOwnerLease;
 	cancelRequestedAt?: string;
 	cancelRequestedBy?: string;
+	interactive?: boolean;
+	maxExchanges?: number;
+	question?: StoredJobQuestion;
+	lastAnsweredQuestionId?: string;
+	stateRevision?: number;
 }
 
 export interface BackgroundJobStore {
@@ -71,6 +91,10 @@ export interface JobSnapshot {
 	ownerId?: string;
 	ownerPid?: number;
 	cancelRequestedAt?: string;
+	interactive?: boolean;
+	maxExchanges?: number;
+	question?: StoredJobQuestion;
+	stateRevision?: number;
 }
 
 export interface JobStoreMutationOptions {
@@ -103,13 +127,40 @@ function normalizeJob(raw: unknown): StoredBackgroundJob | undefined {
 				leaseExpiresAt: ownerRaw.leaseExpiresAt,
 			}
 			: undefined;
+	const questionRaw = job.question as Record<string, unknown> | undefined;
+	const question: StoredJobQuestion | undefined =
+		questionRaw &&
+		typeof questionRaw.id === "string" &&
+		questionRaw.id.length <= 160 &&
+		Number.isInteger(questionRaw.exchange) &&
+		Number(questionRaw.exchange) > 0 &&
+		typeof questionRaw.text === "string" &&
+		Buffer.byteLength(questionRaw.text, "utf8") <= 64 * 1024 &&
+		typeof questionRaw.askedAt === "string" &&
+		questionRaw.untrusted === true
+			? {
+				id: questionRaw.id,
+				exchange: Number(questionRaw.exchange),
+				text: questionRaw.text,
+				askedAt: questionRaw.askedAt,
+				untrusted: true,
+			}
+			: undefined;
 	return {
 		...(job as unknown as StoredBackgroundJob),
 		id: job.id,
 		status,
 		owner,
+		question: status === "awaiting_answer" ? question : undefined,
 		label: typeof job.label === "string" ? job.label : undefined,
 		error: typeof job.error === "string" ? job.error : undefined,
+		interactive: job.interactive === true,
+		maxExchanges: Number.isInteger(job.maxExchanges) ? Number(job.maxExchanges) : undefined,
+		lastAnsweredQuestionId:
+			typeof job.lastAnsweredQuestionId === "string" && job.lastAnsweredQuestionId.length <= 160
+				? job.lastAnsweredQuestionId
+				: undefined,
+		stateRevision: Number.isInteger(job.stateRevision) && Number(job.stateRevision) >= 0 ? Number(job.stateRevision) : 0,
 	};
 }
 
@@ -160,6 +211,10 @@ function effectiveSnapshot(job: StoredBackgroundJob, nowMs: number): JobSnapshot
 			ownerId: job.owner?.id,
 			ownerPid: job.owner?.pid,
 			cancelRequestedAt: job.cancelRequestedAt,
+			interactive: job.interactive,
+			maxExchanges: job.maxExchanges,
+			question: undefined,
+			stateRevision: job.stateRevision,
 		};
 	}
 	return {
@@ -170,6 +225,10 @@ function effectiveSnapshot(job: StoredBackgroundJob, nowMs: number): JobSnapshot
 		ownerId: job.owner?.id,
 		ownerPid: job.owner?.pid,
 		cancelRequestedAt: job.cancelRequestedAt,
+		interactive: job.interactive,
+		maxExchanges: job.maxExchanges,
+		question: job.status === "awaiting_answer" ? job.question : undefined,
+		stateRevision: job.stateRevision,
 	};
 }
 
@@ -188,6 +247,8 @@ function pruneJobs(store: BackgroundJobStore, nowMs: number, maxJobs: number, ma
 	for (const job of store.jobs) {
 		if (!TERMINAL_JOB_STATUS.has(job.status) && isJobOwnerStale(job, nowMs)) {
 			job.status = "failed";
+			job.question = undefined;
+			job.stateRevision = (job.stateRevision ?? 0) + 1;
 			job.updatedAt = new Date(nowMs).toISOString();
 			job.error = job.error ?? "Background job owner lease expired before the job reached a terminal state.";
 		}
@@ -229,14 +290,28 @@ export async function mutateBackgroundJobStore<T>(
 }
 
 function mergeJob(existing: StoredBackgroundJob | undefined, incoming: StoredBackgroundJob): StoredBackgroundJob {
-	if (!existing) return incoming;
+	if (!existing) {
+		return { ...incoming, question: incoming.status === "awaiting_answer" ? incoming.question : undefined };
+	}
+	const existingRevision = existing.stateRevision ?? 0;
+	const incomingRevision = incoming.stateRevision ?? 0;
+	if (incomingRevision < existingRevision) return existing;
+	if (TERMINAL_JOB_STATUS.has(existing.status) && incomingRevision <= existingRevision) return existing;
 	if (TERMINAL_JOB_STATUS.has(existing.status) && !TERMINAL_JOB_STATUS.has(incoming.status)) return existing;
+	if (existing.status === "canceling" && !TERMINAL_JOB_STATUS.has(incoming.status)) return existing;
+	if (
+		incomingRevision === existingRevision &&
+		existing.status === "awaiting_answer" &&
+		incoming.status === "running"
+	) {
+		return existing;
+	}
 	const merged: StoredBackgroundJob = { ...existing, ...incoming };
 	if (existing.cancelRequestedAt && !incoming.cancelRequestedAt) {
 		merged.cancelRequestedAt = existing.cancelRequestedAt;
 		merged.cancelRequestedBy = existing.cancelRequestedBy;
 	}
-	if (existing.status === "canceling" && incoming.status === "running") merged.status = "canceling";
+	merged.question = merged.status === "awaiting_answer" ? merged.question : undefined;
 	return merged;
 }
 
@@ -269,11 +344,43 @@ export async function requestStoredJobCancellation(
 	return mutateBackgroundJobStore((store) => {
 		const job = store.jobs.find((candidate) => candidate.id === jobId);
 		if (!job || TERMINAL_JOB_STATUS.has(job.status)) return job;
+		if (job.status === "canceling" && job.cancelRequestedAt) return { ...job };
 		job.status = "canceling";
+		job.question = undefined;
+		job.stateRevision = (job.stateRevision ?? 0) + 1;
 		job.cancelRequestedAt = job.cancelRequestedAt ?? new Date().toISOString();
 		job.cancelRequestedBy = requestedBy;
 		job.updatedAt = new Date().toISOString();
 		return { ...job };
+	}, options);
+}
+
+export async function claimStoredJobAnswer(
+	jobId: string,
+	ownerId: string,
+	questionId: string,
+	options: JobStoreMutationOptions = {},
+): Promise<{ claimed: boolean; reason?: string; job?: StoredBackgroundJob }> {
+	return mutateBackgroundJobStore((store) => {
+		const job = store.jobs.find((candidate) => candidate.id === jobId);
+		if (!job) return { claimed: false, reason: "job_not_found" };
+		if (!job.owner || job.owner.id !== ownerId) return { claimed: false, reason: "not_owner", job: { ...job } };
+		if (job.cancelRequestedAt || job.status === "canceling") {
+			return { claimed: false, reason: "canceling", job: { ...job } };
+		}
+		if (TERMINAL_JOB_STATUS.has(job.status)) return { claimed: false, reason: "terminal", job: { ...job } };
+		if (job.status !== "awaiting_answer" || !job.question) {
+			return { claimed: false, reason: "not_awaiting", job: { ...job } };
+		}
+		if (job.question.id !== questionId) {
+			return { claimed: false, reason: "question_mismatch", job: { ...job } };
+		}
+		job.status = "running";
+		job.question = undefined;
+		job.lastAnsweredQuestionId = questionId;
+		job.stateRevision = (job.stateRevision ?? 0) + 1;
+		job.updatedAt = new Date().toISOString();
+		return { claimed: true, job: { ...job } };
 	}, options);
 }
 

@@ -48,11 +48,15 @@ const MAX_CONDITION_TIMEOUT = 30; // each condition/progress eval gets at most t
 type JobWaitMode = "all" | "any" | "any_success" | "any_failure";
 
 /** Evaluate the job-wait mode against current snapshots. Returns done=true when the resume condition is met. */
-function evaluateJobMode(
+export function evaluateJobMode(
 	ids: string[],
 	snapshots: Map<string, JobSnapshot>,
 	mode: JobWaitMode,
 ): { done: boolean; reason: string } {
+	const awaiting = ids.filter((id) => snapshots.get(id)?.status === "awaiting_answer");
+	if (awaiting.length > 0) {
+		return { done: true, reason: `job ${awaiting[0]} is awaiting_answer and needs a correlated parent answer` };
+	}
 	const terminal = ids.filter((id) => snapshots.has(id) && TERMINAL_JOB_STATUS.has(snapshots.get(id)!.status));
 	const succeeded = terminal.filter((id) => snapshots.get(id)!.status === "completed");
 	const failed = terminal.filter((id) => snapshots.get(id)!.status !== "completed");
@@ -174,13 +178,13 @@ const waitForTool = defineTool({
 	name: "wait_for",
 	label: "Wait For",
 	description:
-		"Block the agent loop until either a shell `condition` is true or a set of background subagent `jobs` reaches a terminal status, then resume — without burning tokens while waiting. `condition` is a shell command run with `sh -c` (exit code 0 = met, non-zero = not yet). `jobs` are background subagent job ids (from `spawn_subagent` with background:true); pass `job_mode` to control when to resume. While waiting, no LLM call happens, so the wait costs zero tokens; optional `progress` output streams to the TUI on each poll. Use this to pause for a long-running detached task (download, build, deploy, training) or for fanned-out subagent jobs to finish, instead of polling with repeated bash calls. `condition` and `jobs` are mutually exclusive. Always set a `timeout`. The call is abortable (Esc/Ctrl-C).",
+		"Block the agent loop until either a shell `condition` is true or a background subagent job becomes actionable (`awaiting_answer`) or terminal, then resume — without burning tokens while waiting. `condition` is a shell command run with `sh -c` (exit code 0 = met, non-zero = not yet). `jobs` are background subagent job ids; pass `job_mode` to control terminal completion. Any `awaiting_answer` job always wakes the wait so the parent can answer without deadlock. `condition` and `jobs` are mutually exclusive. Always set a `timeout`. The call is abortable (Esc/Ctrl-C).",
 	promptSnippet:
 		"wait_for to block the agent loop (zero tokens) until a shell condition is true or background subagent jobs finish, instead of polling",
 	promptGuidelines: [
 		"Use wait_for to pause for a long-running detached task (download, build, deploy, training) to finish, or for fanned-out background subagent jobs to finish, instead of polling with repeated bash calls. While wait_for runs, the agent loop is paused and consumes zero tokens.",
 		"`condition` is a shell command: exit code 0 means condition met (resume), any non-zero means not yet. Examples: `pgrep -f aria2c >/dev/null 2>&1` is wrong (true while running) — to wait for completion watch a DONE marker: `grep -q '^DONE ' file.download.log 2>/dev/null`, or invert: `! pgrep -f aria2c >/dev/null 2>&1`, or a file: `test -f /path/to/done.flag`.",
-		"`jobs` waits for background subagent job ids returned by `spawn_subagent({..., background:true})`. `job_mode` defaults to `all` (resume when every job is terminal); use `any` (first terminal), `any_success` (first completed), or `any_failure` (first failed/canceled) to resume early. After it resumes, fetch each job's full output with `spawn_subagent({ jobAction: 'status', jobId: '<id>' })`. `condition` and `jobs` are mutually exclusive.",
+		"`jobs` waits for background subagent job ids returned by `spawn_subagent({..., background:true})`. Any `awaiting_answer` job wakes immediately regardless of `job_mode`; answer it with `spawn_subagent({jobAction:'answer', jobId, questionId, answer})`. Otherwise `job_mode` defaults to `all` terminal, with `any`, `any_success`, or `any_failure` alternatives. `condition` and `jobs` are mutually exclusive.",
 		"Always provide a `timeout` (seconds, capped at 24h). For longer tasks, chain another wait_for or use the launchd + handoff resume pattern.",
 		"Provide a `progress` command (e.g. `du -sh /path | cut -f1`) so the wait shows live progress in the TUI (ignored in `jobs` mode, which shows per-job status instead).",
 		"Do parallel prep work BEFORE calling wait_for. Launch the long task detached (nohup/&), do all independent wiring, then call wait_for once as the gate before the dependent step. Never poll in a loop when wait_for can block for you.",
@@ -195,7 +199,7 @@ const waitForTool = defineTool({
 		jobs: Type.Optional(
 			Type.Array(Type.String(), {
 				description:
-					"Background subagent job ids (from `spawn_subagent` with background:true) to wait for instead of a shell condition. Mutually exclusive with `condition`. Polls the spawn-subagent job store; resumes when `job_mode` is satisfied. Terminal statuses are `completed`, `failed`, `canceled`.",
+					"Background subagent job ids to wait for instead of a shell condition. Mutually exclusive with `condition`. Resumes immediately for `awaiting_answer`, or when `job_mode` is satisfied by terminal statuses (`completed`, `failed`, `canceled`).",
 			}),
 		),
 		job_mode: Type.Optional(
@@ -320,7 +324,8 @@ const waitForTool = defineTool({
 					const termCount = jobIds.filter(
 						(id) => snapshots.has(id) && TERMINAL_JOB_STATUS.has(snapshots.get(id)!.status),
 					).length;
-					lastProgress = `${termCount}/${jobIds.length} terminal`;
+					const awaitingCount = jobIds.filter((id) => snapshots.get(id)?.status === "awaiting_answer").length;
+					lastProgress = `${termCount}/${jobIds.length} terminal${awaitingCount ? ` • ${awaitingCount} awaiting answer` : ""}`;
 					lastStdout =
 						summarizeJobs(jobIds, snapshots) +
 						(missing.length ? `\n(not yet in store: ${missing.join(", ")})` : "");
@@ -340,7 +345,7 @@ const waitForTool = defineTool({
 						? `Jobs ready after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}).`
 						: `Condition met after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}). Resuming.`;
 					const tail = useJobs
-						? `\n${reason}\n${lastStdout}\n\nRetrieve full output: spawn_subagent({ jobAction: "status", jobId: "<id>" })`
+						? `\n${reason}\n${lastStdout}\n\nInspect with spawn_subagent({jobAction:"status",jobId:"<id>"}); if awaiting_answer, reply with jobAction:"answer" plus its questionId.`
 						: "";
 					return textResult(head + tail, {
 						...baseDetails,

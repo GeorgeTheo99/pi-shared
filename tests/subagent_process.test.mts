@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { runManagedProcess } from "../extensions/_shared/managed-process.ts";
+import { runManagedProcess, startManagedProcess } from "../extensions/_shared/managed-process.ts";
 
 const baseOptions = {
 	cwd: path.resolve(import.meta.dirname, ".."),
@@ -30,6 +30,55 @@ test("managed processes stream lines and bound stderr", async () => {
 	assert.ok(Buffer.byteLength(result.stderr, "utf8") < 160);
 });
 
+test("managed processes provide ordered bounded JSONL stdin and graceful EOF", async () => {
+	const lines: string[] = [];
+	const handle = startManagedProcess({
+		...baseOptions,
+		command: process.execPath,
+		args: [
+			"-e",
+			`let b="";process.stdin.setEncoding("utf8");process.stdin.on("data",c=>{b+=c});process.stdin.on("end",()=>{for(const l of b.split("\\n").filter(Boolean)){const v=JSON.parse(l);console.log(JSON.stringify({index:v.index,value:v.index===1?v.value:v.value.length}));}});`,
+		],
+		stdin: "pipe",
+		onStdoutLine: (line) => lines.push(line),
+	});
+	await Promise.all([
+		handle.writeJsonLine({ index: 1, value: "line one\nline two\u2028kept" }),
+		handle.writeJsonLine({ index: 2, value: "🙂".repeat(1000) }),
+	]);
+	await handle.endStdin();
+	const result = await handle.completion;
+	assert.equal(result.exitCode, 0);
+	assert.deepEqual(lines.map((line) => JSON.parse(line).index), [1, 2]);
+	assert.equal(JSON.parse(lines[0]).value, "line one\nline two\u2028kept");
+});
+
+test("managed stdin EPIPE rejects writes without crashing the parent process", async () => {
+	const handle = startManagedProcess({
+		...baseOptions,
+		command: process.execPath,
+		args: ["-e", "require('node:fs').closeSync(0); setTimeout(()=>{},1000)"],
+		stdin: "pipe",
+	});
+	await new Promise((resolve) => setTimeout(resolve, 75));
+	await assert.rejects(handle.writeStdin("x".repeat(64 * 1024)), /EPIPE|stdin/i);
+	const result = await handle.completion;
+	assert.notEqual(result.exitCode, 0);
+	assert.match(result.errorMessage ?? "", /stdin failed|EPIPE/i);
+});
+
+test("managed processes reject stdin writes after graceful EOF", async () => {
+	const handle = startManagedProcess({
+		...baseOptions,
+		command: process.execPath,
+		args: ["-e", "process.stdin.resume()"],
+		stdin: "pipe",
+	});
+	await handle.endStdin();
+	await assert.rejects(handle.writeJsonLine({ late: true }), /stdin is not writable/);
+	assert.equal((await handle.completion).exitCode, 0);
+});
+
 test("managed processes reject oversized unterminated events", async () => {
 	const result = await runManagedProcess({
 		...baseOptions,
@@ -39,6 +88,22 @@ test("managed processes reject oversized unterminated events", async () => {
 	});
 	assert.equal(result.terminationReason, "output_limit");
 	assert.notEqual(result.exitCode, 0);
+});
+
+test("output-limit termination never flushes a trailing forged frame", async () => {
+	const lines: string[] = [];
+	const result = await runManagedProcess({
+		...baseOptions,
+		command: process.execPath,
+		args: [
+			"-e",
+			'process.stdout.write("x".repeat(300)+"\\n"+JSON.stringify({forged:true})); setInterval(()=>{},1000)',
+		],
+		maxEventBytes: 256,
+		onStdoutLine: (line) => lines.push(line),
+	});
+	assert.equal(result.terminationReason, "output_limit");
+	assert.deepEqual(lines, []);
 });
 
 test("abort waits for actual child shutdown", async () => {

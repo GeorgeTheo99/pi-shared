@@ -51,7 +51,7 @@ wait_for({
 
 ## Waiting for background subagent jobs
 
-`wait_for` can also block until fanned‑out `spawn_subagent({..., background:true})` jobs finish, instead of polling `jobAction: "status"` yourself (which burns tokens on every poll). Fan out the jobs, keep orchestrating in the main session, then gate the dependent step behind a single `wait_for`:
+`wait_for` can also block until fanned‑out `spawn_subagent({..., background:true})` jobs finish or an interactive child reaches `awaiting_answer`, instead of polling `jobAction: "status"` yourself (which burns tokens on every poll). Fan out the jobs, keep orchestrating in the main session, then gate the dependent step behind a single `wait_for`:
 
 ```
 # fan out
@@ -77,7 +77,9 @@ wait_for({
 | `any_success` | the first job reaches `completed` |
 | `any_failure` | the first job reaches `failed` or `canceled` |
 
-Terminal statuses are `completed`, `failed`, `canceled`; `canceling` remains nonterminal until the owner has actually stopped and reaped its child processes. While waiting, the TUI shows `N/M terminal` plus a per-job status block on each poll. `wait_for` reads the same owner-leased, atomically written job store (`~/.pi/agent/spawn-subagent/jobs.json`, overridable via `PI_SUBAGENT_STATE_DIR` or legacy `PI_SPAWN_SUBAGENT_DIR`) that `jobAction: "status"` uses, so it works across sessions/processes and treats expired owner leases as failed instead of hanging indefinitely.
+Any watched job reaching `awaiting_answer` wakes immediately regardless of `job_mode`, because continuing to wait would deadlock the parent that must answer it. Fetch the question with `spawn_subagent({jobAction:"status",jobId})`, then resume the same child with `spawn_subagent({jobAction:"answer",jobId,questionId,answer})`.
+
+Terminal statuses are `completed`, `failed`, `canceled`; `awaiting_answer` is actionable but nonterminal, and `canceling` remains nonterminal until the owner has actually stopped and reaped its child processes. While waiting, the TUI shows terminal and awaiting-answer counts plus a per-job status block. `wait_for` reads the same owner-leased, atomically written job store (`~/.pi/agent/spawn-subagent/jobs.json`, overridable via `PI_SUBAGENT_STATE_DIR` or legacy `PI_SPAWN_SUBAGENT_DIR`) that `jobAction: "status"` uses, so it works across sessions/processes and treats expired owner leases as failed instead of hanging indefinitely.
 
 ## Beyond `wait_for`: event‑driven resume (documented pattern, not built)
 
