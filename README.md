@@ -49,7 +49,7 @@ The installer is idempotent and safe to rerun. It:
 - symlinks `pi-catalog`, `pi-omlx-repair`, and `pi-vanilla` into `~/.local/bin`
 - ensures `~/.pi/agent/settings.json` includes this repo in `packages`
 - symlinks `~/.pi/agent/AGENTS.md` to this repo's shared `AGENTS.md` unless a real file already exists
-- if `~/.claude/model-aliases.json` exists, renders `~/.pi-omlx/agent/models.json` and `~/.pi/model-gateway/pi-launchers.zsh`
+- if `~/.claude/model-aliases.json` exists, renders `~/.pi-omlx/agent/models.json` and `~/.pi/generated/pi-launchers.zsh`
 
 Useful options:
 
@@ -58,13 +58,13 @@ Useful options:
 ./install.sh --force
 ./install.sh --aliases ~/.claude/model-aliases.json \
   --models-out ~/.pi-omlx/agent/models.json \
-  --launchers-out ~/.pi/model-gateway/pi-launchers.zsh
+  --launchers-out ~/.pi/generated/pi-launchers.zsh
 ```
 
 After catalog generation, source the launcher from your shell, for example:
 
 ```bash
-[ -f ~/.pi/model-gateway/pi-launchers.zsh ] && source ~/.pi/model-gateway/pi-launchers.zsh
+[ -f ~/.pi/generated/pi-launchers.zsh ] && source ~/.pi/generated/pi-launchers.zsh
 ```
 
 ## Vanilla recovery launcher
@@ -126,7 +126,7 @@ Generate for the oMLX profile (ls99):
 ```bash
 pi-catalog --aliases ~/.claude/model-aliases.json \
   --models-out ~/.pi-omlx/agent/models.json \
-  --launchers-out ~/local_code/model-gateway-runtime/pi-launchers.zsh \
+  --launchers-out ~/.pi/generated/pi-launchers.zsh \
   --pi-agent-dir ~/.pi-omlx/agent --ls99-extras
 ```
 

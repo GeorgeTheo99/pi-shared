@@ -30,7 +30,7 @@ Inputs:
 Modes:
     pi-catalog --aliases ~/.claude/model-aliases.json \\
                 --models-out ~/.pi-omlx/agent/models.json \\
-                --launchers-out ~/local_code/model-gateway-runtime/pi-launchers.zsh \\
+                --launchers-out ~/.pi/generated/pi-launchers.zsh \\
                 --pi-agent-dir ~/.pi-omlx/agent --ls99-extras
 """
 
