@@ -278,6 +278,64 @@ def test_launcher_and_models_ids_agree(tmp_path):
     assert not re.search(r'\bcodex-[A-Za-z0-9_]+\s*\(\)', launchers), "launcher defines codex-* functions"
 
 
+def test_pi_list_groups_local_and_cloud_models(tmp_path):
+    aliases = {
+        "local-z": {"name": "Local Z", "alias": "zlocal", "provider": "local"},
+        "cloud:z": {
+            "name": "Cloud Z", "alias": "zcloud", "provider": "openai",
+            "provider_model_id": "cloud-z",
+        },
+        "local-a": {"name": "Local A", "alias": "alocal", "provider": "local"},
+        "cloud:a": {
+            "name": "Cloud A", "alias": "acloud", "provider": "anthropic",
+            "provider_model_id": "cloud-a",
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--launchers-out", str(tmp_path / "l.zsh"))
+    assert r.returncode == 0, r.stderr
+    launchers = (tmp_path / "l.zsh").read_text()
+    pi_list = launchers.split("pi-list() {", 1)[1].split("\n}", 1)[0]
+
+    assert 'echo "Pi quick-start commands:"' in pi_list
+    assert pi_list.index("Local models (via ls99-models") < pi_list.index("Cloud models (via ls99-models")
+    local_section = pi_list.split("Local models", 1)[1].split("Cloud models", 1)[0]
+    cloud_section = pi_list.split("Cloud models", 1)[1].split("Management", 1)[0]
+    assert local_section.index("pi-alocal") < local_section.index("pi-zlocal")
+    assert "pi-acloud" not in local_section and "pi-zcloud" not in local_section
+    assert cloud_section.index("pi-acloud") < cloud_section.index("pi-zcloud")
+    assert "pi-alocal" not in cloud_section and "pi-zlocal" not in cloud_section
+
+
+@pytest.mark.parametrize(
+    ("aliases", "present_heading", "absent_heading"),
+    [
+        (
+            {"local": {"name": "Local", "alias": "local", "provider": "local"}},
+            "Local models",
+            "Cloud models",
+        ),
+        (
+            {
+                "cloud:model": {
+                    "name": "Cloud", "alias": "cloud", "provider": "openai",
+                    "provider_model_id": "model",
+                },
+            },
+            "Cloud models",
+            "Local models",
+        ),
+    ],
+)
+def test_pi_list_omits_empty_model_sections(tmp_path, aliases, present_heading, absent_heading):
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--launchers-out", str(tmp_path / "l.zsh"))
+    assert r.returncode == 0, r.stderr
+    pi_list = (tmp_path / "l.zsh").read_text().split("pi-list() {", 1)[1].split("\n}", 1)[0]
+    assert present_heading in pi_list
+    assert absent_heading not in pi_list
+
+
 def test_ls99_extras_adds_pi_default_and_pi_openai(tmp_path):
     aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
     p = _load_aliases(tmp_path, aliases)
@@ -288,6 +346,10 @@ def test_ls99_extras_adds_pi_default_and_pi_openai(tmp_path):
     assert "pi-openai()" in launchers
     assert "-u PI_CODING_AGENT_DIR" in launchers  # both use default profile
     assert "openai-codex" in launchers
+    pi_list = launchers.split("pi-list() {", 1)[1].split("\n}", 1)[0]
+    assert pi_list.index("Cloud models") < pi_list.index("Direct Pi:") < pi_list.index("Management:")
+    assert "pi-default" in pi_list
+    assert "pi-openai" in pi_list
 
 
 def test_pi_regen_baked_with_paths(tmp_path):

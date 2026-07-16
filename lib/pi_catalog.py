@@ -65,6 +65,11 @@ def _norm_provider(meta: dict) -> str:
     return (meta.get("provider") or "local").strip().lower()
 
 
+def _is_cloud_key(key: str) -> bool:
+    """Whether a catalog entry is routed to a cloud provider."""
+    return key.startswith("cloud:")
+
+
 def _pi_hints(meta: dict) -> dict:
     """Optional Pi-specific passthrough hints from the gateway catalog.
 
@@ -86,7 +91,7 @@ def _is_anthropic_shape(key: str, meta: dict) -> bool:
     """
     if _norm_provider(meta) in ANTHROPIC_PROVIDERS:
         return True
-    if not key.startswith("cloud:"):
+    if not _is_cloud_key(key):
         return False
     if (meta.get("protocol") or "").strip().lower() == "anthropic":
         return True
@@ -99,7 +104,7 @@ def _is_qwen_family(key: str, meta: dict) -> bool:
 
 
 def _is_local_key(key: str, meta: dict) -> bool:
-    return not key.startswith("cloud:") and _norm_provider(meta) in {"local", "omlx", "mlx"}
+    return not _is_cloud_key(key) and _norm_provider(meta) in {"local", "omlx", "mlx"}
 
 
 def _reasoning_kind(key: str, meta: dict, status: dict) -> str:
@@ -158,7 +163,7 @@ def _reasoning_kind(key: str, meta: dict, status: dict) -> str:
         return "openai-responses"
 
     if _pi_hints(meta).get("reasoning") is True or (
-        key.startswith("cloud:") and thinking in THINKING_VALUES
+        _is_cloud_key(key) and thinking in THINKING_VALUES
     ):
         # Generic gateway-proxied reasoning model (no provider-specific branch
         # matched): mark reasoning without speculative thinking params — the
@@ -247,7 +252,7 @@ def _eligible_entries(aliases: dict) -> list[tuple[str, dict]]:
         provider = _norm_provider(meta)
         if provider == "gguf":
             continue
-        if key.startswith("cloud:"):
+        if _is_cloud_key(key):
             pm = meta.get("provider_model_id")
             if not pm or pm in seen_cloud:
                 continue
@@ -262,7 +267,7 @@ def _eligible_entries(aliases: dict) -> list[tuple[str, dict]]:
 
 def _model_id_for(key: str, meta: dict) -> str:
     """The model id used in BOTH models.json and the launcher (never drifts)."""
-    if key.startswith("cloud:"):
+    if _is_cloud_key(key):
         return _pi_hints(meta).get("id") or meta.get("provider_model_id") or key
     return key  # local: alias key == omlx_id
 
@@ -326,7 +331,7 @@ def render_models(
             "maxTokens": max_out,
             "cost": _cost(),
         }
-        if key.startswith("cloud:") and api_type == "anthropic-messages":
+        if _is_cloud_key(key) and api_type == "anthropic-messages":
             # Pi's Anthropic client appends /v1/messages; OpenAI clients append
             # /chat/completions to a /v1 base. Keep provider base at /v1 for
             # OpenAI-shaped models but override Anthropic cloud models to the
@@ -340,7 +345,7 @@ def render_models(
             model["reasoning"] = True
         if isinstance(hints.get("compat"), dict):
             model.setdefault("compat", {}).update(hints["compat"])
-        if key.startswith("cloud:"):
+        if _is_cloud_key(key):
             cloud_models.append(model)
         else:
             local_models.append(model)
@@ -382,13 +387,15 @@ def render_launchers(
     gw_host = gateway_url.rstrip("/").replace("https://", "").replace("http://", "")
     # Build the (alias, model_id, display) rows from the SAME eligibility rule
     # as render_models, so launcher ids and models.json ids can never disagree.
-    rows: list[tuple[str, str, str]] = []
+    rows: list[tuple[str, str, str, bool]] = []
     for key, meta in _eligible_entries(aliases):
         alias = str(meta["alias"])
         model_id = _model_id_for(key, meta)
         name = meta.get("name") or model_id
-        rows.append((alias, model_id, str(name)))
+        rows.append((alias, model_id, str(name), _is_cloud_key(key)))
     rows.sort(key=lambda r: r[0])
+    local_rows = [row for row in rows if not row[3]]
+    cloud_rows = [row for row in rows if row[3]]
 
     # The pi invocation. If pi_agent_dir is set, wrap with env so the launcher
     # targets that Pi profile (e.g. the oMLX profile with its model list).
@@ -429,7 +436,7 @@ def render_launchers(
         "}",
         "",
     ]
-    for alias, model_id, _name in rows:
+    for alias, model_id, _name, _is_cloud in rows:
         lines.append(
             f"pi-{alias}() {{ _pi_gw_launch {provider_name!r} {model_id!r} {alias!r} \"$@\"; }}"
         )
@@ -437,20 +444,30 @@ def render_launchers(
     lines += [
         "",
         "pi-list() {",
-        f'  echo "Pi quick-start commands (via {provider_name} → {gw_host}):"',
+        '  echo "Pi quick-start commands:"',
     ]
-    width = max((len(a) for a, *_ in rows), default=8) + 3
-    for alias, model_id, name in rows:
-        lines.append(f'  printf "  %-{width}s %s\\n" "pi-{alias}" {name + " (" + model_id + ")"!r}')
-    lines += [
-        '  echo ""',
-        '  echo "  pi-restart [service]           restart gateway/oMLX/services (default: model-gw)"',
-    ]
+    width = max((len(alias) for alias, *_ in rows), default=8) + 3
+    for title, section_rows in (("Local models", local_rows), ("Cloud models", cloud_rows)):
+        if not section_rows:
+            continue
+        lines += [
+            '  echo ""',
+            f'  echo "{title} (via {provider_name} → {gw_host}):"',
+        ]
+        for alias, model_id, name, _is_cloud in section_rows:
+            lines.append(f'  printf "  %-{width}s %s\\n" "pi-{alias}" {name + " (" + model_id + ")"!r}')
     if ls99_extras:
         lines += [
+            '  echo ""',
+            '  echo "Direct Pi:"',
             '  echo "  pi-default                     Pi default provider/model"',
             '  echo "  pi-openai                      OpenAI subscription (ChatGPT Plus/Pro via /login OAuth)"',
         ]
+    lines += [
+        '  echo ""',
+        '  echo "Management:"',
+        '  echo "  pi-restart [service]           restart gateway/oMLX/services (default: model-gw)"',
+    ]
     if models_out or launchers_out:
         lines += ['  echo "  pi-regen                       regenerate this launcher + models.json from the alias catalog"']
     lines += ['}', ""]
@@ -730,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit("pi-catalog: refusing to render an empty catalog (alias file has no entries)")
 
     # omlx_status is optional; only fetch if it could matter (local models present).
-    has_local = any(not k.startswith("cloud:") for k in aliases)
+    has_local = any(not _is_cloud_key(k) for k in aliases)
     omlx_status: dict = {}
     if has_local:
         if args.omlx_status:

@@ -110,7 +110,7 @@ Current generated `pi-*` shell launchers call this automatically before writing 
 It reads the alias file and emits:
 
 - `models.json` — a Pi provider/models config with full reasoning/thinkingFormat compat knowledge (local-qwen/glm/deepseek, fireworks-messages, zai, openrouter, openai-responses, anthropic), api_type selection, vision heuristics, and anthropic baseUrl overrides.
-- `pi-launchers.zsh` — `pi-<alias>()` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai` via `--ls99-extras`). No `claude-*`/`codex-*` — standardize on `pi`.
+- `pi-launchers.zsh` — `pi-<alias>()` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai` via `--ls99-extras`). `pi-list` groups catalog launchers into local and cloud sections from the catalog's canonical `cloud:` key namespace, with direct Pi and management commands shown separately. No `claude-*`/`codex-*` — standardize on `pi`.
 
 The model id in the launcher always matches the id in `models.json` (local = alias key / omlx_id, cloud = provider_model_id), so the two can never drift.
 
