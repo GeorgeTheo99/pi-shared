@@ -16,7 +16,12 @@ import { createSubagentExecutionGroup } from "../extensions/_shared/subagent-sch
 const fixture = path.join(import.meta.dirname, "fixtures", "subagent_interactive_rpc_child.mjs");
 const oneShotFixture = path.join(import.meta.dirname, "fixtures", "subagent_json_child.mjs");
 
-function setup(scenario = "two", maxExchanges = 20, runTimeoutMs = 10000, maxEventBytes = 4 * 1024 * 1024) {
+function setup(
+	scenario = "two",
+	maxExchanges: number | undefined = undefined,
+	runTimeoutMs = 10000,
+	maxEventBytes = 4 * 1024 * 1024,
+) {
 	const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-interactive-test-"));
 	const config = loadSubagentConfig({
 		PI_SUBAGENT_STATE_DIR: stateDir,
@@ -228,6 +233,30 @@ test("oversized answers are rejected while the pending question remains intact",
 		/exceeds 65536 UTF-8 bytes/,
 	);
 	assert.equal(session.getQuestion()?.id, first.question?.id);
+});
+
+test("the default exchange limit fails and reaps a child before question 11 is exposed", async (t) => {
+	const env = setup("twenty-one");
+	t.after(() => fs.rmSync(env.stateDir, { recursive: true, force: true }));
+	let session: InteractivePiAgentSession | undefined;
+	t.after(() => cancelAfter(session));
+	session = await env.create();
+	let boundary = await session.start(createSubagentExecutionGroup(env.config, "start"));
+	for (let exchange = 1; exchange <= 10; exchange++) {
+		assert.equal(boundary.status, "awaiting_answer");
+		assert.equal(boundary.question?.exchange, exchange);
+		boundary = await session.answer(
+			createSubagentExecutionGroup(env.config, `answer-${exchange}`),
+			boundary.question!.id,
+			`answer ${exchange}`,
+		);
+	}
+	assert.equal(boundary.status, "failed");
+	const result = await session.completion;
+	assert.equal(result.status, "failed");
+	assert.match(result.errorMessage ?? "", /maximum of 10 parent exchanges/);
+	assert.ok(session.pid);
+	assert.throws(() => process.kill(session!.pid!, 0));
 });
 
 test("the hard exchange limit fails and reaps a child before question 21 is exposed", async (t) => {

@@ -8,6 +8,7 @@
 
 import os from "node:os";
 import path from "node:path";
+import { normalizeInteractiveExchangeLimit } from "../spawn-subagent/interactive-protocol.ts";
 import { atomicWriteJson, readJsonFile, withInterprocessLock } from "./file-lock.ts";
 
 function resolveStateDir(value: string): string {
@@ -155,7 +156,7 @@ function normalizeJob(raw: unknown): StoredBackgroundJob | undefined {
 		label: typeof job.label === "string" ? job.label : undefined,
 		error: typeof job.error === "string" ? job.error : undefined,
 		interactive: job.interactive === true,
-		maxExchanges: Number.isInteger(job.maxExchanges) ? Number(job.maxExchanges) : undefined,
+		maxExchanges: normalizeInteractiveExchangeLimit(job.maxExchanges),
 		lastAnsweredQuestionId:
 			typeof job.lastAnsweredQuestionId === "string" && job.lastAnsweredQuestionId.length <= 160
 				? job.lastAnsweredQuestionId

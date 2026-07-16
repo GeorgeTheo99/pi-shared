@@ -170,7 +170,7 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - `browser_*` private hosts are blocked by default; use `app_*` tools for local app testing or set `BROWSER_MCP_WEB_ALLOW_PRIVATE_HOSTS=true`
 - `extensions/spawn-subagent` — native subagent delegation:
   - `spawn_subagent` keeps existing isolated `pi --mode json -p --no-session` behavior for non-interactive single, parallel, or chained specialist work
-  - opt-in single-mode `interactive:true` uses one persistent RPC child for up to 20 correlated `ask_parent` exchanges; resume with `jobAction:"answer"`, the current `jobId`, and exact `questionId`
+  - opt-in single-mode `interactive:true` uses one persistent RPC child for 10 correlated `ask_parent` exchanges by default (20 maximum); resume with `jobAction:"answer"`, the current `jobId`, and exact `questionId`
   - questions/answers are bounded and explicitly untrusted tool-result data; parked children release the scheduler lease and reacquire it before an answer resumes work
   - parallel tasks and chain steps may specify task-level `model` and `agentDir` overrides for multi-model/multi-profile workflows
   - bundled shared agents: `scout`, `planner`, `reviewer`, `worker`, `panelist`

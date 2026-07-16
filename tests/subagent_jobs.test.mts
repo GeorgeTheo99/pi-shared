@@ -73,6 +73,21 @@ test("awaiting-answer jobs remain live, actionable, and nonterminal", async () =
 	assert.equal(jobs.TERMINAL_JOB_STATUS.has("awaiting_answer"), false);
 });
 
+test("persisted interactive exchange limits are normalized to the supported range", async () => {
+	const now = new Date().toISOString();
+	await Promise.all([
+		jobs.upsertStoredJob({ id: "limit-valid", status: "completed", startedAt: now, updatedAt: now, maxExchanges: 10 }),
+		jobs.upsertStoredJob({ id: "limit-zero", status: "completed", startedAt: now, updatedAt: now, maxExchanges: 0 }),
+		jobs.upsertStoredJob({ id: "limit-high", status: "completed", startedAt: now, updatedAt: now, maxExchanges: 21 }),
+		jobs.upsertStoredJob({ id: "limit-fraction", status: "completed", startedAt: now, updatedAt: now, maxExchanges: 1.5 }),
+	]);
+	const stored = new Map(jobs.readBackgroundJobStore().jobs.map((job) => [job.id, job]));
+	assert.equal(stored.get("limit-valid")?.maxExchanges, 10);
+	assert.equal(stored.get("limit-zero")?.maxExchanges, undefined);
+	assert.equal(stored.get("limit-high")?.maxExchanges, undefined);
+	assert.equal(stored.get("limit-fraction")?.maxExchanges, undefined);
+});
+
 test("stale/dead owners are surfaced as failed without failing live foreign jobs", async () => {
 	const now = new Date().toISOString();
 	await jobs.upsertStoredJob({

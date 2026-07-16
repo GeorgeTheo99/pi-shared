@@ -15,7 +15,7 @@ Modes:
 - Parallel with per-task models/profiles: `{ "tasks": [{ "agent": "panelist", "task": "review X", "model": "provider/model-a", "agentDir": "~/.pi-omlx/agent" }, { "agent": "panelist", "task": "review X", "model": "provider/model-b" }] }`
 - Chain: `{ "chain": [{ "agent": "scout", "task": "inspect X" }, { "agent": "planner", "task": "plan from this: {previous}" }] }`
 - Background start: `{ "background": true, "tasks": [{ "agent": "scout", "task": "find models" }, { "agent": "scout", "task": "find routes" }] }`
-- Interactive single child: `{ "agent": "scout", "task": "inspect the ambiguous API", "interactive": true, "maxExchanges": 20 }`
+- Interactive single child: `{ "agent": "scout", "task": "inspect the ambiguous API", "interactive": true, "maxExchanges": 10 }`
 - Persistent job status/list/cancel: `{ "jobAction": "status", "jobId": "sub_..." }`, `{ "jobAction": "list" }`, `{ "jobAction": "cancel", "jobId": "sub_..." }`
 - Answer the current interactive question: `{ "jobAction": "answer", "jobId": "sub_...", "questionId": "q_...", "answer": "..." }`
 
@@ -59,7 +59,7 @@ Lists available agents for the selected scope.
 ## Behavior
 
 - Non-interactive calls spawn a separate `pi --mode json -p --no-session` process per task and retain the existing one-shot behavior.
-- `interactive:true` is opt-in and currently supports single mode only. It starts one persistent `pi --mode rpc --no-session` child with an explicitly loaded `ask_parent` tool; parallel/chain interactive arbitration is intentionally rejected.
+- `interactive:true` is opt-in and currently supports single mode only. Use it when the child may face a clarification that cannot be resolved from code, logs, documentation, or tools and whose answer would materially change the result, such as a parent-only decision or fact; prefer normal mode for self-contained exploration, planning, review, and implementation. It starts one persistent `pi --mode rpc --no-session` child with an explicitly loaded `ask_parent` tool; parallel/chain interactive arbitration is intentionally rejected.
 - Model precedence per spawn: task/chain-step `model` > explicit top-level `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.provider/ctx.model.id`). The parent's provider-qualified model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
 - GPT-family subagent models always use the OpenAI Codex subscription provider, not the OpenAI API provider: `gpt-*`, `chatgpt-*`, `o*`, and API-routed forms like `openai/gpt-*` are launched as `openai-codex/<model>` automatically. If the current child profile lacks subscription auth, `spawn_subagent` falls back to the default subscription profile (`~/.pi/agent`). If no subscription auth exists, the child fails instead of silently using the API route.
 - Optional `agentDir` / `tasks[].agentDir` / `chain[].agentDir` sets `PI_CODING_AGENT_DIR` for the child Pi process, enabling cross-profile model runs such as launching `ls99-cloud/*` models from `~/.pi-omlx/agent` while the parent session uses a narrower profile. `~/.pi/agent` and `~/.pi-omlx/agent` are trusted by default.
@@ -74,7 +74,7 @@ Lists available agents for the selected scope.
 - Cancellation is cross-process: a remote request moves the job to nonterminal `canceling`; the owner aborts queued/running children, waits for process-tree shutdown, and only then persists terminal `canceled`.
 - Parallel and chain requests allow 16 runs by default. A host-wide lease scheduler caps actual children at 8 across `spawn_subagent`, `workflow`, background jobs, and separate Pi processes sharing the state directory.
 - The managed runner enforces queue/run deadlines, bounded task/event/stderr/result capture, process-tree cleanup (SIGTERM→SIGKILL on POSIX; `taskkill /T /F` on Windows), and session-shutdown cleanup.
-- Interactive children preserve the same process and conversation across at most 20 correlated exchanges. The default and hard maximum are both 20; callers may lower `maxExchanges` to `1..20`.
+- Interactive children preserve the same process and conversation across correlated exchanges. The default is 10, the hard maximum is 20, and callers may set `maxExchanges` to `1..20`.
 - Only one question may be outstanding. Questions and answers are bounded to 64 KiB UTF-8, stale/duplicate IDs are rejected, and both directions are labeled explicitly as untrusted tool-result data rather than injected user messages.
 - A child parked on `awaiting_answer` releases its host scheduler lease. `jobAction:"answer"` reacquires a lease before writing the matching RPC response, so parked children do not consume active child capacity.
 - Persistent interactive jobs still count toward the active-job cap and the normal run timeout continues while parked. `wait_for({jobs:[...]})` wakes immediately on `awaiting_answer`, regardless of terminal `job_mode`, to avoid deadlock.
