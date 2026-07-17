@@ -51,3 +51,10 @@ test("extensions clean up child work on session shutdown", () => {
 	assert.match(read("extensions/spawn-subagent/index.ts"), /pi\.on\("session_shutdown"/);
 	assert.match(read("extensions/workflow/index.ts"), /pi\.on\("session_shutdown"/);
 });
+
+test("supervisor accepts only the exact ACCEPT control verdict", () => {
+	const supervisor = read("workflows/supervisor.js");
+	assert.match(supervisor, /\/\^accept\$\/i/);
+	assert.match(supervisor, /test\(normalized\)/);
+	assert.doesNotMatch(supervisor, /\/\^accept\\b/);
+});

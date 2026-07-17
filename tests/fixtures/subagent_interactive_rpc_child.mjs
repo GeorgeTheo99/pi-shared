@@ -5,6 +5,7 @@ const questionCount = scenario === "twenty-one" ? 21 : scenario === "one" ? 1 : 
 const titlePrefix = "[pi-spawn-subagent:ask-parent:v1] ";
 const placeholder = "Answer from the parent agent";
 const answers = [];
+const controls = [];
 let asked = 0;
 let unrelatedResolved = false;
 let buffer = "";
@@ -26,7 +27,7 @@ function ask() {
 }
 
 function finish() {
-	const text = `same-pid=${process.pid}; answers=${JSON.stringify(answers)}`;
+	const text = `same-pid=${process.pid}; answers=${JSON.stringify(answers)}; controls=${JSON.stringify(controls)}`;
 	send({
 		type: "message_end",
 		message: {
@@ -95,11 +96,20 @@ function onRecord(line) {
 		});
 		return;
 	}
+	if (command.type === "steer" || command.type === "follow_up") {
+		controls.push({ type: command.type, message: command.message });
+		send({ id: command.id, type: "response", command: command.type, success: true });
+		if (scenario === "control" && controls.length === 2 && unrelatedResolved) finish();
+		return;
+	}
 	if (command.type !== "extension_ui_response") return;
 	if (command.id === "unrelated-confirm") {
 		if (command.cancelled !== true) throw new Error("unrelated dialog was not canceled");
 		unrelatedResolved = true;
 		if (scenario === "large-thinking") finish();
+		else if (scenario === "control") {
+			if (controls.length === 2) finish();
+		}
 		else ask();
 		return;
 	}

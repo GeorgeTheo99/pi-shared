@@ -10,6 +10,8 @@ interface SchedulerWaiter {
 	requestedAt: number;
 	heartbeatAt: number;
 	label?: string;
+	priority: SchedulerPriority;
+	resourceKey?: string;
 }
 
 interface SchedulerLease {
@@ -21,20 +23,26 @@ interface SchedulerLease {
 	heartbeatAt: number;
 	expiresAt: number;
 	label?: string;
+	priority: SchedulerPriority;
+	resourceKey?: string;
 }
 
 interface SchedulerState {
-	version: 1;
+	version: 2;
 	limit: number;
+	resourceLimits: Record<string, number>;
 	waiters: SchedulerWaiter[];
 	leases: SchedulerLease[];
 }
 
 export type SchedulerRunState = "queued" | "running";
+export type SchedulerPriority = "foreground" | "background";
 
 export interface SchedulerRunOptions {
 	signal?: AbortSignal;
 	label?: string;
+	priority?: SchedulerPriority;
+	resourceKey?: string;
 	onState?: (state: SchedulerRunState, queueWaitMs: number) => void;
 }
 
@@ -93,17 +101,94 @@ function isProcessAlive(pid: number): boolean {
 	}
 }
 
-function emptyState(limit: number): SchedulerState {
-	return { version: 1, limit, waiters: [], leases: [] };
+function emptyState(limit: number, resourceLimits: Record<string, number>): SchedulerState {
+	return { version: 2, limit, resourceLimits: { ...resourceLimits }, waiters: [], leases: [] };
 }
 
-function normalizeState(value: Partial<SchedulerState> | undefined, limit: number): SchedulerState {
+function normalizePriority(value: unknown): SchedulerPriority {
+	return value === "background" ? "background" : "foreground";
+}
+
+function normalizeResourceKey(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const key = value.trim();
+	return /^[A-Za-z0-9._:-]{1,100}$/.test(key) ? key : undefined;
+}
+
+function normalizeResourceLimits(value: unknown): Record<string, number> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const limits: Record<string, number> = {};
+	for (const [key, limit] of Object.entries(value)) {
+		if (/^[A-Za-z0-9._:-]{1,100}$/.test(key) && Number.isInteger(limit) && Number(limit) >= 1 && Number(limit) <= 32) {
+			limits[key] = Number(limit);
+		}
+	}
+	return limits;
+}
+
+function normalizeState(
+	value: Partial<SchedulerState> | undefined,
+	limit: number,
+	resourceLimits: Record<string, number>,
+): SchedulerState {
 	return {
-		version: 1,
+		version: 2,
 		limit: Number.isInteger(value?.limit) && Number(value?.limit) > 0 ? Number(value?.limit) : limit,
-		waiters: Array.isArray(value?.waiters) ? value!.waiters.filter((item) => item && typeof item.id === "string") : [],
-		leases: Array.isArray(value?.leases) ? value!.leases.filter((item) => item && typeof item.id === "string") : [],
+		resourceLimits:
+			value?.resourceLimits === undefined
+				? { ...resourceLimits }
+				: normalizeResourceLimits(value.resourceLimits),
+		waiters: Array.isArray(value?.waiters)
+			? value.waiters
+					.filter((item) => item && typeof item.id === "string")
+					.map((item) => ({
+						...item,
+						priority: normalizePriority(item.priority),
+						resourceKey: normalizeResourceKey(item.resourceKey),
+					}))
+			: [],
+		leases: Array.isArray(value?.leases)
+			? value.leases
+					.filter((item) => item && typeof item.id === "string")
+					.map((item) => ({
+						...item,
+						priority: normalizePriority(item.priority),
+						resourceKey: normalizeResourceKey(item.resourceKey),
+					}))
+			: [],
 	};
+}
+
+function resourceLimitsEqual(left: Record<string, number>, right: Record<string, number>): boolean {
+	const leftEntries = Object.entries(left);
+	const rightEntries = Object.entries(right);
+	return (
+		leftEntries.length === rightEntries.length &&
+		leftEntries.every(([key, limit]) => right[key] === limit)
+	);
+}
+
+function reconcileLimits(state: SchedulerState, config: SubagentConfig): boolean {
+	if (state.waiters.length === 0 && state.leases.length === 0) {
+		const changed =
+			state.limit !== config.maxConcurrency ||
+			!resourceLimitsEqual(state.resourceLimits, config.resourceLimits);
+		state.limit = config.maxConcurrency;
+		state.resourceLimits = { ...config.resourceLimits };
+		return changed;
+	}
+	let changed = false;
+	if (state.limit > config.maxConcurrency) {
+		state.limit = config.maxConcurrency;
+		changed = true;
+	}
+	for (const [key, limit] of Object.entries(config.resourceLimits)) {
+		if (state.resourceLimits[key] === undefined || state.resourceLimits[key] > limit) {
+			state.resourceLimits[key] = limit;
+			changed = true;
+		}
+	}
+	return changed;
 }
 
 function pruneState(state: SchedulerState, now: number, leaseMs: number): boolean {
@@ -137,16 +222,17 @@ class HostSubagentScheduler {
 		return withInterprocessLock(
 			this.lockPath,
 			async () => {
-				const state = normalizeState(readJsonFile<Partial<SchedulerState>>(this.statePath, emptyState(this.config.maxConcurrency)), this.config.maxConcurrency);
+				const state = normalizeState(
+					readJsonFile<Partial<SchedulerState>>(
+						this.statePath,
+						emptyState(this.config.maxConcurrency, this.config.resourceLimits),
+					),
+					this.config.maxConcurrency,
+					this.config.resourceLimits,
+				);
 				const now = Date.now();
 				let changed = pruneState(state, now, this.config.leaseMs);
-				if (state.waiters.length === 0 && state.leases.length === 0 && state.limit !== this.config.maxConcurrency) {
-					state.limit = this.config.maxConcurrency;
-					changed = true;
-				} else if (state.limit > this.config.maxConcurrency) {
-					state.limit = this.config.maxConcurrency;
-					changed = true;
-				}
+				changed = reconcileLimits(state, this.config) || changed;
 				const result = fn(state);
 				if (changed || result.changed) await atomicWriteJson(this.statePath, state);
 				return result.value;
@@ -188,6 +274,8 @@ class HostSubagentScheduler {
 							requestedAt,
 							heartbeatAt: now,
 							label: options.label,
+							priority: options.priority ?? "foreground",
+							resourceKey: normalizeResourceKey(options.resourceKey),
 						};
 						state.waiters.push(waiter);
 						lastHeartbeat = now;
@@ -198,12 +286,42 @@ class HostSubagentScheduler {
 						changed = true;
 					}
 
-					state.waiters.sort((a, b) => a.requestedAt - b.requestedAt || a.id.localeCompare(b.id));
 					const available = Math.max(0, state.limit - state.leases.length);
-					const index = state.waiters.findIndex((item) => item.id === waiterId);
-					if (index < 0 || index >= available) return { value: undefined, changed };
+					const resourceUsage = new Map<string, number>();
+					for (const active of state.leases) {
+						if (active.resourceKey) {
+							resourceUsage.set(active.resourceKey, (resourceUsage.get(active.resourceKey) ?? 0) + 1);
+						}
+					}
+					const eligible = new Set<string>();
+					const sortedWaiters = [...state.waiters].sort((left, right) => {
+						const leftRank =
+							left.priority === "foreground" || now - left.requestedAt >= this.config.backgroundAgingMs
+								? 0
+								: 1;
+						const rightRank =
+							right.priority === "foreground" || now - right.requestedAt >= this.config.backgroundAgingMs
+								? 0
+								: 1;
+						return leftRank - rightRank || left.requestedAt - right.requestedAt || left.id.localeCompare(right.id);
+					});
+					for (const candidate of sortedWaiters) {
+						if (eligible.size >= available) break;
+						const resourceLimit = candidate.resourceKey
+							? state.resourceLimits[candidate.resourceKey]
+							: undefined;
+						const inUse = candidate.resourceKey
+							? resourceUsage.get(candidate.resourceKey) ?? 0
+							: 0;
+						if (resourceLimit !== undefined && inUse >= resourceLimit) continue;
+						eligible.add(candidate.id);
+						if (candidate.resourceKey) {
+							resourceUsage.set(candidate.resourceKey, inUse + 1);
+						}
+					}
+					if (!eligible.has(waiterId)) return { value: undefined, changed };
 
-					state.waiters.splice(index, 1);
+					state.waiters = state.waiters.filter((item) => item.id !== waiterId);
 					const acquired: SchedulerLease = {
 						id: crypto.randomUUID(),
 						waiterId,
@@ -213,6 +331,8 @@ class HostSubagentScheduler {
 						heartbeatAt: now,
 						expiresAt: now + this.config.leaseMs,
 						label: options.label,
+						priority: options.priority ?? "foreground",
+						resourceKey: normalizeResourceKey(options.resourceKey),
 					};
 					state.leases.push(acquired);
 					return { value: acquired, changed: true };
@@ -322,6 +442,7 @@ export class SubagentExecutionGroup {
 	private readonly config: SubagentConfig;
 	private readonly label: string;
 	private readonly parentSignals: AbortSignal[];
+	private readonly defaults: Pick<SchedulerRunOptions, "priority" | "resourceKey">;
 	private outstanding = 0;
 	private closed = false;
 
@@ -329,12 +450,14 @@ export class SubagentExecutionGroup {
 		config: SubagentConfig,
 		label: string,
 		parentSignals?: AbortSignal | Array<AbortSignal | undefined>,
+		defaults: Pick<SchedulerRunOptions, "priority" | "resourceKey"> = {},
 	) {
 		this.config = config;
 		this.label = label;
 		this.parentSignals = (Array.isArray(parentSignals) ? parentSignals : [parentSignals]).filter(
 			(signal): signal is AbortSignal => Boolean(signal),
 		);
+		this.defaults = defaults;
 	}
 
 	run<T>(
@@ -349,7 +472,7 @@ export class SubagentExecutionGroup {
 		const combined = combineSignals([...this.parentSignals, this.controller.signal]);
 		const promise = getScheduler(this.config)
 			.run(
-				{ ...options, label: options.label ?? this.label, signal: combined.signal },
+				{ ...this.defaults, ...options, label: options.label ?? this.label, signal: combined.signal },
 				(lease) => fn(lease, combined.signal),
 			)
 			.finally(() => {
@@ -382,6 +505,7 @@ export function createSubagentExecutionGroup(
 	config: SubagentConfig,
 	label: string,
 	parentSignals?: AbortSignal | Array<AbortSignal | undefined>,
+	defaults?: Pick<SchedulerRunOptions, "priority" | "resourceKey">,
 ): SubagentExecutionGroup {
-	return new SubagentExecutionGroup(config, label, parentSignals);
+	return new SubagentExecutionGroup(config, label, parentSignals, defaults);
 }

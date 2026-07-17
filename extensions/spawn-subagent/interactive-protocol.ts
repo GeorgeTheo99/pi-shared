@@ -4,6 +4,7 @@ export const DEFAULT_INTERACTIVE_EXCHANGES = 10;
 export const MAX_INTERACTIVE_EXCHANGES = 20;
 export const MAX_INTERACTIVE_QUESTION_BYTES = 64 * 1024;
 export const MAX_INTERACTIVE_ANSWER_BYTES = 64 * 1024;
+export const MAX_INTERACTIVE_MESSAGE_BYTES = 64 * 1024;
 export const MAX_INTERACTIVE_ID_CHARS = 160;
 
 export interface InteractiveQuestion {

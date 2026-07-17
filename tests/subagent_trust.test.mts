@@ -37,6 +37,24 @@ test("shared workflows resolve immediately", (t) => {
 	if (resolved.kind === "ready") assert.equal(resolved.code, 'return "safe";');
 });
 
+test("inline workflows require explicit approval", (t) => {
+	const dirs = fixture(t);
+	const resolved = resolveWorkflowSource({
+		params: { script: 'return "approved";' },
+		cwd: dirs.projectRoot,
+		sharedDir: dirs.sharedDir,
+		projectDir: dirs.projectDir,
+		projectTrusted: true,
+	});
+	assert.equal(resolved.kind, "approval");
+	if (resolved.kind !== "approval") return;
+	assert.equal(resolved.reason, "inline");
+	assert.equal(resolved.scriptPath, undefined);
+	const approved = approveWorkflowSource(resolved);
+	assert.equal(approved.kind, "ready");
+	if (approved.kind === "ready") assert.equal(approved.code, 'return "approved";');
+});
+
 test("project workflow code is not read until approval", (t) => {
 	const dirs = fixture(t);
 	const filePath = path.join(dirs.projectDir, "project-task.js");

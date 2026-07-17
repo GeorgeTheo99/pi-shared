@@ -93,6 +93,31 @@ test("non-interactive runPiAgent remains one-shot through the managed runner", a
 	assert.equal(result.usage.turns, 1);
 });
 
+test("one-shot children cannot succeed without a final assistant result", async (t) => {
+	const env = setup("one");
+	t.after(() => fs.rmSync(env.stateDir, { recursive: true, force: true }));
+	const group = createSubagentExecutionGroup(env.config, "empty-one-shot");
+	const result = await runPiAgent({
+		config: env.config,
+		group,
+		defaultCwd: path.resolve(import.meta.dirname, ".."),
+		agents: [
+			{
+				name: "fixture",
+				description: "fixture",
+				systemPrompt: "Fixture agent.",
+				source: "shared",
+				filePath: oneShotFixture,
+			},
+		],
+		agentName: "fixture",
+		task: "must return a result",
+		invocation: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+	});
+	assert.equal(result.status, "failed");
+	assert.match(result.errorMessage ?? "", /without a non-empty final assistant result/);
+});
+
 test("interactive RPC keeps one child across exchanges and releases/reacquires the scheduler lease", async (t) => {
 	const env = setup("two");
 	t.after(() => fs.rmSync(env.stateDir, { recursive: true, force: true }));
@@ -164,6 +189,40 @@ test("interactive RPC rejects stale answers without resuming the child", async (
 		session.answer(createSubagentExecutionGroup(env.config, "duplicate"), first.question!.id, "again"),
 		/already completed/,
 	);
+});
+
+test("interactive RPC acknowledges bounded steer and follow-up messages", async (t) => {
+	const env = setup("control");
+	t.after(() => fs.rmSync(env.stateDir, { recursive: true, force: true }));
+	let session: InteractivePiAgentSession | undefined;
+	t.after(() => cancelAfter(session));
+	session = await env.create();
+
+	const boundary = session.start(createSubagentExecutionGroup(env.config, "control"));
+	for (let attempts = 0; !session.pid && attempts < 100; attempts++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.ok(session.pid, "interactive child did not start");
+	await Promise.all([
+		session.steer("inspect the parser first"),
+		session.followUp("then run the focused tests"),
+	]);
+	assert.equal((await boundary).status, "completed");
+	const output = getFinalAssistantOutput((await session.completion).messages);
+	assert.match(output, /UNTRUSTED PARENT COORDINATION NOTE/);
+	assert.match(output, /inspect the parser first/);
+	assert.match(output, /then run the focused tests/);
+});
+
+test("interactive RPC rejects steering while awaiting a correlated answer", async (t) => {
+	const env = setup("one");
+	t.after(() => fs.rmSync(env.stateDir, { recursive: true, force: true }));
+	let session: InteractivePiAgentSession | undefined;
+	t.after(() => cancelAfter(session));
+	session = await env.create();
+	await session.start(createSubagentExecutionGroup(env.config, "start"));
+	await assert.rejects(session.steer("ignore the question"), /use answer instead of steering/);
+	await assert.rejects(session.followUp("queue this"), /use answer instead of steering/);
 });
 
 test("cancellation and process timeout reap a child parked on a parent question", async (t) => {

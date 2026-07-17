@@ -171,10 +171,12 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
 - `extensions/spawn-subagent` — native subagent delegation:
   - `spawn_subagent` keeps existing isolated `pi --mode json -p --no-session` behavior for non-interactive single, parallel, or chained specialist work
   - opt-in single-mode `interactive:true` uses one persistent RPC child for 10 correlated `ask_parent` exchanges by default (20 maximum); resume with `jobAction:"answer"`, the current `jobId`, and exact `questionId`
+  - live owner-session interactive jobs accept acknowledged `jobAction:"steer"` and `"followup"` controls; coordination messages are bounded and explicitly untrusted
   - questions/answers are bounded and explicitly untrusted tool-result data; parked children release the scheduler lease and reacquire it before an answer resumes work
-  - parallel tasks and chain steps may specify task-level `model` and `agentDir` overrides for multi-model/multi-profile workflows
+  - optional bounded `outputSchema` contracts validate exact JSON for one-shot single, parallel, and chain runs; chain handoffs isolate prior output in an untrusted JSON envelope
+  - parallel tasks and chain steps may specify task-level `model`, `agentDir`, and `outputSchema` overrides for multi-model/multi-profile workflows
   - bundled shared agents: `scout`, `planner`, `reviewer`, `worker`, `panelist`
-  - default fan-out is 16 tasks with a host-wide 8-child concurrency lease shared by `spawn_subagent`, `workflow`, background jobs, and independent Pi processes; limits are environment-configurable
+  - default fan-out is 16 tasks with a host-wide 8-child concurrency lease shared by `spawn_subagent`, `workflow`, background jobs, and independent Pi processes; foreground priority, starvation aging, and optional provider pools keep the queue responsive
   - background job completion is a UI notification in interactive/RPC sessions, never an injected LLM-context message; fetch/list/cancel jobs with `jobAction: "status"` / `"list"` / `"cancel"`
   - `wait_for({jobs:[...]})` wakes on `awaiting_answer` as well as terminal completion, preventing parent/child wait deadlocks
   - background records use locked, atomic, owner-leased persistence so one Pi process cannot falsely fail or overwrite another process's live jobs
@@ -190,8 +192,10 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - workflow globals: `agent(prompt, opts?)`, `parallel(thunks)`, `phase(title)`, `log(message)`, `args`, `cwd`
   - shared agents only in v1 (`scout`, `planner`, `reviewer`, `worker`, `panelist`); each `agent()` call uses the same scheduler, managed process lifecycle, model/profile routing, and bounds as `spawn_subagent`
   - saved workflows: `pi-shared/workflows/<name>.js` (shared, committed) or `.pi/workflows/<name>.js` (project, requires trust); `/workflows` lists them
+  - inline JavaScript always requires explicit interactive approval; noninteractive workflow use must resolve to a trusted or allowlisted file
   - use for repeatable, multi-phase, scriptable orchestration; use `spawn_subagent` for ordinary one-off single/parallel/chain delegation
-  - v1 scope: Pi-backed subagents only, optional resume-by-replay via `cache()`/`args._journal`, and no structured-output schema validation
+  - resume-by-replay journals are context-bound, exact, locked, and atomic; stale, corrupt, colliding, or oversized replay data fails closed
+  - v1 scope: Pi-backed subagents only and no workflow-level structured-output schema validation
 - `extensions/integration-bundles` — lazy enterprise tool-bundle loader driven by a machine-local `master_integration_list.yaml`:
   - keeps GPT / o-series safely under OpenAI's 128-tool API limit by exposing only a router toolset by default and loading bundles (jira, slack, glean, salesforce, google-workspace, databricks-aidk, ...) on demand
   - injects an `<available_bundles>` block into the system prompt with NL `description` text so the model can self-discover when to load each bundle

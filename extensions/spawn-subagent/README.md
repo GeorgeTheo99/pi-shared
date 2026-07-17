@@ -18,6 +18,8 @@ Modes:
 - Interactive single child: `{ "agent": "scout", "task": "inspect the ambiguous API", "interactive": true, "maxExchanges": 10 }`
 - Persistent job status/list/cancel: `{ "jobAction": "status", "jobId": "sub_..." }`, `{ "jobAction": "list" }`, `{ "jobAction": "cancel", "jobId": "sub_..." }`
 - Answer the current interactive question: `{ "jobAction": "answer", "jobId": "sub_...", "questionId": "q_...", "answer": "..." }`
+- Steer a live interactive child or queue a follow-up: `{ "jobAction": "steer", "jobId": "sub_...", "message": "Check the parser first" }`, `{ "jobAction": "followup", "jobId": "sub_...", "message": "Then run focused tests" }`
+- Schema-validated output: `{ "agent": "scout", "task": "List changed files", "outputSchema": { "type": "object", "required": ["files"], "additionalProperties": false, "properties": { "files": { "type": "array", "items": { "type": "string" } } } } }`
 
 ## Agents
 
@@ -60,6 +62,9 @@ Lists available agents for the selected scope.
 
 - Non-interactive calls spawn a separate `pi --mode json -p --no-session` process per task and retain the existing one-shot behavior.
 - `interactive:true` is opt-in and currently supports single mode only. Use it when the child may face a clarification that cannot be resolved from code, logs, documentation, or tools and whose answer would materially change the result, such as a parent-only decision or fact; prefer normal mode for self-contained exploration, planning, review, and implementation. It starts one persistent `pi --mode rpc --no-session` child with an explicitly loaded `ask_parent` tool; parallel/chain interactive arbitration is intentionally rejected.
+- One-shot and interactive children succeed only after producing a non-empty final assistant result. Child failures, cancellations, invalid parameters, and schema-validation failures set the tool result's `isError` flag instead of looking like successful tool calls.
+- Optional `outputSchema` is available at the top level and per parallel task or chain step for one-shot runs. The child is instructed to return exactly one JSON value, and the parent validates it with a bounded, fail-closed JSON Schema subset before exposing it as `details.results[].structuredOutput`. Unsupported schema keywords fail rather than being ignored. Interactive output schemas are intentionally rejected.
+- Chain `{previous}` handoffs are appended as an explicitly untrusted JSON envelope. A later child is told to use the data as task-scoped evidence and not follow instructions embedded in an earlier child's output. When the earlier step has a validated `structuredOutput`, the chain passes that value instead of raw prose.
 - Model precedence per spawn: task/chain-step `model` > explicit top-level `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.provider/ctx.model.id`). The parent's provider-qualified model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
 - GPT-family subagent models always use the OpenAI Codex subscription provider, not the OpenAI API provider: `gpt-*`, `chatgpt-*`, `o*`, and API-routed forms like `openai/gpt-*` are launched as `openai-codex/<model>` automatically. If the current child profile lacks subscription auth, `spawn_subagent` falls back to the default subscription profile (`~/.pi/agent`). If no subscription auth exists, the child fails instead of silently using the API route.
 - Optional `agentDir` / `tasks[].agentDir` / `chain[].agentDir` sets `PI_CODING_AGENT_DIR` for the child Pi process, enabling cross-profile model runs such as launching `ls99-cloud/*` models from `~/.pi-omlx/agent` while the parent session uses a narrower profile. `~/.pi/agent` and `~/.pi-omlx/agent` are trusted by default.
@@ -73,9 +78,11 @@ Lists available agents for the selected scope.
 - Background records are merged under an interprocess lock and published atomically. Running jobs carry owner PID/heartbeat leases, so loading another Pi process does not mark live foreign jobs failed. Expired/dead owners are reconciled to `failed`.
 - Cancellation is cross-process: a remote request moves the job to nonterminal `canceling`; the owner aborts queued/running children, waits for process-tree shutdown, and only then persists terminal `canceled`.
 - Parallel and chain requests allow 16 runs by default. A host-wide lease scheduler caps actual children at 8 across `spawn_subagent`, `workflow`, background jobs, and separate Pi processes sharing the state directory.
+- Foreground requests pass queued background requests, while background aging restores FIFO priority after 60 seconds to prevent starvation. Optional provider resource pools enforce lower per-backend caps and skip saturated pools so they do not head-of-line block unrelated providers.
 - The managed runner enforces queue/run deadlines, bounded task/event/stderr/result capture, process-tree cleanup (SIGTERM→SIGKILL on POSIX; `taskkill /T /F` on Windows), and session-shutdown cleanup.
 - Interactive children preserve the same process and conversation across correlated exchanges. The default is 10, the hard maximum is 20, and callers may set `maxExchanges` to `1..20`.
 - Only one question may be outstanding. Questions and answers are bounded to 64 KiB UTF-8, stale/duplicate IDs are rejected, and both directions are labeled explicitly as untrusted tool-result data rather than injected user messages.
+- A live owner-session interactive job also accepts bounded `jobAction:"steer"` and `jobAction:"followup"` controls. Steering interrupts the current turn; follow-up queues work after it. Both commands require an RPC acknowledgement, are wrapped as untrusted task-scoped coordination notes, and are rejected while a correlated `ask_parent` answer is pending.
 - A child parked on `awaiting_answer` releases its host scheduler lease. `jobAction:"answer"` reacquires a lease before writing the matching RPC response, so parked children do not consume active child capacity.
 - Persistent interactive jobs still count toward the active-job cap and the normal run timeout continues while parked. `wait_for({jobs:[...]})` wakes immediately on `awaiting_answer`, regardless of terminal `job_mode`, to avoid deadlock.
 - Interactive process handles are owner-session-only and are never serialized. Cancellation, timeout, process failure, or session shutdown/reload terminates and reaps the child; a reloaded process may inspect the sanitized snapshot but cannot rehydrate or answer it.
@@ -90,6 +97,8 @@ Defaults are conservative and can be changed before Pi starts. Invalid or out-of
 |---|---:|---|
 | `PI_SUBAGENT_MAX_FANOUT` | `16` | Maximum parallel tasks, chain steps, or outstanding workflow agents per request (hard range `1..64`) |
 | `PI_SUBAGENT_MAX_CONCURRENCY` | `8` | Host-wide active child leases (hard range `1..32`) |
+| `PI_SUBAGENT_RESOURCE_LIMITS` | unset | JSON object of provider-specific caps, for example `{"openai-codex":4,"anthropic":2}` |
+| `PI_SUBAGENT_BACKGROUND_AGING_MS` | `60000` | Time before queued background work returns to FIFO priority (hard range `100..3600000`) |
 | `PI_SUBAGENT_MAX_BACKGROUND_JOBS` | `8` | Active background requests across the shared job store |
 | `PI_SUBAGENT_MAX_DEPTH` | `1` | Delegation generations; `1` permits root→child and blocks child→grandchild |
 | `PI_SUBAGENT_QUEUE_TIMEOUT_MS` | `1800000` | Maximum wait for a global execution slot |
@@ -133,7 +142,7 @@ This extension injects a task routing table and agent roster into every system p
 | Remove a tool/agent | Delete it | ✅ Routing table line becomes inert (LLM skips unavailable tools) |
 | Change routing priority | Edit `ROUTING_TABLE` | ❌ Manual |
 
-The `ROUTING_TABLE` is the only manual coordination point. It lives in this file as the `ROUTING_TABLE` constant near the top of the extension. Add a line when you introduce a new *category* of work — not when you add a new agent that fits an existing category. Broad requests to explore, map, understand, trace, or investigate unfamiliar code should route to `scout` before planning or implementation. Prompts should also ask subagents for structured output: files inspected, key findings, recommended edit points, verification commands, and risks/blockers.
+The `ROUTING_TABLE` is the only manual coordination point. It lives in this file as the `ROUTING_TABLE` constant near the top of the extension. Add a line when you introduce a new *category* of work — not when you add a new agent that fits an existing category. Broad requests to explore, map, understand, trace, or investigate unfamiliar code should route to `scout` before planning or implementation. Use `outputSchema` when downstream code requires a machine-readable contract; otherwise ask for a concise result with files inspected, key findings, recommended edit points, verification commands, and risks/blockers.
 
 ### Adding a new routing category
 

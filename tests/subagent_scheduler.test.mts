@@ -15,7 +15,12 @@ function tempStateDir(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-scheduler-test-"));
 }
 
-function configFor(stateDir: string, concurrency = 3, fanout = 16) {
+function configFor(
+	stateDir: string,
+	concurrency = 3,
+	fanout = 16,
+	extra: Record<string, string> = {},
+) {
 	const config = loadSubagentConfig({
 		PI_SUBAGENT_STATE_DIR: stateDir,
 		PI_SUBAGENT_MAX_CONCURRENCY: String(concurrency),
@@ -23,6 +28,7 @@ function configFor(stateDir: string, concurrency = 3, fanout = 16) {
 		PI_SUBAGENT_QUEUE_TIMEOUT_MS: "10000",
 		PI_SUBAGENT_HEARTBEAT_MS: "1000",
 		PI_SUBAGENT_LEASE_MS: "10000",
+		...extra,
 	});
 	assert.deepEqual(config.errors, []);
 	return config;
@@ -96,6 +102,120 @@ test("an aborted queued request never starts", async (t) => {
 	assert.equal(queuedStarted, false);
 	release();
 	await active;
+});
+
+test("foreground work passes queued background work", async (t) => {
+	const stateDir = tempStateDir();
+	t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+	const config = configFor(stateDir, 1);
+	const activeGroup = createSubagentExecutionGroup(config, "active");
+	let releaseActive!: () => void;
+	let activeStarted!: () => void;
+	const activeGate = new Promise<void>((resolve) => (releaseActive = resolve));
+	const activeReady = new Promise<void>((resolve) => (activeStarted = resolve));
+	const active = activeGroup.run({}, async () => {
+		activeStarted();
+		await activeGate;
+	});
+	await activeReady;
+
+	const order: string[] = [];
+	const background = createSubagentExecutionGroup(
+		config,
+		"background",
+		undefined,
+		{ priority: "background" },
+	).run({}, async () => {
+		order.push("background");
+	});
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	const foreground = createSubagentExecutionGroup(config, "foreground").run({}, async () => {
+		order.push("foreground");
+	});
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	releaseActive();
+	await Promise.all([active, background, foreground]);
+	assert.deepEqual(order, ["foreground", "background"]);
+});
+
+test("aged background work returns to FIFO priority", async (t) => {
+	const stateDir = tempStateDir();
+	t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+	const config = configFor(stateDir, 1, 16, {
+		PI_SUBAGENT_BACKGROUND_AGING_MS: "100",
+	});
+	let releaseActive!: () => void;
+	let activeStarted!: () => void;
+	const activeGate = new Promise<void>((resolve) => (releaseActive = resolve));
+	const activeReady = new Promise<void>((resolve) => (activeStarted = resolve));
+	const active = createSubagentExecutionGroup(config, "active").run({}, async () => {
+		activeStarted();
+		await activeGate;
+	});
+	await activeReady;
+
+	const order: string[] = [];
+	const background = createSubagentExecutionGroup(
+		config,
+		"background",
+		undefined,
+		{ priority: "background" },
+	).run({}, async () => {
+		order.push("background");
+	});
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	const foreground = createSubagentExecutionGroup(config, "foreground").run({}, async () => {
+		order.push("foreground");
+	});
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	releaseActive();
+	await Promise.all([active, background, foreground]);
+	assert.deepEqual(order, ["background", "foreground"]);
+});
+
+test("resource pools do not head-of-line block unrelated providers", async (t) => {
+	const stateDir = tempStateDir();
+	t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+	const config = configFor(stateDir, 3, 16, {
+		PI_SUBAGENT_RESOURCE_LIMITS: JSON.stringify({ "openai-codex": 1 }),
+	});
+	let releaseOpenAI!: () => void;
+	let openAIStarted!: () => void;
+	const openAIGate = new Promise<void>((resolve) => (releaseOpenAI = resolve));
+	const openAIReady = new Promise<void>((resolve) => (openAIStarted = resolve));
+	const firstOpenAI = createSubagentExecutionGroup(config, "openai-1").run(
+		{ resourceKey: "openai-codex" },
+		async () => {
+			openAIStarted();
+			await openAIGate;
+		},
+	);
+	await openAIReady;
+
+	let secondOpenAIStarted = false;
+	const secondOpenAI = createSubagentExecutionGroup(config, "openai-2").run(
+		{ resourceKey: "openai-codex" },
+		async () => {
+			secondOpenAIStarted = true;
+		},
+	);
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	let otherStarted!: () => void;
+	const otherReady = new Promise<void>((resolve) => (otherStarted = resolve));
+	const other = createSubagentExecutionGroup(config, "other").run(
+		{ resourceKey: "anthropic" },
+		async () => {
+			otherStarted();
+		},
+	);
+	await Promise.race([
+		otherReady,
+		new Promise((_, reject) => setTimeout(() => reject(new Error("unrelated provider remained blocked")), 1000)),
+	]);
+	assert.equal(secondOpenAIStarted, false);
+	releaseOpenAI();
+	await Promise.all([firstOpenAI, secondOpenAI, other]);
+	assert.equal(secondOpenAIStarted, true);
 });
 
 function runSchedulerWorker(stateDir: string, id: number): Promise<{ id: string; start: number; end: number }> {

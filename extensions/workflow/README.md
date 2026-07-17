@@ -48,7 +48,7 @@ The workflow body is an **async function body** (top-level `await` and `return` 
 Each `agent(...)` call streams the subagent's `--mode json` events. Two things surface that live activity:
 
 - **TUI progress** shows a per-agent line with a `[N↑]` counter of streamed updates so a long-running subagent visibly advances rather than looking frozen. Aborting the workflow (Esc/Ctrl-C) propagates to every running subagent (SIGTERM → SIGKILL after 5s).
-- **`opts.onProgress(text)`** hands each streamed update to your workflow JS. This is the *orchestrator-visible* channel — use it to log, trip an early-exit, or feed a supervisor decision. Note: Pi's agent loop is still step-based, so the safe way to *steer* is between bounded `agent()` calls (see the `supervisor` workflow), not by injecting into a running subagent.
+- **`opts.onProgress(text)`** hands each streamed update to your workflow JS. This is the *orchestrator-visible* channel — use it to log, trip an early-exit, or feed a supervisor decision. Workflow `agent()` calls are one-shot, so workflow steering remains between bounded calls (see `supervisor`). For proactive mid-turn coordination, use an interactive background `spawn_subagent` job with `jobAction:"steer"` or `jobAction:"followup"`.
 
 ```js
 await agent("Do the long thing", {
@@ -59,7 +59,9 @@ await agent("Do the long thing", {
 
 ## Resume-by-replay (journaling)
 
-Wrap expensive steps in `cache(key, () => agent(...))` and run with a stable `args._journal` id. Successful results are persisted to `~/.pi/workflow-journal/<id>.json`; **only successful** steps are journaled, so re-invoking with the same id replays completed steps and resumes a failed run from the first incomplete step instead of restarting from scratch.
+Wrap expensive steps in `cache(key, () => agent(...))` and run with a stable `args._journal` id. Successful results are persisted under `~/.pi/workflow-journal/` using a readable prefix plus a hash of the exact id. Only successful steps are journaled, so re-invoking with the same id replays completed steps and resumes a failed run from the first incomplete step instead of restarting from scratch.
+
+Journal replay is bound to the workflow code, arguments, working directory, parent model, and discovered agent prompts/configuration. Reusing an id with a different execution contract fails closed instead of replaying stale results. Entries are exact JSON values, size-bounded without truncation, merged under an interprocess lock, and published atomically; corrupt or older journal formats also fail closed.
 
 ```js
 workflow({ name: "my-pipeline", args: { _journal: "nightly-2026-06-22" } })
@@ -79,7 +81,7 @@ The result footer reports `journal: <id> (replayed N, computed M)`.
 
 ## Sources
 
-- **`script`** — inline JS string, treated as an async function body. Max 20,000 chars; use a file for larger workflows.
+- **`script`** — inline JS string, treated as an async function body. Max 20,000 chars; always requires explicit interactive approval and is blocked without a UI. Use a committed saved workflow for repeatable code.
 - **`name`** — resolved from the **shared** workflows dir first (`pi-shared/workflows/<name>.js`), then the nearest **project** dir (`.pi/workflows/<name>.js`). Project workflows require project trust or an interactive confirmation.
 - **`scriptPath`** — explicit `.js` file (absolute or relative to `cwd`). Shared files and trusted-project files run directly; untrusted project or external files require interactive approval. Noninteractive external paths must be under `PI_WORKFLOW_ALLOWED_SCRIPT_DIRS`.
 
@@ -123,7 +125,7 @@ workflow({
 
 ## Example: supervisor (checkpoint steering)
 
-A `worker` performs a task; a `reviewer` judges each attempt against a rubric and replies `ACCEPT` or `REVISE: <instruction>`. A `REVISE` redirects the worker's next attempt. The loop is bounded by `maxRounds` and never false-accepts a malformed verdict. This is the safe form of "orchestrator steers mid-session" — steering happens between bounded steps.
+A `worker` performs a task; a `reviewer` judges each attempt against a rubric and replies with exactly `ACCEPT` and no other text, or `REVISE: <instruction>`. A `REVISE` redirects the worker's next attempt. The loop is bounded by `maxRounds`; malformed or decorated accept verdicts do not pass. This is checkpoint steering between bounded steps.
 
 ```
 workflow({
@@ -156,7 +158,7 @@ Each `agent(...)` call spawns an isolated `pi --mode json -p --no-session` subpr
 - **No structured output schema validation.** Return whatever you want; it's serialized to JSON in the result.
 - **No per-call `agentDir` / `agentScope`.**
 - **At most 16 agent calls per workflow by default.** Change shared limits with the `PI_SUBAGENT_*` variables documented in [`../spawn-subagent/README.md`](../spawn-subagent/README.md).
-- **Steering is between steps, not mid-step.** There is no channel to inject messages into a running subagent; use the `supervisor` pattern (reviewer judges each bounded worker step) for course-correction.
+- **Workflow steering is between steps, not mid-step.** Use the `supervisor` pattern for checkpoint course-correction. The separate interactive `spawn_subagent` mode provides acknowledged `steer` and `followup` controls when proactive coordination is required.
 
 These are deliberate v1 scope cuts. Each can become a v2 feature once the reuse need is proven.
 
@@ -167,7 +169,7 @@ Workflow scripts run **in-process** via the `AsyncFunction` constructor — equi
 - Shared workflows committed to `pi-shared/workflows/` — trusted by convention (they travel by git under your control).
 - Project workflows under `.pi/workflows/` — repo-controlled; their code is not read until project trust or explicit interactive approval.
 - Explicit `scriptPath` files are canonicalized with `realpath`; symlink escapes and external paths require approval unless their directory is allowlisted with `PI_WORKFLOW_ALLOWED_SCRIPT_DIRS`.
-- Inline `script` — agent-authored; treat with the same scrutiny as any agent-issued `bash` command.
+- Inline `script` — agent-authored and always gated by an interactive confirmation that shows a source preview and SHA-256 digest. It is blocked in noninteractive contexts.
 
 There is no vm sandbox. This matches the existing trust level of `bash` and `spawn_subagent` in Pi. A sandbox can be added in v2 if workflow sources become less trusted.
 

@@ -17,10 +17,11 @@ export interface ReadyWorkflowSource {
 
 export interface WorkflowSourceApproval {
 	kind: "approval";
-	source: Exclude<WorkflowSourceKind, "inline">;
+	source: WorkflowSourceKind;
 	name?: string;
-	scriptPath: string;
-	reason: "project" | "external";
+	scriptPath?: string;
+	code?: string;
+	reason: "inline" | "project" | "external";
 }
 
 export interface WorkflowSourceError {
@@ -140,7 +141,7 @@ export function resolveWorkflowSource(options: ResolveWorkflowSourceOptions): Wo
 		if (code.length > MAX_INLINE_WORKFLOW_CHARS) {
 			return { kind: "error", error: `Inline script is ${code.length} chars; max is ${MAX_INLINE_WORKFLOW_CHARS}. Use scriptPath or a saved workflow.` };
 		}
-		return { kind: "ready", code, source: "inline" };
+		return { kind: "approval", code, source: "inline", reason: "inline" };
 	}
 
 	if (hasPath) {
@@ -164,6 +165,13 @@ export function resolveWorkflowSource(options: ResolveWorkflowSourceOptions): Wo
 }
 
 export function approveWorkflowSource(request: WorkflowSourceApproval): ReadyWorkflowSource | WorkflowSourceError {
+	if (request.source === "inline") {
+		if (typeof request.code !== "string" || !request.code.trim()) {
+			return { kind: "error", error: "Approved inline workflow source is empty." };
+		}
+		return { kind: "ready", code: request.code, source: "inline" };
+	}
+	if (!request.scriptPath) return { kind: "error", error: "Approved workflow source path is missing." };
 	const canonical = canonicalExistingFile(request.scriptPath);
 	if (!canonical.ok) return { kind: "error", error: canonical.error };
 	if (canonical.path !== request.scriptPath) {

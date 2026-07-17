@@ -18,7 +18,7 @@
  *   - `cwd`                  : the session working directory
  *
  * Sources (exactly one):
- *   - `script`      : inline trusted JS string (function body)
+ *   - `script`      : inline JS string (function body); always requires approval
  *   - `name`        : saved workflow name, resolved from shared then project dirs
  *   - `scriptPath`  : explicit path to a .js workflow file
  *
@@ -33,8 +33,8 @@
  * See README.md for the full guide and examples.
  */
 
+import crypto from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "@mariozechner/pi-ai";
@@ -54,6 +54,12 @@ import {
 } from "../_shared/subagent-scheduler.ts";
 import { getFinalAssistantOutput, runPiAgent } from "../_shared/pi-agent-runner.ts";
 import { PromiseTracker } from "./promise-tracker.ts";
+import {
+	exactJournalValue,
+	openWorkflowJournal,
+	persistWorkflowJournalEntry,
+	type WorkflowJournal,
+} from "./journal.ts";
 import {
 	approveWorkflowSource,
 	configuredWorkflowScriptDirs,
@@ -97,53 +103,6 @@ interface WorkflowDetails {
   journalId?: string;
   replayedKeys?: string[];
   computedKeys?: string[];
-}
-
-/** On-disk journal entry for one cache() key. Only successful results are
- * persisted, so a restart resumes from the first incomplete/failed step. */
-interface JournalEntry {
-  key: string;
-  value: unknown;
-  completedAt: string;
-}
-
-interface Journal {
-  id: string;
-  filePath: string;
-  entries: Map<string, JournalEntry>;
-}
-
-function journalDir(): string {
-  // Persist alongside other pi runtime state under the user home.
-  return path.join(os.homedir(), ".pi", "workflow-journal");
-}
-
-/** Load (or start) a journal for the given run id. Corrupt journals are
- * treated as empty rather than fatal — a clean re-run is always safe. */
-function loadJournal(id: string): Journal {
-  const safeId = id.replace(/[^\w.-]+/g, "_");
-  const filePath = path.join(journalDir(), `${safeId}.json`);
-  const entries = new Map<string, JournalEntry>();
-  try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw) as { entries?: JournalEntry[] };
-    for (const e of parsed.entries ?? []) {
-      if (e && typeof e.key === "string") entries.set(e.key, e);
-    }
-  } catch {
-    // No journal yet, or unreadable/corrupt — start fresh.
-  }
-  return { id, filePath, entries };
-}
-
-function persistJournal(journal: Journal): void {
-  try {
-    fs.mkdirSync(journalDir(), { recursive: true });
-    const payload = { id: journal.id, entries: Array.from(journal.entries.values()) };
-    fs.writeFileSync(journal.filePath, JSON.stringify(payload, null, 2), { encoding: "utf8", mode: 0o600 });
-  } catch {
-    // Journaling is best-effort; failure to persist must not fail the workflow.
-  }
 }
 
 type OnUpdateCallback = (partial: { content: { type: "text"; text: string }[]; details: WorkflowDetails }) => void;
@@ -260,7 +219,7 @@ interface RuntimeOptions {
   signal?: AbortSignal;
   details: WorkflowDetails;
   onUpdate?: OnUpdateCallback;
-  journal?: Journal;
+  journal?: WorkflowJournal;
 }
 
 function buildRuntime(opts: RuntimeOptions) {
@@ -380,6 +339,10 @@ function buildRuntime(opts: RuntimeOptions) {
   // Without a journal it degrades to a plain `await producer()` (no caching).
   const cache = async <T,>(key: string, producer: () => Promise<T>): Promise<T> => {
     const cacheKey = String(key);
+    if (!cacheKey.trim()) throw new Error("Workflow cache key must be non-empty.");
+    if (Buffer.byteLength(cacheKey, "utf8") > 512) {
+      throw new Error("Workflow cache key exceeds 512 UTF-8 bytes.");
+    }
     if (journal) {
       const existing = journal.entries.get(cacheKey);
       if (existing) {
@@ -392,9 +355,12 @@ function buildRuntime(opts: RuntimeOptions) {
     }
     const value = await producer();
     if (journal) {
-      const persistedValue = safeDetailValue(value, config.maxCaptureBytes);
-      journal.entries.set(cacheKey, { key: cacheKey, value: persistedValue, completedAt: new Date().toISOString() });
-      persistJournal(journal);
+      const entry = {
+        key: cacheKey,
+        value: exactJournalValue(value, config.maxCaptureBytes),
+        completedAt: new Date().toISOString(),
+      };
+      await persistWorkflowJournalEntry(journal, entry);
       details.computedKeys = details.computedKeys ?? [];
       if (!details.computedKeys.includes(cacheKey)) details.computedKeys.push(cacheKey);
     }
@@ -527,7 +493,7 @@ return defineTool({
     "Use `spawn_subagent` for ordinary one-off single/parallel/chain delegation where a declarative task list is enough; do not reach for `workflow` for a simple fan-out.",
     `Inside a workflow: \`agent(prompt, {agent})\` runs one Pi subagent (shared agents: scout, planner, reviewer, worker, panelist; default worker) and returns its final text. \`parallel(thunks)\` runs lanes concurrently (max ${config.maxFanout}; host concurrency ${config.maxConcurrency}). \`phase(title)\` and \`log(msg)\` annotate progress.`,
     "Save repeatable workflows under `pi-shared/workflows/<name>.js` (shared, committed) or `.pi/workflows/<name>.js` (project) and invoke them by `name`.",
-    "Workflow scripts run in-process with the same trust level as bash; only run workflows you trust (committed shared workflows or agent-authored inline scripts).",
+    "Workflow scripts run in-process with the same trust level as bash. Prefer committed shared workflows; inline scripts always require explicit interactive approval.",
   ],
   parameters: WorkflowParams,
 
@@ -556,15 +522,27 @@ return defineTool({
       if (!ctx.hasUI) {
         const details = emptyDetails(resolved.source);
         details.status = "failed";
-        details.error = `${resolved.reason === "project" ? "Project" : "External"} workflow requires explicit interactive approval: ${resolved.scriptPath}`;
+        const sourceLabel =
+          resolved.reason === "inline"
+            ? "Inline workflow"
+            : `${resolved.reason === "project" ? "Project" : "External"} workflow ${resolved.scriptPath ?? ""}`.trim();
+        details.error = `${sourceLabel} requires explicit interactive approval.`;
         return { content: [{ type: "text", text: `Error: ${details.error}` }], details, isError: true };
       }
+      const inline = resolved.reason === "inline";
+      const sourceDescription = inline
+        ? `SHA-256: ${crypto.createHash("sha256").update(resolved.code ?? "").digest("hex")}\nPreview:\n${(resolved.code ?? "").slice(0, 800)}`
+        : `Workflow: ${path.basename(resolved.scriptPath!)}\nSource: ${path.dirname(resolved.scriptPath!)}`;
       const ok = await ctx.ui.confirm(
-        resolved.reason === "project" ? "Run project-local workflow?" : "Run external workflow file?",
-        `Workflow: ${path.basename(resolved.scriptPath)}\nSource: ${path.dirname(resolved.scriptPath)}\n\nWorkflow files execute in-process with bash-level trust. Continue only if you trust this file.`,
+        inline
+          ? "Run inline workflow code?"
+          : resolved.reason === "project"
+            ? "Run project-local workflow?"
+            : "Run external workflow file?",
+        `${sourceDescription}\n\nWorkflow code executes in the parent Pi process with bash-level trust. Continue only if you trust this exact source.`,
       );
       if (!ok) {
-        return { content: [{ type: "text", text: "Canceled: workflow file was not approved." }], details: emptyDetails(resolved.source) };
+        return { content: [{ type: "text", text: "Canceled: workflow source was not approved." }], details: emptyDetails(resolved.source) };
       }
       resolved = approveWorkflowSource(resolved);
     }
@@ -605,12 +583,43 @@ return defineTool({
       return { content: [{ type: "text", text: `Error: ${details.error}` }], details, isError: true };
     }
 
-    // Resume-by-replay: enabled when the caller passes args._journal (a stable
-    // run id). Completed cache() keys from a prior run are replayed; a failed
-    // run can be re-invoked with the same id to resume from the first
-    // incomplete step instead of restarting from scratch.
+    // Resume-by-replay is bound to the complete execution contract. Reusing an
+    // id after workflow inputs or agent/model configuration changes fails
+    // closed instead of replaying stale values.
     const journalId = typeof args._journal === "string" && args._journal.trim() ? args._journal.trim() : undefined;
-    const journal = journalId ? loadJournal(journalId) : undefined;
+    let journal: WorkflowJournal | undefined;
+    if (journalId) {
+      const journalArgs = Object.fromEntries(Object.entries(args).filter(([key]) => key !== "_journal"));
+      const hashText = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
+      try {
+        journal = openWorkflowJournal({
+          id: journalId,
+          context: {
+            workflow: {
+              source: source.source,
+              name: source.name,
+              scriptPath: source.scriptPath,
+              codeSha256: hashText(source.code),
+            },
+            args: journalArgs,
+            cwd: path.resolve(ctx.cwd),
+            parentModel,
+            agents: agents.map((agent) => ({
+              name: agent.name,
+              source: agent.source,
+              filePath: agent.filePath,
+              model: agent.model,
+              tools: agent.tools,
+              promptSha256: hashText(agent.systemPrompt),
+            })),
+          },
+        });
+      } catch (error: unknown) {
+        details.status = "failed";
+        details.error = error instanceof Error ? error.message : String(error);
+        return { content: [{ type: "text", text: `Error: ${details.error}` }], details, isError: true };
+      }
+    }
     if (journal) {
       details.journalId = journal.id;
       details.replayedKeys = [];

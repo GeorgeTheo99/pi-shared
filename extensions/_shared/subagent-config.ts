@@ -14,6 +14,7 @@ export const DEFAULT_SUBAGENT_MAX_EVENT_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_SUBAGENT_MAX_TASK_BYTES = 256 * 1024;
 export const DEFAULT_SUBAGENT_HEARTBEAT_MS = 5 * 1000;
 export const DEFAULT_SUBAGENT_LEASE_MS = 60 * 1000;
+export const DEFAULT_SUBAGENT_BACKGROUND_AGING_MS = 60 * 1000;
 
 export interface SubagentConfig {
 	maxFanout: number;
@@ -30,6 +31,8 @@ export interface SubagentConfig {
 	maxTaskBytes: number;
 	heartbeatMs: number;
 	leaseMs: number;
+	backgroundAgingMs: number;
+	resourceLimits: Record<string, number>;
 	stateDir: string;
 	errors: string[];
 }
@@ -62,6 +65,35 @@ function expandTilde(value: string): string {
 	if (value === "~") return os.homedir();
 	if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
 	return value;
+}
+
+function parseResourceLimits(env: Env, errors: string[]): Record<string, number> {
+	const raw = env.PI_SUBAGENT_RESOURCE_LIMITS?.trim();
+	if (!raw) return {};
+	let value: unknown;
+	try {
+		value = JSON.parse(raw);
+	} catch {
+		errors.push("PI_SUBAGENT_RESOURCE_LIMITS must be a JSON object such as {\"openai-codex\":4}.");
+		return {};
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		errors.push("PI_SUBAGENT_RESOURCE_LIMITS must be a JSON object.");
+		return {};
+	}
+	const limits: Record<string, number> = {};
+	for (const [key, limit] of Object.entries(value)) {
+		if (!/^[A-Za-z0-9._:-]{1,100}$/.test(key)) {
+			errors.push(`PI_SUBAGENT_RESOURCE_LIMITS has an invalid resource key: ${JSON.stringify(key)}.`);
+			continue;
+		}
+		if (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 32) {
+			errors.push(`PI_SUBAGENT_RESOURCE_LIMITS.${key} must be an integer between 1 and 32.`);
+			continue;
+		}
+		limits[key] = Number(limit);
+	}
+	return limits;
 }
 
 export function loadSubagentConfig(env: Env = process.env): SubagentConfig {
@@ -157,6 +189,15 @@ export function loadSubagentConfig(env: Env = process.env): SubagentConfig {
 		10 * 60 * 1000,
 		errors,
 	);
+	const backgroundAgingMs = parseInteger(
+		env,
+		"PI_SUBAGENT_BACKGROUND_AGING_MS",
+		DEFAULT_SUBAGENT_BACKGROUND_AGING_MS,
+		100,
+		60 * 60 * 1000,
+		errors,
+	);
+	const resourceLimits = parseResourceLimits(env, errors);
 	if (leaseMs < heartbeatMs * 3) {
 		errors.push("PI_SUBAGENT_LEASE_MS must be at least three times PI_SUBAGENT_HEARTBEAT_MS.");
 	}
@@ -181,6 +222,8 @@ export function loadSubagentConfig(env: Env = process.env): SubagentConfig {
 		maxTaskBytes,
 		heartbeatMs,
 		leaseMs,
+		backgroundAgingMs,
+		resourceLimits,
 		stateDir,
 		errors,
 	};
@@ -196,5 +239,8 @@ export function subagentConfigError(config: SubagentConfig): string | undefined 
 }
 
 export function formatSubagentLimits(config: SubagentConfig): string {
-	return `fan-out ${config.maxFanout}, host concurrency ${config.maxConcurrency}, background jobs ${config.maxBackgroundJobs}, depth ${config.depth}/${config.maxDepth}`;
+	const resources = Object.entries(config.resourceLimits)
+		.map(([key, limit]) => `${key}:${limit}`)
+		.join(", ");
+	return `fan-out ${config.maxFanout}, host concurrency ${config.maxConcurrency}${resources ? `, resource pools ${resources}` : ""}, background jobs ${config.maxBackgroundJobs}, depth ${config.depth}/${config.maxDepth}`;
 }

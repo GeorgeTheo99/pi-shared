@@ -88,8 +88,9 @@ return {
 };
 
 function parseVerdict(text) {
-  const firstLine = String(text ?? "").trim().split("\n")[0]?.trim() ?? "";
-  if (/^accept\b/i.test(firstLine)) return { kind: "ACCEPT" };
+  const normalized = String(text ?? "").trim();
+  if (/^accept$/i.test(normalized)) return { kind: "ACCEPT" };
+  const firstLine = normalized.split("\n")[0]?.trim() ?? "";
   const m = firstLine.match(/^revise\s*:\s*(.+)$/i);
   if (m && m[1].trim()) return { kind: "REVISE", instruction: m[1].trim() };
   // Malformed verdict: never silently accept. Steer using the whole reply.
