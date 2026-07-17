@@ -268,7 +268,8 @@ def test_launcher_and_models_ids_agree(tmp_path):
     assert "pi-list()" in launchers
     assert "pi-restart()" in launchers
     # pi-agent-dir wrapping
-    assert "PI_CODING_AGENT_DIR='/tmp/.pi-omlx/agent'" in launchers
+    expected_agent_dir = str(Path("/tmp/.pi-omlx/agent").resolve())
+    assert f"PI_CODING_AGENT_DIR={expected_agent_dir!r}" in launchers
     # provider name passed as 1st arg to _pi_gw_launch
     assert "_pi_gw_launch 'ls99-models'" in launchers
     # NO claude-*/codex-* FUNCTION definitions (standardize on pi).

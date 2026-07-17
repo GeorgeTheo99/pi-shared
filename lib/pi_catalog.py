@@ -371,11 +371,15 @@ def render_launchers(
     *,
     provider_name: str = "ls99-models",
     gateway_url: str = "http://localhost:9111",
+    gateway_api_key: str = "cloud",
     pi_agent_dir: str | None = None,
     ls99_extras: bool = False,
     aliases_path: str | None = None,
     models_out: str | None = None,
     launchers_out: str | None = None,
+    shared_dir: str | None = None,
+    omlx_status_path: str | None = None,
+    omlx_status_url: str | None = None,
 ) -> str:
     """zsh snippet defining pi-<alias>() quick-start functions + pi-list + pi-restart.
 
@@ -470,6 +474,8 @@ def render_launchers(
     ]
     if models_out or launchers_out:
         lines += ['  echo "  pi-regen                       regenerate this launcher + models.json from the alias catalog"']
+    if launchers_out and shared_dir:
+        lines += ['  echo "  pi-shared-update               pull pi-shared, regenerate artifacts, and reload this shell"']
     lines += ['}', ""]
 
     # pi-regen: re-run pi-catalog with the same args used to generate this file.
@@ -480,9 +486,15 @@ def render_launchers(
             launchers_out=launchers_out,
             provider_name=provider_name,
             gateway_url=gateway_url,
+            gateway_api_key=gateway_api_key,
             pi_agent_dir=pi_agent_dir,
             ls99_extras=ls99_extras,
+            shared_dir=shared_dir,
+            omlx_status_path=omlx_status_path,
+            omlx_status_url=omlx_status_url,
         )
+    if launchers_out and shared_dir:
+        lines += _render_pi_shared_update(launchers_out=launchers_out, shared_dir=shared_dir)
 
     lines += _render_pi_restart(
         auto_regen=bool(models_out or launchers_out),
@@ -494,22 +506,29 @@ def render_launchers(
     return "\n".join(lines) + "\n"
 
 
-def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, gateway_url, pi_agent_dir, ls99_extras) -> list[str]:
+def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, gateway_url, gateway_api_key, pi_agent_dir, ls99_extras, shared_dir, omlx_status_path, omlx_status_url) -> list[str]:
     # Build the pi-catalog invocation that reproduces this launcher. Bakes the
     # machine-specific paths so `pi-regen` refreshes both outputs in one call.
     import shlex
-    cmd = ["pi-catalog"]
+    catalog_bin = str(Path(shared_dir) / "bin" / "pi-catalog") if shared_dir else "pi-catalog"
+    cmd = [catalog_bin]
     if aliases_path:
         cmd += ["--aliases", aliases_path]
     if models_out:
         cmd += ["--models-out", models_out]
     if launchers_out:
         cmd += ["--launchers-out", launchers_out]
-    cmd += ["--provider-name", provider_name, "--gateway-url", gateway_url]
+    cmd += ["--provider-name", provider_name, "--gateway-url", gateway_url, "--gateway-api-key", gateway_api_key]
     if pi_agent_dir:
         cmd += ["--pi-agent-dir", pi_agent_dir]
+    if omlx_status_path:
+        cmd += ["--omlx-status", omlx_status_path]
+    if omlx_status_url:
+        cmd += ["--omlx-status-url", omlx_status_url]
     if ls99_extras:
         cmd += ["--ls99-extras"]
+    if shared_dir:
+        cmd += ["--shared-dir", shared_dir]
     cmd_str = " ".join(shlex.quote(c) for c in cmd)
     return [
         "pi-regen() {",
@@ -517,6 +536,62 @@ def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, 
         "  # (model-gateway writes the alias file; pi-catalog renders Pi artifacts.)",
         f'  echo "Regenerating Pi artifacts from {aliases_path or "the alias catalog"}..."',
         f"  {cmd_str} \"$@\"",
+        "}",
+        "",
+    ]
+
+
+def _render_pi_shared_update(*, launchers_out: str, shared_dir: str) -> list[str]:
+    """Render an in-shell updater bound to the generating pi-shared checkout.
+
+    This must be a shell function—not a standalone script or Git hook—because
+    only the current shell can load the regenerated launcher definitions.
+    """
+    import shlex
+
+    launcher = shlex.quote(launchers_out)
+    repo = shlex.quote(shared_dir)
+    catalog = shlex.quote(str(Path(shared_dir) / "bin" / "pi-catalog"))
+    return [
+        "pi-shared-update() {",
+        f"  local repo_dir={repo} catalog_bin={catalog} dirty actual_repo",
+        '  actual_repo="$(git -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null)"',
+        '  if [ -z "$actual_repo" ] || [ "$actual_repo" != "$repo_dir" ] || [ ! -x "$catalog_bin" ]; then',
+        '    echo "ERROR: configured pi-shared checkout is invalid: $repo_dir" >&2',
+        "    return 1",
+        "  fi",
+        '  if ! git -C "$repo_dir" symbolic-ref -q HEAD >/dev/null; then',
+        '    echo "ERROR: pi-shared checkout has a detached HEAD: $repo_dir" >&2',
+        "    return 1",
+        "  fi",
+        '  if ! git -C "$repo_dir" rev-parse --abbrev-ref "@{upstream}" >/dev/null 2>&1; then',
+        '    echo "ERROR: pi-shared branch has no upstream: $repo_dir" >&2',
+        "    return 1",
+        "  fi",
+        '  dirty="$(git -C "$repo_dir" status --porcelain --untracked-files=all)" || return 1',
+        '  if [ -n "$dirty" ]; then',
+        '    echo "ERROR: pi-shared checkout is dirty; commit, stash, or discard changes first: $repo_dir" >&2',
+        "    return 1",
+        "  fi",
+        '  echo "Updating pi-shared in $repo_dir..."',
+        '  if ! git -C "$repo_dir" pull --ff-only; then',
+        '    echo "ERROR: pi-shared pull failed; artifacts were not regenerated." >&2',
+        "    return 1",
+        "  fi",
+        '  if ! pi-regen "$@"; then',
+        '    echo "ERROR: pi-shared updated, but artifact regeneration failed." >&2',
+        "    return 1",
+        "  fi",
+        f"  if ! zsh -n {launcher}; then",
+        '    echo "ERROR: regenerated Pi launcher failed zsh syntax validation." >&2',
+        "    return 1",
+        "  fi",
+        f"  if ! source {launcher}; then",
+        '    echo "ERROR: regenerated Pi launcher could not be loaded into this shell." >&2',
+        "    return 1",
+        "  fi",
+        '  echo "pi-shared updated; Pi artifacts regenerated and shell launchers reloaded."',
+        '  echo "Run /reload in any open Pi sessions."',
         "}",
         "",
     ]
@@ -730,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gateway-url", default="http://localhost:9111", help="endpoint Pi providers point at")
     parser.add_argument("--gateway-api-key", default="cloud", help="apiKey for the Pi provider")
     parser.add_argument("--pi-agent-dir", default=None, help="PI_CODING_AGENT_DIR the launcher sets (default: none = default profile)")
+    parser.add_argument("--shared-dir", type=Path, default=Path(__file__).resolve().parents[1], help="pi-shared checkout used by pi-shared-update (default: this renderer's checkout)")
     parser.add_argument("--omlx-status", type=Path, default=None, help="optional oMLX /v1/models/status JSON file for thinking_default fallback")
     parser.add_argument("--omlx-status-url", default=None, help="optional oMLX status URL (default: http://localhost:9110/v1/models/status when --omlx-status not given)")
     parser.add_argument("--ls99-extras", action="store_true", help="include pi-default + pi-openai (ls99 opt-in layer)")
@@ -748,16 +824,18 @@ def main(argv: list[str] | None = None) -> int:
 
     # omlx_status is optional; only fetch if it could matter (local models present).
     has_local = any(not _is_cloud_key(k) for k in aliases)
+    omlx_status_path = args.omlx_status.expanduser().resolve() if args.omlx_status else None
     omlx_status: dict = {}
     if has_local:
-        if args.omlx_status:
-            omlx_status = _load_omlx_status(args.omlx_status, None)
+        if omlx_status_path:
+            omlx_status = _load_omlx_status(omlx_status_path, None)
         elif args.omlx_status_url:
             omlx_status = _load_omlx_status(None, args.omlx_status_url)
         else:
             omlx_status = _load_omlx_status(None, "http://localhost:9110/v1/models/status")
 
-    pi_agent_dir = str(Path(args.pi_agent_dir).expanduser()) if args.pi_agent_dir else None
+    pi_agent_dir = str(Path(args.pi_agent_dir).expanduser().resolve()) if args.pi_agent_dir else None
+    shared_dir = str(args.shared_dir.expanduser().resolve())
 
     renders: list[tuple[Path, str, str]] = []
     if args.models_out:
@@ -774,11 +852,15 @@ def main(argv: list[str] | None = None) -> int:
             aliases,
             provider_name=args.provider_name,
             gateway_url=args.gateway_url,
+            gateway_api_key=args.gateway_api_key,
             pi_agent_dir=pi_agent_dir,
             ls99_extras=args.ls99_extras,
-            aliases_path=str(args.aliases.expanduser()),
-            models_out=str(args.models_out.expanduser()) if args.models_out else None,
-            launchers_out=str(args.launchers_out.expanduser()) if args.launchers_out else None,
+            aliases_path=str(args.aliases.expanduser().resolve()),
+            models_out=str(args.models_out.expanduser().resolve()) if args.models_out else None,
+            launchers_out=str(args.launchers_out.expanduser().resolve()) if args.launchers_out else None,
+            shared_dir=shared_dir,
+            omlx_status_path=str(omlx_status_path) if omlx_status_path else None,
+            omlx_status_url=args.omlx_status_url,
         )
         renders.append((args.launchers_out, launchers, "pi-launchers.zsh"))
 

@@ -130,7 +130,7 @@ pi-catalog --aliases ~/.claude/model-aliases.json \
   --pi-agent-dir ~/.pi-omlx/agent --ls99-extras
 ```
 
-The generated launcher bakes in a `pi-regen()` function (the same invocation) so it can refresh itself + `models.json` after a catalog change. `pi-restart model-gw` auto-calls `pi-regen` — it delegates to the portable `model-gateway restart` command when available, falls back to `server-ci restart --model-gw` on ls99/dev-server installs, then refreshes the Pi artifacts. No launchd watcher needed.
+The generated launcher bakes in a `pi-regen()` function (the same invocation) so it can refresh itself + `models.json` after a catalog change. It also provides `pi-shared-update`, which safely fast-forwards the generating `pi-shared` checkout, regenerates the machine-specific artifacts, validates the launcher, and sources it into the current shell. `pi-restart model-gw` auto-calls `pi-regen` — it delegates to the portable `model-gateway restart` command when available, falls back to `server-ci restart --model-gw` on ls99/dev-server installs, then refreshes the Pi artifacts. No Git or launchd watcher is needed.
 
 For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databricks directly), point `--gateway-url` at the endpoint and `--provider-name` at the Pi provider, and feed a catalog alias file from whatever source is appropriate.
 
@@ -358,11 +358,21 @@ Then start Pi from `~/local_code` and run:
 
 If shared skills/extensions change on either machine, make the change in this repo, commit it here, push it, pull it on the other machine, and then run `/reload`.
 
-If shared skills/extensions change on either machine:
+Use the generated updater on either machine:
+
+```bash
+pi-shared-update
+```
+
+It requires a clean checkout on a branch with an upstream, runs `git pull --ff-only`, regenerates the configured Pi artifacts with that machine's existing catalog settings, validates the launcher with `zsh -n`, and sources it into the current shell. Run `/reload` in any Pi sessions that were already open.
+
+After first pulling the release that introduces `pi-shared-update`, bootstrap the current shell once:
 
 ```bash
 cd ~/local_code/pi-shared
-git pull
+git pull --ff-only
+pi-regen
+source ~/.pi/generated/pi-launchers.zsh
 ```
 
 If `package.json` dependencies changed for an extension, reinstall in that extension directory, then run `/reload` in Pi.
