@@ -23,7 +23,7 @@ import {
 
 const OPENAI_CODEX_PROVIDER = "openai-codex";
 const OPENAI_CODEX_AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
-const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 export interface PiAgentUsage {
 	input: number;

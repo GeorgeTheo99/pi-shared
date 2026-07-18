@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AuthStorage, ModelRegistry, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 interface PanelConfig {
@@ -107,24 +107,36 @@ function toPanelModel(model: any, source: PanelModel["source"] = "current", agen
   };
 }
 
-function loadProfileModels(agentDir: string): PanelModel[] {
+export async function loadProfileModels(agentDir: string): Promise<PanelModel[]> {
   const expanded = expandTilde(agentDir);
   const modelsPath = path.join(expanded, "models.json");
   const authPath = path.join(expanded, "auth.json");
   if (!fs.existsSync(modelsPath)) return [];
   try {
-    const registry = ModelRegistry.create(AuthStorage.create(authPath), modelsPath);
-    return registry.getAvailable().map((model) => toPanelModel(model, "profile", expanded));
+    const sdk = (await import("@earendil-works/pi-coding-agent")) as any;
+    if (sdk.ModelRuntime?.create) {
+      const runtime = await sdk.ModelRuntime.create({ authPath, modelsPath, allowModelNetwork: false });
+      const available = await runtime.getAvailable();
+      return available.map((model: any) => toPanelModel(model, "profile", expanded));
+    }
+    // Pi <= 0.80.7 compatibility. Pi 0.80.8 replaced these factories with
+    // the async ModelRuntime API above.
+    if (sdk.AuthStorage?.create && sdk.ModelRegistry?.create) {
+      const registry = sdk.ModelRegistry.create(sdk.AuthStorage.create(authPath), modelsPath);
+      return registry.getAvailable().map((model: any) => toPanelModel(model, "profile", expanded));
+    }
+    return [];
   } catch {
     return [];
   }
 }
 
-function availablePanelModels(ctx: { modelRegistry: any; cwd: string }): PanelModel[] {
+async function availablePanelModels(ctx: { modelRegistry: any; cwd: string }): Promise<PanelModel[]> {
   const config = loadPanelConfig(ctx.cwd);
   const models = ctx.modelRegistry.getAvailable().map((model: any) => toPanelModel(model));
   const profileDirs = config.modelProfileDirs ?? defaultProfileDirs();
-  for (const dir of profileDirs) models.push(...loadProfileModels(dir));
+  const profileModels = await Promise.all(profileDirs.map((dir) => loadProfileModels(dir)));
+  for (const items of profileModels) models.push(...items);
 
   const seen = new Set<string>();
   return models.filter((model) => {
@@ -252,7 +264,7 @@ export default function (pi: ExtensionAPI) {
     description: "Ask an alternate-model Pi panelist for a second opinion, or compare multiple models",
     handler: async (args, ctx) => {
       const trimmed = args.trim();
-      const models = availablePanelModels(ctx);
+      const models = await availablePanelModels(ctx);
 
       if (["--help", "help", "-h"].includes(trimmed)) {
         pi.sendMessage({
@@ -291,7 +303,7 @@ export default function (pi: ExtensionAPI) {
       search: Type.Optional(Type.String({ description: "Optional model/provider/family search pattern" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const models = availablePanelModels(ctx);
+      const models = await availablePanelModels(ctx);
       return {
         content: [{ type: "text", text: formatModelList(models, params.search) }],
         details: { models: models.filter((model) => !params.search || matchesPattern(model, params.search)) },
@@ -310,7 +322,7 @@ export default function (pi: ExtensionAPI) {
       count: Type.Optional(Type.Number({ description: "Number of models for compare mode. Defaults to config or 3." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const allModels = availablePanelModels(ctx);
+      const allModels = await availablePanelModels(ctx);
       const config = loadPanelConfig(ctx.cwd);
       const currentModel = params.currentModel ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
       const { selected, current, mode, unresolved } = selectModels(allModels, config, {

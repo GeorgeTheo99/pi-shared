@@ -4,7 +4,8 @@
  * Lazy tool-bundle loader driven by `pi-shared/master_integration_list.yaml`.
  *
  * - Hides non-default bundles' tools at startup via `pi.setActiveTools`.
- * - Exposes router tools so the model can load/unload/list bundles on demand.
+ * - Exposes router tools so the model can load/unload/list bundles on demand;
+ *   newly added tools are available to the next model response in the same run.
  * - Auto-loads bundles whose regex `triggers` match the user message.
  * - Injects `<available_bundles>` into the system prompt with NL descriptions
  *   so the model can self-discover when to load each bundle.
@@ -610,23 +611,17 @@ function registerRouterTools(pi: ExtensionAPI, state: ExtensionState): void {
 		name: "enterprise_load_bundle",
 		label: "Load Bundle",
 		description:
-			"Load an enterprise tool bundle by name, making its tools callable on the next user message. Use when a bundle's <description> in <available_bundles> matches the user's intent. The active-tool budget is enforced automatically — loading may evict the least-recently-used bundle.",
+			"Load an enterprise tool bundle by name, making its tools callable on the next model response in the same run. Use when a bundle's <description> in <available_bundles> matches the user's intent. The active-tool budget is enforced automatically — loading may evict the least-recently-used bundle.",
 		parameters: Type.Object({
 			name: Type.String({ description: "Bundle name from <available_bundles>" }),
 		}),
 		async execute(_id, params) {
 			if (!state.master) {
-				return {
-					content: [{ type: "text", text: "No master_integration_list.yaml found." }],
-					isError: true,
-				};
+				throw new Error("No master_integration_list.yaml found.");
 			}
 			const r = loadBundle(state, params.name, "model");
 			if (!r.ok) {
-				return {
-					content: [{ type: "text", text: r.reason || "load failed" }],
-					isError: true,
-				};
+				throw new Error(r.reason || "load failed");
 			}
 			applyActiveSet(pi, state);
 			const b = state.bundles.get(params.name)!;
@@ -637,7 +632,7 @@ function registerRouterTools(pi: ExtensionAPI, state: ExtensionState): void {
 						text:
 							`Loaded bundle "${params.name}" (${b.tools.length} tools).\n\n` +
 							`Tools now active: ${pi.getActiveTools().length}.\n` +
-							`These tools become callable on the NEXT user/assistant turn (pi snapshots tools per prompt).`,
+							"These tools are callable on the next model response in this run.",
 					},
 				],
 				details: { bundle: params.name, tools: b.tools },
@@ -656,10 +651,7 @@ function registerRouterTools(pi: ExtensionAPI, state: ExtensionState): void {
 		async execute(_id, params) {
 			const r = unloadBundle(state, params.name);
 			if (!r.ok) {
-				return {
-					content: [{ type: "text", text: r.reason || "unload failed" }],
-					isError: true,
-				};
+				throw new Error(r.reason || "unload failed");
 			}
 			applyActiveSet(pi, state);
 			return {

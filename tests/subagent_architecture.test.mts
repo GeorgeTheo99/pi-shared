@@ -40,6 +40,11 @@ test("nested delegation is blocked in child CLI arguments as defense in depth", 
 	assert.match(runner, /spawn_subagent,workflow/);
 });
 
+test("subagent model overrides recognize Pi's max thinking suffix", () => {
+	const runner = read("extensions/_shared/pi-agent-runner.ts");
+	assert.match(runner, /THINKING_LEVELS[^\n]+"xhigh", "max"/);
+});
+
 test("workflow tracks even fire-and-forget agent promises before returning", () => {
 	const workflow = read("extensions/workflow/index.ts");
 	assert.match(workflow, /new PromiseTracker<string>\(\)/);

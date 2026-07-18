@@ -25,16 +25,16 @@ PI_SHARED_DIR="${PI_SHARED_DIR:-$_DEFAULT_PI_SHARED_DIR}"
 PI_LOCAL_EXTENSIONS_DIR="${PI_LOCAL_EXTENSIONS_DIR:-$HOME/local_code/pi-databricks/extensions}"
 if [[ -z "${PI_INSTALL_DIR:-}" ]]; then
   for _pi_install_candidate in \
-    "/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent" \
     "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent" \
-    "/usr/local/lib/node_modules/@mariozechner/pi-coding-agent" \
-    "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent"; do
+    "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent" \
+    "/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent" \
+    "/usr/local/lib/node_modules/@mariozechner/pi-coding-agent"; do
     if [[ -f "$_pi_install_candidate/dist/core/compaction/compaction.js" ]]; then
       PI_INSTALL_DIR="$_pi_install_candidate"
       break
     fi
   done
-  PI_INSTALL_DIR="${PI_INSTALL_DIR:-/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent}"
+  PI_INSTALL_DIR="${PI_INSTALL_DIR:-/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent}"
 fi
 
 mkdir -p "$PI_OMLX_AGENT_DIR"
@@ -69,12 +69,10 @@ elif settings.get("extensions") == ["../../local_code/pi-databricks/extensions"]
     settings.pop("extensions", None)
 settings["skills"] = ["~/.codex/skills"]
 settings["enableSkillCommands"] = True
-# Default thinking on for every reasoning model in this profile. Local
-# Qwen/GLM/Gemma/DeepSeek-V4 chat-template models only expose "high" in
-# their thinkingLevelMap (the boolean enable_thinking toggle); cloud graded
-# reasoning models also accept "high". Picking "high" is therefore valid
-# for every model and keeps thinking on by default. Override per-session
-# with /thinking off when needed.
+# Default thinking on for reasoning models in this profile. Pi clamps this
+# preference to each model's supported levels (for example, max-only Kimi K3
+# clamps upward), while local boolean-thinking models expose high as their on
+# state. Override per-session with /thinking off when the model permits it.
 settings.setdefault("defaultThinkingLevel", "high")
 
 path.write_text(json.dumps(settings, indent=2) + "\n")
@@ -147,41 +145,19 @@ done
 if [[ -n "$OPENAI_COMPLETIONS_JS" ]]; then
   if ! python3 - "$OPENAI_COMPLETIONS_JS" <<'PY'
 from pathlib import Path
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 
 path = Path(sys.argv[1])
 text = path.read_text()
 original = text
 
-old1 = '''function hasToolHistory(messages) {
-    for (const msg of messages) {
-        if (msg.role === "toolResult") {
-            return true;
-        }
-        if (msg.role === "assistant") {
-            if (msg.content.some((block) => block.type === "toolCall")) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-function isTextContentBlock(block) {
+filter_marker = '''function isTextContentBlock(block) {
 '''
-new1 = '''function hasToolHistory(messages) {
-    for (const msg of messages) {
-        if (msg.role === "toolResult") {
-            return true;
-        }
-        if (msg.role === "assistant") {
-            if (msg.content.some((block) => block.type === "toolCall")) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-function createDsmlToolMarkupFilter(enabled) {
+filter_impl = '''function createDsmlToolMarkupFilter(enabled) {
     let pending = "";
     let suppressing = false;
     const markers = ["<｜DSML｜", "</｜DSML｜"];
@@ -229,12 +205,11 @@ function createDsmlToolMarkupFilter(enabled) {
         },
     };
 }
-function isTextContentBlock(block) {
 '''
 if "function createDsmlToolMarkupFilter" not in text:
-    if old1 not in text:
-        raise SystemExit(f"Expected hasToolHistory insertion point not found in {path}")
-    text = text.replace(old1, new1, 1)
+    if filter_marker not in text:
+        raise SystemExit(f"Expected text-content helper not found in {path}")
+    text = text.replace(filter_marker, filter_impl + filter_marker, 1)
 
 old2 = '''            const ensureTextBlock = () => {
                 if (!textBlock) {
@@ -323,31 +298,64 @@ if "const flushDelta = dsmlTextFilter.flush();" not in text:
         raise SystemExit(f"Expected final finalize loop not found in {path}")
     text = text.replace(old4, new4, 1)
 
-old5 = '''        sendSessionAffinityHeaders: model.compat.sendSessionAffinityHeaders ?? detected.sendSessionAffinityHeaders,
-        supportsLongCacheRetention: model.compat.supportsLongCacheRetention ?? detected.supportsLongCacheRetention,
-    };
-'''
-new5 = '''        sendSessionAffinityHeaders: model.compat.sendSessionAffinityHeaders ?? detected.sendSessionAffinityHeaders,
-        supportsLongCacheRetention: model.compat.supportsLongCacheRetention ?? detected.supportsLongCacheRetention,
-        stripDsmlToolMarkup: model.compat.stripDsmlToolMarkup ?? false,
-    };
+compat_marker = '''        supportsLongCacheRetention: model.compat.supportsLongCacheRetention ?? detected.supportsLongCacheRetention,
 '''
 if "stripDsmlToolMarkup: model.compat.stripDsmlToolMarkup" not in text:
-    if old5 not in text:
+    if compat_marker not in text:
         raise SystemExit(f"Expected getCompat tail block not found in {path}")
-    text = text.replace(old5, new5, 1)
+    text = text.replace(
+        compat_marker,
+        compat_marker + "        stripDsmlToolMarkup: model.compat.stripDsmlToolMarkup ?? false,\n",
+        1,
+    )
 
-if text != original:
+required_markers = [
+    "function createDsmlToolMarkupFilter(enabled)",
+    "const dsmlTextFilter = createDsmlToolMarkupFilter(!!compat.stripDsmlToolMarkup);",
+    "let contentDelta = choice.delta.content;",
+    "const flushDelta = dsmlTextFilter.flush();",
+    "stripDsmlToolMarkup: model.compat.stripDsmlToolMarkup ?? false,",
+]
+for marker in required_markers:
+    count = text.count(marker)
+    if count != 1:
+        raise SystemExit(f"Invalid DSML patch state in {path}: expected one {marker!r}, found {count}")
+
+node = shutil.which("node")
+if not node:
+    raise SystemExit("node is required to syntax-check the patched Pi provider")
+
+if text == original:
+    checked = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
+    if checked.returncode != 0:
+        raise SystemExit(f"Patched Pi provider is invalid: {checked.stderr.strip()}")
+else:
     backup = path.with_suffix(path.suffix + ".pre-dsml-filter.bak")
     if not backup.exists():
         backup.write_text(original)
-    path.write_text(text)
+
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".js", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(fd, path.stat().st_mode & 0o777)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        checked = subprocess.run([node, "--check", str(temporary)], capture_output=True, text=True)
+        if checked.returncode != 0:
+            raise SystemExit(f"Refusing invalid patched Pi provider: {checked.stderr.strip()}")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 PY
   then
-    echo "warning: openai-completions DSML filter patch did not apply (Pi version may have changed); skipping" >&2
+    echo "error: openai-completions DSML filter patch did not apply (Pi version may have changed)" >&2
+    exit 1
   fi
 else
-  echo "warning: Pi OpenAI completions provider not found in dist/api/ or dist/providers/; skipping DSML filter patch" >&2
+  echo "error: Pi OpenAI completions provider not found in dist/api/ or dist/providers/" >&2
+  exit 1
 fi
 
 # GLM-5.2 support now ships upstream in oMLX as the `omlx.patches.glm_moe_dsa`

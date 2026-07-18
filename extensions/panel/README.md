@@ -42,7 +42,7 @@ Config values are model patterns, not hardcoded shared defaults. They are resolv
 
 ## Notes
 
-- Model discovery uses Pi internals (`ctx.modelRegistry` and `ModelRegistry`) rather than shelling out to `pi --list-models`.
+- Model discovery uses Pi's extension-facing `ctx.modelRegistry` for the active profile and async `ModelRuntime` instances for configured alternate profiles rather than shelling out to `pi --list-models` (with the legacy registry factory retained for Pi 0.80.7).
 - Compare mode depends on `spawn_subagent` task-level `model` and `agentDir` overrides (`tasks[].model`, `tasks[].agentDir`).
 - Alternate profiles load Pi settings/extensions from that profile; only use trusted profile directories.
 - The `panelist` agent omits `tools:` frontmatter, so spawned panelists get a full Pi session; its prompt tells them to default to read-only unless implementation is explicitly requested.

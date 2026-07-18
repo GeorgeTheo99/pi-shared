@@ -74,8 +74,8 @@ def _pi_hints(meta: dict) -> dict:
     """Optional Pi-specific passthrough hints from the gateway catalog.
 
     The gateway carries an opaque ``pi:`` block per model (id/name/reasoning/
-    compat) so machine-local config can shape the rendered Pi artifacts without
-    this module needing provider-specific knowledge.
+    thinkingLevelMap/compat) so machine-local config can shape the rendered Pi
+    artifacts without this module needing provider-specific knowledge.
     """
     hints = meta.get("pi")
     return hints if isinstance(hints, dict) else {}
@@ -158,6 +158,11 @@ def _reasoning_kind(key: str, meta: dict, status: dict) -> str:
     if provider == "openrouter" and thinking in THINKING_VALUES:
         return "openrouter"
 
+    if provider in {"moonshot", "moonshotai", "moonshotai-cn"} and thinking in THINKING_VALUES:
+        model_id = str(meta.get("provider_model_id") or meta.get("name") or "").lower()
+        if model_id == "kimi-k3":
+            return "kimi-k3"
+
     if provider == "openai" and thinking in THINKING_VALUES:
         # GPT-5.x rejects some reasoning+tools shapes on Chat Completions.
         return "openai-responses"
@@ -186,6 +191,11 @@ def _apply_reasoning(model: dict, kind: str, meta: dict) -> None:
         return
     model["reasoning"] = True
     thinking = meta.get("thinking") or ""
+    identities = {
+        str(meta.get(field) or "").lower()
+        for field in ("provider_model_id", "name", "omlx_id")
+        if meta.get(field)
+    }
     level_map: dict = {}
     if thinking == "always":
         level_map["off"] = None
@@ -194,10 +204,8 @@ def _apply_reasoning(model: dict, kind: str, meta: dict) -> None:
         # Boolean chat_template_kwargs.enable_thinking toggle, not graded effort.
         # Expose "high" as the on state; other levels collapse to it.
         model["compat"] = {"thinkingFormat": "qwen-chat-template"}
-        level_map.update({"minimal": None, "low": None, "medium": None, "xhigh": None})
+        level_map.update({"minimal": None, "low": None, "medium": None, "xhigh": None, "max": None})
     elif kind == "local-glm":
-        # GLM-5.2 template supports graded reasoning_effort (high/max) via
-        # chat_template_kwargs. Carry both enable_thinking and reasoning_effort.
         model["compat"] = {
             "thinkingFormat": "chat-template",
             "chatTemplateKwargs": {
@@ -206,18 +214,76 @@ def _apply_reasoning(model: dict, kind: str, meta: dict) -> None:
                 "reasoning_effort": {"$var": "thinking.effort", "omitWhenOff": True},
             },
         }
-        level_map.update({"minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max"})
+        if any("glm-5.2" in identity for identity in identities):
+            # GLM 5.2's template supports graded high/max effort.
+            level_map.update({
+                "minimal": "high", "low": "high", "medium": "high",
+                "high": "high", "xhigh": "max", "max": "max",
+            })
+        else:
+            # Keep unverified chat-template variants on the boolean high state.
+            level_map.update({"minimal": None, "low": None, "medium": None, "xhigh": None, "max": None})
     elif kind == "local-deepseek-v4-dsml":
         model["compat"] = {"thinkingFormat": "qwen-chat-template", "stripDsmlToolMarkup": True}
-        level_map.update({"minimal": None, "low": None, "medium": None, "xhigh": None})
+        level_map.update({"minimal": None, "low": None, "medium": None, "xhigh": None, "max": None})
     elif kind == "zai":
-        model["compat"] = {"supportsDeveloperRole": False, "thinkingFormat": "zai"}
-        level_map.update({"minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max"})
+        compat = {"supportsDeveloperRole": False, "thinkingFormat": "zai"}
+        if identities & {"glm-4.7", "glm-5-turbo", "glm-5.1", "glm-5.2"}:
+            compat["zaiToolStream"] = True
+        if "glm-5.2" in identities:
+            compat["supportsReasoningEffort"] = True
+            level_map.update({"minimal": None, "low": "high", "medium": "high", "high": "high", "max": "max"})
+        model["compat"] = compat
     elif kind == "openrouter":
         model["compat"] = {"thinkingFormat": "openrouter"}
         if str(meta.get("provider_model_id", "")).startswith("deepseek/"):
             model["compat"]["requiresReasoningContentOnAssistantMessages"] = True
-            level_map.update({"minimal": None, "low": None, "medium": None, "high": "high", "xhigh": "max"})
+            level_map.update({
+                "minimal": None, "low": None, "medium": None,
+                "high": "high", "xhigh": "xhigh", "max": None,
+            })
+    elif kind == "kimi-k3":
+        model.setdefault("compat", {}).update({
+            "supportsStore": False,
+            "supportsDeveloperRole": False,
+            "supportsReasoningEffort": False,
+            "maxTokensField": "max_tokens",
+            "supportsStrictMode": False,
+            "thinkingFormat": "deepseek",
+            "requiresReasoningContentOnAssistantMessages": True,
+            "deferredToolsMode": "kimi",
+        })
+        level_map.update({
+            "off": None,
+            "minimal": None,
+            "low": None,
+            "medium": None,
+            "high": None,
+            "xhigh": None,
+            "max": "max",
+        })
+    elif kind == "anthropic":
+        compat = model.setdefault("compat", {})
+        if "claude-fable-5" in identities:
+            compat["forceAdaptiveThinking"] = True
+            level_map.update({"off": None, "xhigh": "xhigh", "max": "max"})
+        elif identities & {"claude-opus-4-7", "claude-opus-4-8"}:
+            compat.update({"forceAdaptiveThinking": True, "supportsTemperature": False})
+            level_map.update({"xhigh": "xhigh", "max": "max"})
+        elif identities & {"claude-opus-4-6", "claude-sonnet-4-6"}:
+            compat["forceAdaptiveThinking"] = True
+            level_map["max"] = "max"
+    elif kind == "openai-responses":
+        if identities & {"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"}:
+            level_map.update({"off": "none", "xhigh": "xhigh", "max": "max"})
+        elif identities & {"gpt-5.5-pro"}:
+            level_map.update({"off": None, "minimal": None, "low": None, "xhigh": "xhigh"})
+        elif identities & {"gpt-5.5"}:
+            level_map.update({"off": "none", "minimal": None, "xhigh": "xhigh"})
+        elif identities & {"gpt-5.4-pro"}:
+            level_map.update({"off": None, "xhigh": "xhigh"})
+        elif identities & {"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"}:
+            level_map.update({"off": "none", "xhigh": "xhigh"})
 
     if level_map:
         model["thinkingLevelMap"] = level_map
@@ -343,6 +409,8 @@ def render_models(
         _apply_reasoning(model, kind, meta)
         if kind == "gateway":
             model["reasoning"] = True
+        if isinstance(hints.get("thinkingLevelMap"), dict):
+            model["thinkingLevelMap"] = dict(hints["thinkingLevelMap"])
         if isinstance(hints.get("compat"), dict):
             model.setdefault("compat", {}).update(hints["compat"])
         if _is_cloud_key(key):

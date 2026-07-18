@@ -84,6 +84,7 @@ def test_local_glm_gets_graded_reasoning(tmp_path):
     assert m["compat"]["thinkingFormat"] == "chat-template"
     assert m["compat"]["chatTemplateKwargs"]["reasoning_effort"]["$var"] == "thinking.effort"
     assert m["thinkingLevelMap"]["xhigh"] == "max"
+    assert m["thinkingLevelMap"]["max"] == "max"
     assert m["thinkingLevelMap"]["high"] == "high"
 
 
@@ -102,6 +103,10 @@ def test_cloud_anthropic_uses_messages_api_and_root_baseurl(tmp_path):
     assert m["id"] == "claude-opus-4-8"  # cloud id == provider_model_id
     assert m["api"] == "anthropic-messages"
     assert m["reasoning"] is True  # anthropic kind
+    assert m["thinkingLevelMap"]["xhigh"] == "xhigh"
+    assert m["thinkingLevelMap"]["max"] == "max"
+    assert m["compat"]["forceAdaptiveThinking"] is True
+    assert m["compat"]["supportsTemperature"] is False
     assert m["baseUrl"] == "http://localhost:9111"  # root, not /v1 (avoid /v1/v1/messages)
     assert m["input"] == ["text", "image"]  # cloud always image-capable
 
@@ -136,6 +141,8 @@ def test_gateway_proxied_anthropic_protocol_model(tmp_path):
     assert fable["baseUrl"] == "http://localhost:9111"
     assert fable["name"] == "Claude Fable 5 via Databricks"  # pi.name override
     assert fable["reasoning"] is True  # anthropic-shape default
+    assert fable["thinkingLevelMap"] == {"off": None, "xhigh": "xhigh", "max": "max"}
+    assert fable["compat"]["forceAdaptiveThinking"] is True
     assert fable["compat"]["supportsEagerToolInputStreaming"] is False
     opus = by_id["databricks-claude-opus-4-8"]
     assert opus["reasoning"] is False  # pi.reasoning: false wins
@@ -152,7 +159,10 @@ def test_gateway_proxied_openai_protocol_model(tmp_path):
             "provider": "databricks", "protocol": "openai",
             "provider_model_id": "databricks-gpt-5-5",
             "thinking": "optional", "context": 400000, "max_output_tokens": 128000,
-            "pi": {"compat": {"supportsReasoningEffort": True}},
+            "pi": {
+                "thinkingLevelMap": {"off": None, "max": "max"},
+                "compat": {"supportsReasoningEffort": True},
+            },
         },
         "cloud:databricks-gemini-3-1-pro": {
             "name": "gemini-3.1-pro", "alias": "gemini", "desc": "gemini",
@@ -172,6 +182,7 @@ def test_gateway_proxied_openai_protocol_model(tmp_path):
     assert gpt["api"] == "openai-completions"
     assert "baseUrl" not in gpt  # provider /v1 base
     assert gpt["reasoning"] is True  # generic gateway reasoning from thinking
+    assert gpt["thinkingLevelMap"] == {"off": None, "max": "max"}
     assert gpt["compat"]["supportsReasoningEffort"] is True  # pi.compat merged
     gem = by_id["gemini-3.1-pro-preview"]  # pi.id override used as model id
     assert gem["reasoning"] is True
@@ -196,7 +207,104 @@ def test_cloud_gpt_uses_responses_api(tmp_path):
     m = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"][0]
     assert m["api"] == "openai-responses"
     assert m["reasoning"] is True
+    assert m["thinkingLevelMap"]["off"] == "none"
+    assert m["thinkingLevelMap"]["xhigh"] == "xhigh"
+    assert "max" not in m["thinkingLevelMap"]
     assert "baseUrl" not in m  # openai-shaped uses provider /v1 base
+
+
+def test_cloud_kimi_k3_uses_native_deferred_tools_and_max_only(tmp_path):
+    aliases = {
+        "cloud:kimi-k3": {
+            "name": "kimi-k3", "alias": "kimi3", "desc": "Kimi K3",
+            "provider": "moonshot", "provider_model_id": "kimi-k3",
+            "thinking": "always", "context": 1000000, "max_output_tokens": 131072,
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["api"] == "openai-completions"
+    assert m["reasoning"] is True
+    assert m["thinkingLevelMap"] == {
+        "off": None,
+        "minimal": None,
+        "low": None,
+        "medium": None,
+        "high": None,
+        "xhigh": None,
+        "max": "max",
+    }
+    assert m["compat"]["thinkingFormat"] == "deepseek"
+    assert m["compat"]["requiresReasoningContentOnAssistantMessages"] is True
+    assert m["compat"]["deferredToolsMode"] == "kimi"
+
+
+def test_zai_exposes_graded_max_only_for_glm_5_2(tmp_path):
+    aliases = {
+        "cloud:glm-5.1": {
+            "name": "glm-5.1", "alias": "glm51", "provider": "zai",
+            "provider_model_id": "glm-5.1", "thinking": "optional",
+        },
+        "cloud:glm-5.2": {
+            "name": "glm-5.2", "alias": "glm52", "provider": "zai",
+            "provider_model_id": "glm-5.2", "thinking": "optional",
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"]
+    by_id = {model["id"]: model for model in models}
+    assert "thinkingLevelMap" not in by_id["glm-5.1"]
+    assert by_id["glm-5.1"]["compat"]["zaiToolStream"] is True
+    assert "supportsReasoningEffort" not in by_id["glm-5.1"]["compat"]
+    assert by_id["glm-5.2"]["thinkingLevelMap"] == {
+        "minimal": None, "low": "high", "medium": "high", "high": "high", "max": "max",
+    }
+    assert by_id["glm-5.2"]["compat"]["supportsReasoningEffort"] is True
+
+
+def test_openrouter_deepseek_v4_matches_current_pi_effort_map(tmp_path):
+    aliases = {
+        "cloud:deepseek/deepseek-v4-flash": {
+            "name": "deepseek-v4-flash", "alias": "dsv4", "provider": "openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash", "thinking": "optional",
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["thinkingLevelMap"] == {
+        "minimal": None, "low": None, "medium": None,
+        "high": "high", "xhigh": "xhigh", "max": None,
+    }
+    assert m["compat"]["requiresReasoningContentOnAssistantMessages"] is True
+
+
+@pytest.mark.parametrize(
+    ("model_id", "expected"),
+    [
+        ("gpt-5.4-pro", {"off": None, "xhigh": "xhigh"}),
+        ("gpt-5.5", {"off": "none", "minimal": None, "xhigh": "xhigh"}),
+        ("gpt-5.5-pro", {"off": None, "minimal": None, "low": None, "xhigh": "xhigh"}),
+        ("gpt-5.6-sol", {"off": "none", "xhigh": "xhigh", "max": "max"}),
+    ],
+)
+def test_openai_responses_variant_effort_restrictions(tmp_path, model_id, expected):
+    aliases = {
+        f"cloud:{model_id}": {
+            "name": model_id, "alias": "gpt", "provider": "openai",
+            "provider_model_id": model_id, "thinking": "optional",
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["thinkingLevelMap"] == expected
 
 
 def test_cloud_gemini_openrouter_reasoning(tmp_path):
