@@ -7,25 +7,26 @@
 1. The first provider call after an eligible oversized tool result receives the exact raw result.
 2. Raw exposure is committed only when that provider call's non-error assistant response finishes; failed auth, serialization, aborted/error responses, and pre-response attempts therefore retry with raw content.
 3. The extension creates one stable summary keyed by `toolCallId + raw SHA-256 + policy version`.
-4. Later provider calls receive that stored summary through Pi's ephemeral `context` hook.
-5. The original `toolResult` message is never patched, so its exact content remains in session JSONL and the TUI transcript.
-6. A replacement is used only when it is at least 40% smaller than the original. Summary bodies target 3,000 characters; the complete replacement is hard-capped at 4,000. A non-worthwhile result is persisted as a terminal marker so later calls remain raw without repeatedly summarizing it.
+4. Model summaries run only in the background. If one is unfinished or cooling down after a failure, the next provider call remains raw instead of waiting.
+5. Later provider calls receive a completed stored summary through Pi's ephemeral `context` hook.
+6. The original `toolResult` message is never patched, so its exact content remains in session JSONL and the TUI transcript.
+7. A replacement is used only when it is at least 40% smaller than the original. Summary bodies target 3,000 characters; the complete replacement is hard-capped at 4,000. A non-worthwhile result is persisted as a terminal marker so later calls remain raw without repeatedly summarizing it.
 
-Model summaries use the active session model (`ctx.model`) through `complete()` from `@earendil-works/pi-ai/compat`. Reasoning is requested at `low` only for APIs that support it. The extension never changes Pi's main-session thinking level.
+Model summaries use the active session model (`ctx.model`) through `complete()` from `@earendil-works/pi-ai/compat`. Reasoning is requested at `low` only for APIs that support it. The extension never changes Pi's main-session thinking level. Failed model summaries leave the exact result raw and append a bounded retry cooldown: 30 seconds initially, doubling to a 30-minute cap. They never freeze a deterministic fallback as the permanent summary.
 
-Summaries, raw-exposure markers, mode, thresholds, and reset epochs are append-only non-context custom entries. They survive `/reload`, resume, and active-branch navigation without copying raw tool output into extension state. The first valid completion for a key is frozen to avoid prompt-cache churn.
+Summaries, retry cooldowns, raw-exposure markers, mode, thresholds, and reset epochs are append-only non-context custom entries. They survive `/reload`, resume, and active-branch navigation without copying raw tool output into extension state. The first valid model or deterministic completion for a key is frozen to avoid prompt-cache churn. Policy v2 intentionally ignores v1 summary/exposure state so eligible historical results receive one fresh raw exposure under the safer rules. Persisted configs using the exact former default pair (`8K` standard / `16K` high-fidelity) migrate to `16K` / `24K`; other custom threshold pairs are preserved.
 
 ## Default policy
 
 | Class | Threshold | Reduction |
 |---|---:|---|
-| `read`, `deep_research`, `spawn_subagent`, `workflow`, panel/report outputs | 16,000 characters | Active-model high-fidelity summary |
-| `web_fetch`, browser/app extracted prose, text/HTML API bodies | 8,000 characters | Active-model summary |
-| `bash`, logs, memory/search/KB results, structured JSON, evaluate/API output | 8,000 characters | Deterministic reduction |
-| Unknown/custom text tools | 8,000 characters | Deterministic for JSON/log-like output; otherwise active-model summary |
-| Mutation/control/status/navigation tools, images, screenshots, recall, and path-only artifact results | Exempt | Raw only |
+| `read`, `deep_research`, `spawn_subagent`, `workflow`, panel/report outputs | 24,000 characters | Background active-model high-fidelity summary |
+| `web_fetch`, browser/app extracted prose, text/HTML API bodies | 16,000 characters | Background active-model summary |
+| `bash`, logs, search/KB results, structured JSON, evaluate/API output | 16,000 characters | Deterministic reduction |
+| Unknown/custom text tools | 16,000 characters | Deterministic for JSON/log-like output; otherwise background active-model summary |
+| `memory_read`, mutation/control/status/navigation tools, images, screenshots, recall, and path-only artifact results | Exempt | Raw only |
 
-Oversized error results always use deterministic reduction so exact exit codes, stderr, assertions, stack locations, paths, URLs, IDs, hashes, statuses, and important values are not paraphrased. Model failures, empty/incomplete output, cancellation, or timeout also settle to a deterministic head/important-lines/tail fallback when the originating session branch is still valid.
+Oversized error results always use deterministic reduction so exact exit codes, stderr, assertions, stack locations, paths, URLs, IDs, hashes, statuses, and important values are not paraphrased. Deterministic summaries reserve space for every recognized non-2xx HTTP status line and every `diff --git`, `---`, and `+++` file header. If those required exact lines cannot all fit, the result stays raw and a terminal overflow marker prevents lossy retries. Model failure, empty/incomplete output, or timeout leaves the result raw during its retry cooldown; lifecycle cancellation does not count as a failure.
 
 ## Slash controls
 
@@ -48,7 +49,7 @@ Changes apply immediately; `/reload` is not required.
 - `on`: create new summaries and substitute stored summaries.
 - `pause`: abort pending/in-flight creation and retain existing substitutions.
 - `off`: restore raw provider context and warn about estimated active-branch growth.
-- `status`: show mode, thresholds, exposure/completion counts, in-flight work, and estimated savings.
+- `status`: show mode, thresholds, exposure/completion/retry counts, in-flight work, and estimated savings.
 - `threshold`: inspect or change the standard/high-fidelity character thresholds. The minimum is 4,001, and standard cannot exceed high-fidelity.
 - `reset`: advance the branch epoch, clearing active summaries and exposure markers without deleting append-only history. Mode and thresholds are retained.
 
@@ -68,7 +69,7 @@ Recall output is exempt from summarization to prevent recursion. It is capped at
 - Tool output is treated as untrusted data in both summarizer prompts and replacement wrappers.
 - Nested `complete()` calls use the active model plus auth/headers resolved by `ctx.modelRegistry`; as required by Pi's direct compat API, they do not re-enter AgentSession provider lifecycle hooks. Deployments that rely on those hooks for outbound DLP should keep this extension off until that policy is implemented in the provider/gateway itself.
 - Assistant messages, tool-call ordering, `toolCallId`, `toolName`, error state, details, and reasoning signatures are not changed.
-- Duplicate jobs share an in-flight promise; active-model requests are serialized.
+- Duplicate jobs for the same tool-call key share an in-flight promise; active-model requests are serialized, but provider calls never wait for them.
 - Jobs are bound to the session ID/file, policy epoch, runtime generation, and originating branch entry.
 - Session shutdown, branch navigation, pause, threshold changes, reset, and `off` abort work; queue generations detach from providers that ignore abort, and stale completions are discarded before persistence.
 - The extension uses `context`, not provider-specific request rewriting, so JSONL remains unchanged and provider serialization stays Pi-owned.

@@ -10,6 +10,7 @@ import {
 const CONFIG_TYPE = "pi-tool-summary-config";
 const EXPOSURE_TYPE = "pi-tool-summary-exposure";
 const COMPLETE_TYPE = "pi-tool-summary-complete";
+const RETRY_TYPE = "pi-tool-summary-retry";
 const SKIP_TYPE = "pi-tool-summary-skip";
 
 function toolEntry(toolCallId: string, toolName: string, text: string, isError = false) {
@@ -158,7 +159,7 @@ test("an oversized result is raw once, then uses a frozen active-model summary w
     content: [{ type: "text", text: "- Exact result summary\n- path: /Users/example/project/file.ts\n- exit code: 0" }],
     stopReason: "stop",
   }));
-  const raw = `important prose\n${"detail line\n".repeat(1_500)}`;
+  const raw = `important prose\n${"detail line\n".repeat(2_500)}`;
   assert.ok(raw.length > 16_000);
   const source = toolEntry("call-raw-first", "read", raw);
   const harness = makeHarness([source]);
@@ -205,7 +206,7 @@ test("an oversized result is raw once, then uses a frozen active-model summary w
 
 test("a failed provider attempt does not consume the one raw exposure", async () => {
   __resetCompleteStub();
-  const raw = "prose\n".repeat(3_000);
+  const raw = "prose\n".repeat(5_000);
   const harness = makeHarness([toolEntry("call-provider-retry", "read", raw)]);
   await start(harness, "provider-retry");
   const context = harness.handlers.get("context")!;
@@ -239,7 +240,7 @@ test("a failed provider attempt does not consume the one raw exposure", async ()
 
 test("completed summaries and raw exposure survive extension reload through custom entries", async () => {
   __resetCompleteStub();
-  const raw = "prose\n".repeat(3_000);
+  const raw = "prose\n".repeat(5_000);
   const original = makeHarness([toolEntry("call-reload", "read", raw)]);
   await start(original, "reload-before");
   const firstContext = original.handlers.get("context")!;
@@ -259,7 +260,7 @@ test("completed summaries and raw exposure survive extension reload through cust
 
 test("deterministic classes are raw first and never call a model", async () => {
   __resetCompleteStub();
-  const raw = `${"ordinary log\n".repeat(900)}ERROR exit code 23 at /tmp/build.log\nFINAL\n`;
+  const raw = `${"ordinary log\n".repeat(1_500)}ERROR exit code 23 at /tmp/build.log\nFINAL\n`;
   const harness = makeHarness([toolEntry("call-deterministic", "bash", raw)]);
   await start(harness, "deterministic");
   const context = harness.handlers.get("context")!;
@@ -279,26 +280,92 @@ test("deterministic classes are raw first and never call a model", async () => {
   );
 });
 
-test("model failures settle to a deterministic, bounded fallback", async () => {
+test("memory_read remains exact and never enters summary state", async () => {
+  __resetCompleteStub();
+  const raw = Array.from({ length: 1_500 }, (_, index) => `mem_${index}_record durable project fact`).join("\n");
+  const harness = makeHarness([toolEntry("call-memory", "memory_read", raw)]);
+  await start(harness, "memory-exempt");
+  const context = harness.handlers.get("context")!;
+  const messages = contextMessages(harness);
+  await context({ type: "context", messages }, harness.ctx);
+  assert.equal(messages[0].content[0].text, raw);
+  await providerAcceptedRaw(harness);
+  await drain();
+  assert.equal(completeCalls.length, 0);
+  assert.equal(harness.getBranch().filter((entry) => entry.customType === EXPOSURE_TYPE).length, 0);
+  assert.equal(harness.getBranch().filter((entry) => entry.customType === COMPLETE_TYPE).length, 0);
+});
+
+test("deterministic summaries stay raw when required evidence cannot fit", async () => {
+  __resetCompleteStub();
+  const headers = Array.from(
+    { length: 80 },
+    (_, index) => `diff --git a/${"long-path/".repeat(5)}file-${index}.ts b/${"long-path/".repeat(5)}file-${index}.ts`,
+  );
+  const raw = [...headers, ...Array.from({ length: 1_000 }, (_, index) => `ordinary ${index}`)].join("\n");
+  const harness = makeHarness([toolEntry("call-required-overflow", "bash", raw)]);
+  await start(harness, "required-overflow");
+  const context = harness.handlers.get("context")!;
+  await context({ type: "context", messages: contextMessages(harness) }, harness.ctx);
+  await providerAcceptedRaw(harness);
+  await drain();
+  const skipped = harness.getBranch().find((entry) => entry.customType === SKIP_TYPE);
+  assert.equal(skipped?.data.reason, "required-evidence-overflow");
+  assert.equal(harness.getBranch().filter((entry) => entry.customType === COMPLETE_TYPE).length, 0);
+
+  const later = contextMessages(harness);
+  await context({ type: "context", messages: later }, harness.ctx);
+  assert.equal(later[0].content[0].text, raw);
+});
+
+test("model failures keep raw, cool down, and retry later without freezing a fallback", async () => {
   __resetCompleteStub();
   __setCompleteImplementation(async () => {
     throw new Error("provider unavailable");
   });
-  const raw = `${"long report row\n".repeat(1_300)}ERROR failed assertion at /Users/example/test.ts:19\n`;
+  const raw = `${"long report row\n".repeat(2_000)}ERROR failed assertion at /Users/example/test.ts:19\n`;
   const harness = makeHarness([toolEntry("call-fallback", "read", raw)]);
   await start(harness, "fallback");
   const context = harness.handlers.get("context")!;
   await context({ type: "context", messages: contextMessages(harness) }, harness.ctx);
   await providerAcceptedRaw(harness);
   await drain();
-  const second = contextMessages(harness);
-  await context({ type: "context", messages: second }, harness.ctx);
-  assert.match(second[0].content[0].text, /summary source: deterministic-fallback/);
-  assert.match(second[0].content[0].text, /failed assertion/);
-  assert.ok(second[0].content[0].text.length <= 4_000);
+  assert.equal(completeCalls.length, 1);
+  assert.equal(harness.getBranch().filter((entry) => entry.customType === COMPLETE_TYPE).length, 0);
+  assert.equal(harness.getBranch().filter((entry) => entry.customType === RETRY_TYPE).length, 1);
+
+  const coolingDown = contextMessages(harness);
+  await context({ type: "context", messages: coolingDown }, harness.ctx);
+  assert.equal(coolingDown[0].content[0].text, raw);
+  assert.equal(completeCalls.length, 1, "cooldown must prevent per-context retries");
+
+  const dueBranch = harness.getBranch().map((entry) =>
+    entry.customType === RETRY_TYPE
+      ? { ...entry, data: { ...entry.data, retryAfter: entry.data.failedAt } }
+      : entry,
+  );
+  const reloaded = makeHarness(dueBranch);
+  __resetCompleteStub();
+  __setCompleteImplementation(async () => ({
+    content: [{ type: "text", text: "successful retry summary" }],
+    stopReason: "stop",
+  }));
+  await start(reloaded, "fallback-retry");
+  const retryContext = reloaded.handlers.get("context")!;
+  const retrying = contextMessages(reloaded);
+  await retryContext({ type: "context", messages: retrying }, reloaded.ctx);
+  assert.equal(retrying[0].content[0].text, raw, "the retrying call must remain raw and non-blocking");
+  await drain();
+  assert.equal(completeCalls.length, 1);
+  assert.equal(reloaded.getBranch().filter((entry) => entry.customType === COMPLETE_TYPE).length, 1);
+
+  const afterRetry = contextMessages(reloaded);
+  await retryContext({ type: "context", messages: afterRetry }, reloaded.ctx);
+  assert.match(afterRetry[0].content[0].text, /successful retry summary/);
+  assert.doesNotMatch(afterRetry[0].content[0].text, /deterministic-fallback/);
 });
 
-test("repeated context hooks share one in-flight summary job", async () => {
+test("in-flight model summaries never block context and remain deduplicated", async () => {
   __resetCompleteStub();
   let resolveComplete!: (value: any) => void;
   __setCompleteImplementation(
@@ -306,7 +373,7 @@ test("repeated context hooks share one in-flight summary job", async () => {
       resolveComplete = resolve;
     }),
   );
-  const raw = "report line\n".repeat(1_500);
+  const raw = "report line\n".repeat(2_500);
   const harness = makeHarness([toolEntry("call-dedupe", "read", raw)]);
   await start(harness, "dedupe");
   const context = harness.handlers.get("context")!;
@@ -317,12 +384,77 @@ test("repeated context hooks share one in-flight summary job", async () => {
 
   const secondMessages = contextMessages(harness);
   const secondCall = context({ type: "context", messages: secondMessages }, harness.ctx);
-  await drain();
+  const outcome = await Promise.race([
+    secondCall.then(() => "settled"),
+    new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 50)),
+  ]);
+  if (outcome === "blocked") {
+    resolveComplete({ content: [{ type: "text", text: "deduplicated summary" }], stopReason: "stop" });
+    await secondCall;
+  }
+  assert.equal(outcome, "settled", "context must not wait for model summarization");
+  assert.equal(secondMessages[0].content[0].text, raw);
   assert.equal(completeCalls.length, 1);
+
+  const thirdMessages = contextMessages(harness);
+  await context({ type: "context", messages: thirdMessages }, harness.ctx);
+  assert.equal(thirdMessages[0].content[0].text, raw);
+  assert.equal(completeCalls.length, 1, "in-flight work must remain deduplicated");
+
   resolveComplete({ content: [{ type: "text", text: "deduplicated summary" }], stopReason: "stop" });
-  await secondCall;
-  assert.match(secondMessages[0].content[0].text, /deduplicated summary/);
+  await drain();
+  const fourthMessages = contextMessages(harness);
+  await context({ type: "context", messages: fourthMessages }, harness.ctx);
+  assert.match(fourthMessages[0].content[0].text, /deduplicated summary/);
   assert.equal(completeCalls.length, 1);
+});
+
+test("serialized model jobs start their timeout only when provider work begins", async () => {
+  __resetCompleteStub();
+  let resolveFirst: ((value: any) => void) | undefined;
+  let callNumber = 0;
+  __setCompleteImplementation(() => {
+    callNumber += 1;
+    if (callNumber === 1) {
+      return new Promise((resolve) => {
+        resolveFirst = resolve;
+      });
+    }
+    return Promise.resolve({ content: [{ type: "text", text: "second summary" }], stopReason: "stop" });
+  });
+
+  const originalSetTimeout = globalThis.setTimeout;
+  const timeoutRegistrations: number[] = [];
+  globalThis.setTimeout = ((handler: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    if (delay === 90_000) {
+      timeoutRegistrations.push(delay);
+      return 0 as any;
+    }
+    return originalSetTimeout(handler, delay, ...args);
+  }) as typeof setTimeout;
+
+  try {
+    const harness = makeHarness([
+      toolEntry("call-queue-one", "read", "first report\n".repeat(2_500)),
+      toolEntry("call-queue-two", "read", "second report\n".repeat(2_500)),
+    ]);
+    await start(harness, "queue-timeout");
+    await harness.handlers.get("context")!({ type: "context", messages: contextMessages(harness) }, harness.ctx);
+    await providerAcceptedRaw(harness);
+    await drain();
+    assert.equal(completeCalls.length, 1);
+    assert.equal(timeoutRegistrations.length, 1, "queued work must not start its timeout");
+
+    resolveFirst?.({ content: [{ type: "text", text: "first summary" }], stopReason: "stop" });
+    await drain();
+    assert.equal(completeCalls.length, 2);
+    assert.equal(timeoutRegistrations.length, 2, "the second timeout starts with its provider call");
+    assert.equal(harness.getBranch().filter((entry) => entry.customType === COMPLETE_TYPE).length, 2);
+    assert.equal(harness.getBranch().filter((entry) => entry.customType === RETRY_TYPE).length, 0);
+  } finally {
+    resolveFirst?.({ content: [{ type: "text", text: "cleanup" }], stopReason: "stop" });
+    globalThis.setTimeout = originalSetTimeout;
+  }
 });
 
 test("summary completions are discarded after branch navigation", async () => {
@@ -333,7 +465,7 @@ test("summary completions are discarded after branch navigation", async () => {
       resolveComplete = resolve;
     }),
   );
-  const raw = "report line\n".repeat(1_500);
+  const raw = "report line\n".repeat(2_500);
   const source = toolEntry("call-stale", "read", raw);
   const harness = makeHarness([source]);
   await start(harness, "stale");
@@ -363,7 +495,7 @@ test("new-branch summaries are not blocked by an old provider that ignores abort
     return Promise.resolve({ content: [{ type: "text", text: "new branch summary" }], stopReason: "stop" });
   });
 
-  const first = toolEntry("call-old-branch", "read", "old\n".repeat(5_000));
+  const first = toolEntry("call-old-branch", "read", "old\n".repeat(7_000));
   const harness = makeHarness([first]);
   await start(harness, "queue-branch");
   await harness.handlers.get("context")!({ type: "context", messages: contextMessages(harness) }, harness.ctx);
@@ -371,7 +503,7 @@ test("new-branch summaries are not blocked by an old provider that ignores abort
   await drain();
   assert.equal(completeCalls.length, 1);
 
-  const second = toolEntry("call-new-branch", "read", "new\n".repeat(5_000));
+  const second = toolEntry("call-new-branch", "read", "new\n".repeat(7_000));
   harness.setBranch([second]);
   await harness.handlers.get("session_tree")!({ type: "session_tree" }, harness.ctx);
   await harness.handlers.get("context")!({ type: "context", messages: contextMessages(harness) }, harness.ctx);
@@ -387,7 +519,7 @@ test("new-branch summaries are not blocked by an old provider that ignores abort
 
 test("pause retains existing substitutions, off restores raw with a growth warning, and on is immediate", async () => {
   __resetCompleteStub();
-  const raw = "prose\n".repeat(3_000);
+  const raw = "prose\n".repeat(5_000);
   const source = toolEntry("call-controls", "read", raw);
   const harness = makeHarness([source]);
   await start(harness, "controls");
@@ -403,7 +535,7 @@ test("pause retains existing substitutions, off restores raw with a growth warni
   await context({ type: "context", messages }, harness.ctx);
   assert.match(messages[0].content[0].text, /Stored summary/);
 
-  const newRaw = "new prose\n".repeat(2_000);
+  const newRaw = "new prose\n".repeat(3_000);
   const newEntry = toolEntry("call-paused-new", "read", newRaw);
   harness.getBranch().push(newEntry);
   harness.allEntries.push(newEntry);
@@ -434,7 +566,7 @@ test("pause cancels unfinished summary creation while keeping prior completed su
   __setCompleteImplementation(() => new Promise((resolve) => {
     resolveComplete = resolve;
   }));
-  const harness = makeHarness([toolEntry("call-pause-running", "read", "prose\n".repeat(3_000))]);
+  const harness = makeHarness([toolEntry("call-pause-running", "read", "prose\n".repeat(5_000))]);
   await start(harness, "pause-running");
   await harness.handlers.get("context")!({ type: "context", messages: contextMessages(harness) }, harness.ctx);
   await providerAcceptedRaw(harness);
@@ -449,7 +581,7 @@ test("pause cancels unfinished summary creation while keeping prior completed su
 test("aborting during delayed auth never starts an outbound summary completion", async () => {
   __resetCompleteStub();
   let resolveAuth!: (value: any) => void;
-  const harness = makeHarness([toolEntry("call-delayed-auth", "read", "prose\n".repeat(3_000))]);
+  const harness = makeHarness([toolEntry("call-delayed-auth", "read", "prose\n".repeat(5_000))]);
   harness.ctx.modelRegistry.getApiKeyAndHeaders = () => new Promise((resolve) => {
     resolveAuth = resolve;
   });
@@ -464,6 +596,7 @@ test("aborting during delayed auth never starts an outbound summary completion",
   await drain();
   assert.equal(completeCalls.length, 0);
   assert.equal(harness.allEntries.filter((entry) => entry.customType === COMPLETE_TYPE).length, 0);
+  assert.equal(harness.allEntries.filter((entry) => entry.customType === RETRY_TYPE).length, 0);
 });
 
 test("a non-worthwhile replacement is terminal and never retried", async () => {
@@ -507,6 +640,11 @@ test("threshold, status, and reset controls persist without reload", async () =>
   assert.notEqual(latest.epoch, "initial");
   assert.equal(latest.standardThreshold, 9_000);
   assert.equal(latest.highFidelityThreshold, 18_000);
+
+  await command("threshold reset", harness.ctx);
+  const defaults = harness.getBranch().findLast((entry) => entry.customType === CONFIG_TYPE).data;
+  assert.equal(defaults.standardThreshold, 16_000);
+  assert.equal(defaults.highFidelityThreshold, 24_000);
 });
 
 test("active-model summarization requests low reasoning only through supported provider options", async (t) => {
@@ -519,7 +657,7 @@ test("active-model summarization requests low reasoning only through supported p
   for (const item of cases) {
     await t.test(`${item.api}/${item.id}`, async () => {
       __resetCompleteStub();
-      const raw = "prose\n".repeat(3_000);
+      const raw = "prose\n".repeat(5_000);
       const harness = makeHarness([toolEntry(`call-${item.id}`, "read", raw)], model(item.api, true, item.id));
       await start(harness, `reasoning-${item.id}`);
       await harness.handlers.get("context")!({ type: "context", messages: contextMessages(harness) }, harness.ctx);
@@ -534,7 +672,7 @@ test("active-model summarization requests low reasoning only through supported p
 
   await t.test("non-reasoning model", async () => {
     __resetCompleteStub();
-    const raw = "prose\n".repeat(3_000);
+    const raw = "prose\n".repeat(5_000);
     const harness = makeHarness([toolEntry("call-no-reasoning", "read", raw)], model("openai-responses", false));
     await start(harness, "reasoning-none");
     await harness.handlers.get("context")!({ type: "context", messages: contextMessages(harness) }, harness.ctx);

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
 	candidateForToolResult,
 	deterministicReduce,
+	deterministicReductionCanPreserve,
 	exactLineRange,
 	MAX_RECALL_OUTPUT_CHARS,
 	makeSummaryReplacement,
@@ -20,10 +21,12 @@ import {
 	makeCompletedSummaryRecord,
 	makeExposureRecord,
 	makeSkippedSummaryRecord,
+	makeSummaryRetryRecord,
 	restoreToolSummaryState,
 	TOOL_SUMMARY_COMPLETE_TYPE,
 	TOOL_SUMMARY_CONFIG_TYPE,
 	TOOL_SUMMARY_EXPOSURE_TYPE,
+	TOOL_SUMMARY_RETRY_TYPE,
 	TOOL_SUMMARY_SKIP_TYPE,
 	updatedConfig,
 } from "../extensions/tool-summary/state.ts";
@@ -31,20 +34,32 @@ import {
 const textContent = (text: string) => [{ type: "text" as const, text }];
 
 function candidate(toolName: string, text: string, isError = false) {
+	return candidateForToolResult(
+		{
+			toolCallId: "call-policy-test",
+			toolName,
+			isError,
+			content: textContent(text),
+		},
+		{ standard: 4_001, highFidelity: 4_001 },
+	);
+}
+
+function defaultCandidate(toolName: string, text: string, isError = false) {
 	return candidateForToolResult({
-		toolCallId: "call-policy-test",
+		toolCallId: "call-default-policy-test",
 		toolName,
 		isError,
 		content: textContent(text),
 	});
 }
 
-test("policy uses the agreed 16K high-fidelity and 8K standard thresholds", () => {
-	assert.equal(candidate("read", "x".repeat(16_000)), undefined);
-	assert.ok(candidate("read", "x".repeat(16_001)));
-	assert.equal(candidate("web_fetch", "x".repeat(8_000)), undefined);
-	assert.ok(candidate("web_fetch", "x".repeat(8_001)));
-	assert.equal(candidate("read", "x".repeat(1_600)), undefined);
+test("policy uses the agreed 24K high-fidelity and 16K standard thresholds", () => {
+	assert.equal(defaultCandidate("read", "x".repeat(24_000)), undefined);
+	assert.ok(defaultCandidate("read", "x".repeat(24_001)));
+	assert.equal(defaultCandidate("web_fetch", "x".repeat(16_000)), undefined);
+	assert.ok(defaultCandidate("web_fetch", "x".repeat(16_001)));
+	assert.equal(defaultCandidate("read", "x".repeat(2_400)), undefined);
 });
 
 test("policy assigns LLM, deterministic, error, unknown, and exempt classes", () => {
@@ -64,6 +79,7 @@ test("policy assigns LLM, deterministic, error, unknown, and exempt classes", ()
 	assert.equal(resolvePolicy("custom_tool", textContent('{"rows":[1,2]}'), false).method, "deterministic");
 	assert.equal(resolvePolicy("custom_tool", textContent("long prose"), false).method, "llm");
 	assert.equal(resolvePolicy("tool_result_recall", textContent("x"), false).class, "exempt");
+	assert.equal(resolvePolicy("memory_read", textContent("x"), false).class, "exempt");
 	assert.equal(resolvePolicy("edit", textContent("x"), false).class, "exempt");
 	assert.equal(
 		resolvePolicy(
@@ -237,10 +253,68 @@ test("structured reducer formats lexically before selecting important identifier
 	assert.match(reduced, /error/);
 });
 
+test("deterministic reduction preserves every HTTP failure and diff file header that fits", () => {
+	const required = [
+		"status: 404 path=/missing",
+		'"statusCode": 503,',
+		"responseStatus=418",
+		"httpStatusCode: 502",
+		'"status-code": 401,',
+		"status code 403",
+		"response.status = 451",
+		"HTTP/2 429 Too Many Requests",
+		"diff --git a/src/one.ts b/src/one.ts",
+		"--- a/src/one.ts",
+		"+++ b/src/one.ts",
+		"diff --git a/src/two.ts b/src/two.ts",
+		"--- /dev/null",
+		"+++ b/src/two.ts",
+	];
+	const source = [
+		"status: 200 path=/healthy",
+		...Array.from({ length: 300 }, (_, index) => `ordinary line ${index}`),
+		...required,
+		...Array.from({ length: 300 }, (_, index) => `tail line ${index}`),
+	].join("\n");
+	assert.equal(deterministicReductionCanPreserve(source, 2_500), true);
+	const reduced = deterministicReduce(source, 2_500, "tail");
+	assert.ok(reduced.length <= 2_500);
+	for (const line of required) assert.ok(reduced.includes(line), `missing required line: ${line}`);
+});
+
+test("structured reduction retains the only non-2xx response", () => {
+	const source = JSON.stringify({
+		responses: Array.from({ length: 25 }, (_, index) => ({
+			url: `https://example.test/request/${index}/${"x".repeat(80)}`,
+			status: index === 17 ? 404 : 200,
+		})),
+	});
+	const reduced = deterministicReduce(source, 1_200, "structured");
+	assert.ok(reduced.length <= 1_200);
+	assert.match(reduced, /"status": 404/);
+});
+
+test("required evidence overflow is detected instead of silently dropping lines", () => {
+	const source = Array.from(
+		{ length: 80 },
+		(_, index) => `diff --git a/${"long-path/".repeat(5)}file-${index}.ts b/${"long-path/".repeat(5)}file-${index}.ts`,
+	).join("\n");
+	assert.equal(deterministicReductionCanPreserve(source, 1_000), false);
+	assert.equal(deterministicReductionCanPreserve(source, source.length), true);
+});
+
+test("unpaired prose dividers are not treated as diff file headers", () => {
+	const source = [
+		...Array.from({ length: 80 }, (_, index) => `--- prose divider ${index}`),
+		...Array.from({ length: 400 }, (_, index) => `ordinary line ${index}`),
+	].join("\n");
+	assert.equal(deterministicReductionCanPreserve(source, 500), true);
+});
+
 test("replacement obeys the 3K target and 4K hard cap and only applies at 40% savings", () => {
 	const item = candidate("bash", "line\n".repeat(3_000));
 	assert.ok(item);
-	const replacement = makeSummaryReplacement(item, "summary ".repeat(1_000), "deterministic-fallback");
+	const replacement = makeSummaryReplacement(item, "summary ".repeat(1_000), "deterministic");
 	assert.ok(replacement.length <= SUMMARY_HARD_MAX_CHARS);
 	assert.match(replacement, /toolCallId: call-policy-test/);
 	assert.match(replacement, /tool_result_recall/);
@@ -254,11 +328,11 @@ test("persistence restores config and freezes the first valid completion per epo
 	const item = candidate("bash", "line\n".repeat(2_000));
 	assert.ok(item);
 	const exposure = makeExposureRecord(paused, item, 3);
-	const replacement = makeSummaryReplacement(item, "first", "deterministic-fallback");
+	const replacement = makeSummaryReplacement(item, "first", "deterministic");
 	const first = makeCompletedSummaryRecord(paused, {
 		...item,
 		replacement,
-		source: "deterministic-fallback",
+		source: "deterministic",
 	});
 	const later = { ...first, replacement: replacement.replace("first", "later"), createdAt: first.createdAt + 1 };
 	const state = restoreToolSummaryState([
@@ -269,6 +343,44 @@ test("persistence restores config and freezes the first valid completion per epo
 	]);
 	assert.equal(state.config.mode, "pause");
 	assert.equal(state.exposures.get(item.key)?.rawHash, item.rawHash);
+	assert.equal(state.summaries.get(item.key)?.replacement, replacement);
+});
+
+test("former default thresholds migrate while custom pairs remain unchanged", () => {
+	const base = defaultToolSummaryConfig(1);
+	const legacyDefaults = { ...base, standardThreshold: 8_000, highFidelityThreshold: 16_000 };
+	let state = restoreToolSummaryState([
+		{ type: "custom", customType: TOOL_SUMMARY_CONFIG_TYPE, data: legacyDefaults },
+	]);
+	assert.equal(state.config.standardThreshold, 16_000);
+	assert.equal(state.config.highFidelityThreshold, 24_000);
+
+	const custom = { ...base, standardThreshold: 9_000, highFidelityThreshold: 18_000 };
+	state = restoreToolSummaryState([
+		{ type: "custom", customType: TOOL_SUMMARY_CONFIG_TYPE, data: custom },
+	]);
+	assert.equal(state.config.standardThreshold, 9_000);
+	assert.equal(state.config.highFidelityThreshold, 18_000);
+});
+
+test("retry cooldowns persist and are superseded by terminal summaries", () => {
+	const base = defaultToolSummaryConfig(1);
+	const item = candidate("read", "report\n".repeat(1_000));
+	assert.ok(item);
+	const retry = makeSummaryRetryRecord(base, { ...item, attempt: 1, retryAfter: 40_000 }, 10_000);
+	let state = restoreToolSummaryState([
+		{ type: "custom", customType: TOOL_SUMMARY_RETRY_TYPE, data: retry },
+	]);
+	assert.equal(state.retries.get(item.key)?.attempt, 1);
+	assert.equal(state.summaries.size, 0);
+
+	const replacement = makeSummaryReplacement(item, "successful retry", "model");
+	const summary = makeCompletedSummaryRecord(base, { ...item, replacement, source: "model" }, 50_000);
+	state = restoreToolSummaryState([
+		{ type: "custom", customType: TOOL_SUMMARY_RETRY_TYPE, data: retry },
+		{ type: "custom", customType: TOOL_SUMMARY_COMPLETE_TYPE, data: summary },
+	]);
+	assert.equal(state.retries.size, 0);
 	assert.equal(state.summaries.get(item.key)?.replacement, replacement);
 });
 
@@ -290,8 +402,8 @@ test("reset epochs exclude older exposures and summaries without deleting histor
 	const item = candidate("bash", "line\n".repeat(2_000));
 	assert.ok(item);
 	const exposure = makeExposureRecord(base, item, 2);
-	const replacement = makeSummaryReplacement(item, "summary", "deterministic-fallback");
-	const summary = makeCompletedSummaryRecord(base, { ...item, replacement, source: "deterministic-fallback" }, 3);
+	const replacement = makeSummaryReplacement(item, "summary", "deterministic");
+	const summary = makeCompletedSummaryRecord(base, { ...item, replacement, source: "deterministic" }, 3);
 	const reset = updatedConfig(base, { epoch: "reset-epoch" }, 4);
 	const state = restoreToolSummaryState([
 		{ type: "custom", customType: TOOL_SUMMARY_EXPOSURE_TYPE, data: exposure },
@@ -309,12 +421,12 @@ test("estimated savings aggregates only persisted replacement sizes", () => {
 		toolCallId: "call-two",
 		toolName: "bash",
 		isError: false,
-		content: textContent("b\n".repeat(6_000)),
+		content: textContent("b\n".repeat(9_000)),
 	});
 	assert.ok(one && two);
 	const records = [one, two].map((item) => {
-		const replacement = makeSummaryReplacement(item, "short", "deterministic-fallback");
-		return makeCompletedSummaryRecord(base, { ...item, replacement, source: "deterministic-fallback" });
+		const replacement = makeSummaryReplacement(item, "short", "deterministic");
+		return makeCompletedSummaryRecord(base, { ...item, replacement, source: "deterministic" });
 	});
 	const savings = estimatedContextSavings(records);
 	assert.equal(savings.count, 2);

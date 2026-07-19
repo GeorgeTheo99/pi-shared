@@ -15,6 +15,7 @@ import {
 	candidateForToolResult,
 	countLines,
 	deterministicReduce,
+	deterministicReductionCanPreserve,
 	exactLineRange,
 	exactLines,
 	makeSummaryReplacement,
@@ -35,10 +36,12 @@ import {
 	makeCompletedSummaryRecord,
 	makeExposureRecord,
 	makeSkippedSummaryRecord,
+	makeSummaryRetryRecord,
 	restoreToolSummaryState,
 	TOOL_SUMMARY_COMPLETE_TYPE,
 	TOOL_SUMMARY_CONFIG_TYPE,
 	TOOL_SUMMARY_EXPOSURE_TYPE,
+	TOOL_SUMMARY_RETRY_TYPE,
 	TOOL_SUMMARY_SKIP_TYPE,
 	type CompletedSummaryRecord,
 	type RestoredToolSummaryState,
@@ -48,6 +51,8 @@ import {
 
 const MAX_SUMMARIZER_INPUT_CHARS = 60_000;
 const SUMMARY_TIMEOUT_MS = 90_000;
+const SUMMARY_RETRY_BASE_MS = 30_000;
+const SUMMARY_RETRY_MAX_MS = 30 * 60_000;
 const MIN_CONFIGURED_THRESHOLD = 4_001;
 const MAX_CONFIGURED_THRESHOLD = 1_000_000;
 const DEFAULT_RECALL_LINES = 120;
@@ -132,7 +137,7 @@ function statusText(
 	return [
 		`tool-summary ${state.config.mode}`,
 		`thresholds: standard ${formatChars(state.config.standardThreshold)}, high-fidelity ${formatChars(state.config.highFidelityThreshold)}`,
-		`summaries: ${savings.count}; raw exposures: ${state.exposures.size}; not worthwhile: ${state.skips.size}; in flight: ${inFlight}`,
+		`summaries: ${savings.count}; raw exposures: ${state.exposures.size}; retries cooling down: ${state.retries.size}; not worthwhile: ${state.skips.size}; in flight: ${inFlight}`,
 		`estimated active-branch savings: ${formatChars(savings.savedChars)}`,
 	].join("\n");
 }
@@ -382,12 +387,62 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 		return active.values();
 	};
 
+	const persistSkipped = (
+		ctx: ExtensionContext,
+		candidate: SummaryCandidate,
+		origin: JobOrigin,
+		reason: "not-worthwhile" | "required-evidence-overflow" = "not-worthwhile",
+	) => {
+		if (!originValid(ctx, origin) || state.config.mode === "off") return undefined;
+		const frozen = state.summaries.get(candidate.key);
+		if (frozen || state.skips.has(candidate.key)) return undefined;
+		const skipped = makeSkippedSummaryRecord(state.config, {
+			key: candidate.key,
+			toolCallId: candidate.toolCallId,
+			toolName: candidate.toolName,
+			rawHash: candidate.rawHash,
+			rawChars: candidate.rawChars,
+			reason,
+		});
+		pi.appendEntry(TOOL_SUMMARY_SKIP_TYPE, skipped);
+		state.skips.set(candidate.key, skipped);
+		state.retries.delete(candidate.key);
+		return undefined;
+	};
+
+	const persistRetry = (
+		ctx: ExtensionContext,
+		candidate: SummaryCandidate,
+		origin: JobOrigin,
+	) => {
+		if (!originValid(ctx, origin) || state.config.mode !== "on") return undefined;
+		if (state.summaries.has(candidate.key) || state.skips.has(candidate.key)) return undefined;
+		const previous = state.retries.get(candidate.key);
+		const attempt = (previous?.attempt ?? 0) + 1;
+		const failedAt = Date.now();
+		const delay = Math.min(
+			SUMMARY_RETRY_BASE_MS * (2 ** Math.min(16, attempt - 1)),
+			SUMMARY_RETRY_MAX_MS,
+		);
+		const retry = makeSummaryRetryRecord(state.config, {
+			key: candidate.key,
+			toolCallId: candidate.toolCallId,
+			toolName: candidate.toolName,
+			rawHash: candidate.rawHash,
+			attempt,
+			retryAfter: failedAt + delay,
+		}, failedAt);
+		pi.appendEntry(TOOL_SUMMARY_RETRY_TYPE, retry);
+		state.retries.set(candidate.key, retry);
+		return undefined;
+	};
+
 	const persistCompleted = (
 		ctx: ExtensionContext,
 		candidate: SummaryCandidate,
 		origin: JobOrigin,
 		replacement: string,
-		source: "model" | "deterministic" | "deterministic-fallback",
+		source: "model" | "deterministic",
 		model?: Model<any>,
 	) => {
 		if (!originValid(ctx, origin) || state.config.mode === "off") return undefined;
@@ -395,16 +450,7 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 		if (frozen) return frozen;
 		if (state.skips.has(candidate.key)) return undefined;
 		if (!replacementIsWorthwhile(candidate.rawChars, replacement)) {
-			const skipped = makeSkippedSummaryRecord(state.config, {
-				key: candidate.key,
-				toolCallId: candidate.toolCallId,
-				toolName: candidate.toolName,
-				rawHash: candidate.rawHash,
-				rawChars: candidate.rawChars,
-			});
-			pi.appendEntry(TOOL_SUMMARY_SKIP_TYPE, skipped);
-			state.skips.set(candidate.key, skipped);
-			return undefined;
+			return persistSkipped(ctx, candidate, origin);
 		}
 		const record = makeCompletedSummaryRecord(state.config, {
 			key: candidate.key,
@@ -419,6 +465,7 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 		});
 		pi.appendEntry(TOOL_SUMMARY_COMPLETE_TYPE, record);
 		state.summaries.set(candidate.key, record);
+		state.retries.delete(candidate.key);
 		return record;
 	};
 
@@ -433,6 +480,8 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 		const existing = inFlight.get(candidate.key);
 		if (existing) return existing.promise;
 		if (state.config.mode !== "on") return Promise.resolve(undefined);
+		const retry = state.retries.get(candidate.key);
+		if (retry && Date.now() < retry.retryAfter) return Promise.resolve(undefined);
 
 		const controller = new AbortController();
 		const origin: JobOrigin = {
@@ -446,36 +495,43 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 		const abortFromTurn = () => controller.abort(turnSignal?.reason ?? "agent turn aborted");
 		if (turnSignal?.aborted) abortFromTurn();
 		else turnSignal?.addEventListener("abort", abortFromTurn, { once: true });
-		const timeout = setTimeout(() => controller.abort("tool summary timed out"), SUMMARY_TIMEOUT_MS);
+		let timedOut = false;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
 
 		const perform = async () => {
 			let body: string;
-			let source: "model" | "deterministic" | "deterministic-fallback";
+			let source: "model" | "deterministic";
 			let model: Model<any> | undefined;
 			try {
 				if (!originValid(ctx, origin) || controller.signal.aborted) throw new DOMException("summary cancelled", "AbortError");
 				if (candidate.policy.method === "deterministic") {
+					const bodyBudget = summaryBodyBudget(candidate, "deterministic");
+					if (!deterministicReductionCanPreserve(candidate.rawText, bodyBudget)) {
+						return persistSkipped(ctx, candidate, origin, "required-evidence-overflow");
+					}
 					body = deterministicReduce(
 						candidate.rawText,
-						summaryBodyBudget(candidate, "deterministic"),
+						bodyBudget,
 						reducerFlavor(candidate.toolName),
 					);
 					source = "deterministic";
 				} else {
 					model = ctx.model;
 					if (!model) throw new Error("no active session model");
+					// Queue wait does not consume this job's provider deadline.
+					timeout = setTimeout(() => {
+						timedOut = true;
+						controller.abort("tool summary timed out");
+					}, SUMMARY_TIMEOUT_MS);
 					body = await modelSummary(candidate, model, ctx.modelRegistry, controller.signal);
 					source = "model";
 				}
 			} catch {
-				if (!originValid(ctx, origin) || state.config.mode === "off") return undefined;
-				body = deterministicReduce(
-					candidate.rawText,
-					summaryBodyBudget(candidate, "deterministic-fallback"),
-					reducerFlavor(candidate.toolName),
-				);
-				source = "deterministic-fallback";
-				model = undefined;
+				if (!originValid(ctx, origin) || state.config.mode !== "on") return undefined;
+				if (candidate.policy.method === "llm" && (!controller.signal.aborted || timedOut)) {
+					return persistRetry(ctx, candidate, origin);
+				}
+				return undefined;
 			}
 			const replacement = makeSummaryReplacement(candidate, body, source);
 			return persistCompleted(ctx, candidate, origin, replacement, source, model);
@@ -489,7 +545,7 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 		const job = { promise, controller };
 		inFlight.set(candidate.key, job);
 		const cleanup = () => {
-			clearTimeout(timeout);
+			if (timeout !== undefined) clearTimeout(timeout);
 			turnSignal?.removeEventListener("abort", abortFromTurn);
 			if (inFlight.get(candidate.key) === job) inFlight.delete(candidate.key);
 		};
@@ -518,7 +574,7 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 
 	pi.on("context", async (event, ctx) => {
 		if (state.config.mode === "off") return;
-		const pending: Array<{
+		const deterministicPending: Array<{
 			message: ToolResultMessageLike;
 			candidate: SummaryCandidate;
 			promise: Promise<CompletedSummaryRecord | undefined>;
@@ -561,16 +617,17 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 				continue;
 			}
 
-			pending.push({
-				message: rawMessage,
-				candidate,
-				promise: startSummary(ctx, candidate, sourceEntryId),
-			});
+			const promise = startSummary(ctx, candidate, sourceEntryId);
+			if (candidate.policy.method === "deterministic") {
+				deterministicPending.push({ message: rawMessage, candidate, promise });
+			}
+			// Model summaries remain background-only. If one is unfinished or cooling
+			// down after a failure, this provider call keeps the exact raw result.
 		}
 
-		if (pending.length > 0) {
-			await Promise.allSettled([...new Set(pending.map((item) => item.promise))]);
-			for (const item of pending) {
+		if (deterministicPending.length > 0) {
+			await Promise.allSettled([...new Set(deterministicPending.map((item) => item.promise))]);
+			for (const item of deterministicPending) {
 				const completed = state.summaries.get(item.candidate.key);
 				if (!completed || !replacementIsWorthwhile(item.candidate.rawChars, completed.replacement)) continue;
 				item.message.content = [{ type: "text", text: completed.replacement }];
@@ -649,7 +706,7 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 				generation += 1;
 				abortJobs("tool summary cache reset");
 				const config = updatedConfig(state.config, { epoch: randomUUID() });
-				state = { config, exposures: new Map(), summaries: new Map(), skips: new Map() };
+				state = { config, exposures: new Map(), summaries: new Map(), retries: new Map(), skips: new Map() };
 				persistConfig(ctx, config);
 				notify(ctx, "Stored tool summaries and raw-exposure markers were reset for this branch.", "warning");
 				return;

@@ -9,7 +9,11 @@ import {
 export const TOOL_SUMMARY_CONFIG_TYPE = "pi-tool-summary-config";
 export const TOOL_SUMMARY_EXPOSURE_TYPE = "pi-tool-summary-exposure";
 export const TOOL_SUMMARY_COMPLETE_TYPE = "pi-tool-summary-complete";
+export const TOOL_SUMMARY_RETRY_TYPE = "pi-tool-summary-retry";
 export const TOOL_SUMMARY_SKIP_TYPE = "pi-tool-summary-skip";
+
+const LEGACY_DEFAULT_STANDARD_THRESHOLD = 8_000;
+const LEGACY_DEFAULT_HIGH_FIDELITY_THRESHOLD = 16_000;
 
 export type ToolSummaryMode = "on" | "pause" | "off";
 
@@ -44,9 +48,22 @@ export type CompletedSummaryRecord = {
 	rawLines: number;
 	policyVersion: typeof POLICY_VERSION;
 	replacement: string;
-	source: "model" | "deterministic" | "deterministic-fallback";
+	source: "model" | "deterministic";
 	model?: { provider: string; id: string };
 	createdAt: number;
+};
+
+export type SummaryRetryRecord = {
+	version: 1;
+	epoch: string;
+	key: string;
+	toolCallId: string;
+	toolName: string;
+	rawHash: string;
+	policyVersion: typeof POLICY_VERSION;
+	attempt: number;
+	failedAt: number;
+	retryAfter: number;
 };
 
 export type SkippedSummaryRecord = {
@@ -58,7 +75,7 @@ export type SkippedSummaryRecord = {
 	rawHash: string;
 	rawChars: number;
 	policyVersion: typeof POLICY_VERSION;
-	reason: "not-worthwhile";
+	reason: "not-worthwhile" | "required-evidence-overflow";
 	createdAt: number;
 };
 
@@ -72,6 +89,7 @@ export type RestoredToolSummaryState = {
 	config: ToolSummaryConfig;
 	exposures: Map<string, ExposureRecord>;
 	summaries: Map<string, CompletedSummaryRecord>;
+	retries: Map<string, SummaryRetryRecord>;
 	skips: Map<string, SkippedSummaryRecord>;
 };
 
@@ -139,13 +157,31 @@ export function isCompletedSummaryRecord(value: unknown): value is CompletedSumm
 		record.replacement.length > 0 &&
 		record.replacement.length <= SUMMARY_HARD_MAX_CHARS &&
 		replacementIsWorthwhile(record.rawChars, record.replacement) &&
-		(record.source === "model" ||
-			record.source === "deterministic" ||
-			record.source === "deterministic-fallback") &&
+		(record.source === "model" || record.source === "deterministic") &&
 		typeof record.createdAt === "number" &&
 		Number.isFinite(record.createdAt) &&
 		(record.model === undefined ||
 			(typeof record.model.provider === "string" && typeof record.model.id === "string"))
+	);
+}
+
+export function isSummaryRetryRecord(value: unknown): value is SummaryRetryRecord {
+	if (!value || typeof value !== "object") return false;
+	const record = value as Partial<SummaryRetryRecord>;
+	return (
+		record.version === 1 &&
+		typeof record.epoch === "string" &&
+		typeof record.key === "string" &&
+		typeof record.toolCallId === "string" &&
+		typeof record.toolName === "string" &&
+		/^[a-f0-9]{64}$/.test(record.rawHash ?? "") &&
+		record.policyVersion === POLICY_VERSION &&
+		isPositiveInteger(record.attempt) &&
+		typeof record.failedAt === "number" &&
+		Number.isFinite(record.failedAt) &&
+		typeof record.retryAfter === "number" &&
+		Number.isFinite(record.retryAfter) &&
+		record.retryAfter >= record.failedAt
 	);
 }
 
@@ -161,7 +197,7 @@ export function isSkippedSummaryRecord(value: unknown): value is SkippedSummaryR
 		/^[a-f0-9]{64}$/.test(record.rawHash ?? "") &&
 		isPositiveInteger(record.rawChars) &&
 		record.policyVersion === POLICY_VERSION &&
-		record.reason === "not-worthwhile" &&
+		(record.reason === "not-worthwhile" || record.reason === "required-evidence-overflow") &&
 		typeof record.createdAt === "number" &&
 		Number.isFinite(record.createdAt)
 	);
@@ -178,9 +214,20 @@ export function restoreToolSummaryState(entries: readonly CustomEntryLike[]): Re
 			config = { ...entry.data };
 		}
 	}
+	if (
+		config.standardThreshold === LEGACY_DEFAULT_STANDARD_THRESHOLD &&
+		config.highFidelityThreshold === LEGACY_DEFAULT_HIGH_FIDELITY_THRESHOLD
+	) {
+		config = {
+			...config,
+			standardThreshold: DEFAULT_STANDARD_THRESHOLD,
+			highFidelityThreshold: DEFAULT_HIGH_FIDELITY_THRESHOLD,
+		};
+	}
 
 	const exposures = new Map<string, ExposureRecord>();
 	const summaries = new Map<string, CompletedSummaryRecord>();
+	const retries = new Map<string, SummaryRetryRecord>();
 	const skips = new Map<string, SkippedSummaryRecord>();
 	for (const entry of entries) {
 		if (entry.type !== "custom") continue;
@@ -205,6 +252,20 @@ export function restoreToolSummaryState(entries: readonly CustomEntryLike[]): Re
 				...entry.data,
 				model: entry.data.model ? { ...entry.data.model } : undefined,
 			});
+			retries.delete(entry.data.key);
+			continue;
+		}
+		if (
+			entry.customType === TOOL_SUMMARY_RETRY_TYPE &&
+			isSummaryRetryRecord(entry.data) &&
+			entry.data.epoch === config.epoch &&
+			!summaries.has(entry.data.key) &&
+			!skips.has(entry.data.key)
+		) {
+			const previous = retries.get(entry.data.key);
+			if (!previous || entry.data.failedAt >= previous.failedAt) {
+				retries.set(entry.data.key, { ...entry.data });
+			}
 			continue;
 		}
 		if (
@@ -215,9 +276,10 @@ export function restoreToolSummaryState(entries: readonly CustomEntryLike[]): Re
 			!skips.has(entry.data.key)
 		) {
 			skips.set(entry.data.key, { ...entry.data });
+			retries.delete(entry.data.key);
 		}
 	}
-	return { config, exposures, summaries, skips };
+	return { config, exposures, summaries, retries, skips };
 }
 
 export function makeExposureRecord(
@@ -259,12 +321,31 @@ export function makeCompletedSummaryRecord(
 	};
 }
 
+export function makeSummaryRetryRecord(
+	config: ToolSummaryConfig,
+	input: Pick<SummaryRetryRecord, "key" | "toolCallId" | "toolName" | "rawHash" | "attempt" | "retryAfter">,
+	timestamp = Date.now(),
+): SummaryRetryRecord {
+	return {
+		version: 1,
+		epoch: config.epoch,
+		key: input.key,
+		toolCallId: input.toolCallId,
+		toolName: input.toolName,
+		rawHash: input.rawHash,
+		policyVersion: POLICY_VERSION,
+		attempt: input.attempt,
+		failedAt: timestamp,
+		retryAfter: input.retryAfter,
+	};
+}
+
 export function makeSkippedSummaryRecord(
 	config: ToolSummaryConfig,
 	input: Pick<
 		SkippedSummaryRecord,
 		"key" | "toolCallId" | "toolName" | "rawHash" | "rawChars"
-	>,
+	> & { reason?: SkippedSummaryRecord["reason"] },
 	timestamp = Date.now(),
 ): SkippedSummaryRecord {
 	return {
@@ -276,7 +357,7 @@ export function makeSkippedSummaryRecord(
 		rawHash: input.rawHash,
 		rawChars: input.rawChars,
 		policyVersion: POLICY_VERSION,
-		reason: "not-worthwhile",
+		reason: input.reason ?? "not-worthwhile",
 		createdAt: timestamp,
 	};
 }
