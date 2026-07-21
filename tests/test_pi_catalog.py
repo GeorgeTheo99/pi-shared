@@ -68,6 +68,27 @@ def test_local_qwen_gets_qwen_chat_template(tmp_path):
     assert m["contextWindow"] == 262144
 
 
+def test_explicit_false_vision_overrides_local_name_heuristic(tmp_path):
+    aliases = {
+        "Laguna-S-2.1-MLX-6bit": {
+            "name": "laguna-s-2.1-6bit", "alias": "laguna",
+            "desc": "text model via mlx-vlm", "provider": "local",
+            "omlx_id": "Laguna-S-2.1-MLX-6bit", "vision": False,
+        },
+        "gemma-vl": {
+            "name": "gemma-vl", "alias": "gemma", "provider": "local",
+            "omlx_id": "gemma-vl",
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"]
+    by_id = {m["id"]: m for m in models}
+    assert by_id["Laguna-S-2.1-MLX-6bit"]["input"] == ["text"]
+    assert by_id["gemma-vl"]["input"] == ["text", "image"]
+
+
 def test_local_glm_gets_graded_reasoning(tmp_path):
     aliases = {
         "glm-5.2-4.5bit": {

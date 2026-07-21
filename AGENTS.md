@@ -54,6 +54,7 @@ For non-trivial code changes:
 Pi's agent loop is strictly `LLM → tool → LLM → tool`. There is no native "sleep until an external event" step, so "waiting" by re-checking state each turn is actually **polling** — every check is a full LLM round-trip that re-sends the whole context (cache reads) and burns tokens while nothing is happening. While a tool call is executing, the loop is paused and consumes **zero tokens**.
 
 - For any detached long-running task (download, build, deploy, training, model load), do all parallel prep/wiring work **first**, then gate the dependent step behind a **single blocking call**. Never poll in a loop with repeated `bash` checks.
+- On this home network, cap large downloads at an aggregate **200 Mbps** (about **25 MB/s**) so they do not overload the connection. When downloads run concurrently, split that budget so their configured limits sum to at most 200 Mbps; for aria2, set `--max-overall-download-limit` on every process rather than leaving any process unlimited.
 - Prefer the shared `wait_for` tool: it blocks the loop (zero tokens) until a shell `condition` is met, streams optional `progress` to the TUI, is abortable (Esc/Ctrl-C), and has a hard `timeout`. Example — wait for an aria2 download's DONE marker:
   ```
   wait_for({

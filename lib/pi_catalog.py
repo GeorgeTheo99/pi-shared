@@ -377,14 +377,17 @@ def render_models(
         is_cloud = provider not in {"local", "omlx", "mlx", "gguf"}
         # Cloud models route through the gateway, which handles vision fallback
         # for text-only models (reroute to gemini). So mark every cloud model
-        # image-capable. Local VL models get image input via vision flag or a
-        # VL/gemma name heuristic (model-info vision flag is incomplete); local
-        # text-only models stay text-only (no cloud reroute available).
+        # image-capable. Local VL models get image input via an explicit vision
+        # flag or, when that flag is absent, a VL/gemma name heuristic. An
+        # explicit false keeps text-only models text-only (no cloud reroute).
         _hay = " ".join(
             str(meta.get(k, ""))
             for k in ("alias", "name", "omlx_id", "provider_model_id", "desc")
         ).lower()
-        is_vision = bool(meta.get("vision")) or "vl" in _hay or "gemma" in _hay
+        vision_flag = meta.get("vision")
+        is_vision = vision_flag is True or (
+            vision_flag is None and ("vl" in _hay or "gemma" in _hay)
+        )
         hints = _pi_hints(meta)
         desc = hints.get("name") or meta.get("desc") or key
         model: dict = {
