@@ -8,8 +8,9 @@ consumes that catalog and renders the Pi-specific artifacts:
   1. ``models.json`` — a Pi provider/models config targeting the gateway (or
      any OpenAI-compatible endpoint) with capability-aware thinking controls
      plus the Pi protocol/tool/replay compatibility that lives here.
-  2. ``pi-launchers.zsh`` — ``pi-<alias>()`` quick-start functions + ``pi-list``
-     + ``pi-restart`` (+ optional ``pi-default`` / ``pi-openai``).
+  2. ``pi-launchers.zsh`` — ``pi-<alias>()`` quick-start functions + one
+     Anthropic-only ``pi-long <alias>`` cache-retention helper + ``pi-list`` +
+     ``pi-restart`` (+ optional ``pi-default`` / ``pi-openai``).
 
 The model id used in the launcher ALWAYS matches the id written to models.json
 (local models use the alias key / omlx_id; cloud models use provider_model_id),
@@ -40,6 +41,8 @@ import argparse
 import difflib
 import json
 import os
+import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -50,6 +53,8 @@ from pathlib import Path
 THINKING_VALUES = {"optional", "always"}
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 ANTHROPIC_PROVIDERS = {"anthropic"}
+_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_RESERVED_ALIASES = {"default", "list", "long", "openai", "regen", "restart", "shared-update"}
 
 # Default provider-level compat sent for an openai-completions provider. Per-model
 # `compat` (thinkingFormat etc.) is added by apply_reasoning.
@@ -80,6 +85,16 @@ def _pi_hints(meta: dict) -> dict:
     """
     hints = meta.get("pi")
     return hints if isinstance(hints, dict) else {}
+
+
+def _is_native_anthropic(meta: dict) -> bool:
+    """Whether the configured upstream is native Anthropic Messages.
+
+    Legacy Anthropic entries omit ``protocol``; an explicit non-Anthropic
+    protocol means the gateway translates and cannot honor Anthropic TTLs.
+    """
+    protocol = str(meta.get("protocol") or "anthropic").strip().lower()
+    return _norm_provider(meta) in ANTHROPIC_PROVIDERS and protocol == "anthropic"
 
 
 def _is_anthropic_shape(key: str, meta: dict) -> bool:
@@ -362,6 +377,7 @@ def _eligible_entries(aliases: dict) -> list[tuple[str, dict]]:
     """
     seen_local: set[str] = set()
     seen_cloud: set[str] = set()
+    seen_aliases: set[str] = set()
     out: list[tuple[str, dict]] = []
     for key, alias_meta in aliases.items():
         meta = dict(alias_meta)
@@ -379,6 +395,15 @@ def _eligible_entries(aliases: dict) -> list[tuple[str, dict]]:
             if key in seen_local:
                 continue
             seen_local.add(key)
+        # Validate only entries that survive the documented eligibility rules.
+        alias = str(meta["alias"])
+        if not _ALIAS_RE.fullmatch(alias):
+            raise ValueError(f"invalid Pi launcher alias {alias!r}")
+        if alias in _RESERVED_ALIASES:
+            raise ValueError(f"reserved Pi launcher alias {alias!r}")
+        if alias in seen_aliases:
+            raise ValueError(f"duplicate Pi launcher alias {alias!r}")
+        seen_aliases.add(alias)
         out.append((key, meta))
     return out
 
@@ -469,6 +494,10 @@ def render_models(
             model["thinkingLevelMap"] = dict(hints["thinkingLevelMap"])
         if isinstance(hints.get("compat"), dict):
             model.setdefault("compat", {}).update(hints["compat"])
+        if _is_native_anthropic(meta) and api_type == "anthropic-messages":
+            # Send Pi's opaque session id only for native Anthropic routes. The
+            # gateway HMAC-pseudonymizes it and never forwards the raw header.
+            model.setdefault("compat", {})["sendSessionAffinityHeaders"] = True
         if _is_cloud_key(key):
             cloud_models.append(model)
         else:
@@ -505,7 +534,7 @@ def render_launchers(
     omlx_status_path: str | None = None,
     omlx_status_url: str | None = None,
 ) -> str:
-    """zsh snippet defining pi-<alias>() quick-start functions + pi-list + pi-restart.
+    """Render pi-<alias>(), Anthropic-only pi-long, pi-list, and pi-restart.
 
     Optionally appends pi-default + pi-openai (ls99 opt-in layer). No
     claude-*/codex-* — standardize on pi. If output paths are given, also emits
@@ -524,12 +553,23 @@ def render_launchers(
     rows.sort(key=lambda r: r[0])
     local_rows = [row for row in rows if not row[3]]
     cloud_rows = [row for row in rows if row[3]]
+    long_cache_aliases = sorted(
+        str(meta["alias"])
+        for key, meta in _eligible_entries(aliases)
+        if _is_native_anthropic(meta)
+        and _api_type_for(_reasoning_kind(key, meta, {}), key, meta) == "anthropic-messages"
+        and not (
+            isinstance(_pi_hints(meta).get("compat"), dict)
+            and _pi_hints(meta)["compat"].get("supportsLongCacheRetention") is False
+        )
+    )
+    unsupported_long_aliases = sorted({row[0] for row in rows} - set(long_cache_aliases))
 
     # The pi invocation. If pi_agent_dir is set, wrap with env so the launcher
     # targets that Pi profile (e.g. the oMLX profile with its model list).
     if pi_agent_dir:
         launch_cmd = (
-            f'env PI_CODING_AGENT_DIR={pi_agent_dir!r} '
+            f'env PI_CODING_AGENT_DIR={shlex.quote(pi_agent_dir)} '
             f'pi --provider "$pi_provider" --model "$model" "$@"'
         )
     else:
@@ -546,7 +586,7 @@ def render_launchers(
     # Pi's zero-usage context fallback to the installed runtime; use ~/.pi/agent
     # when no dedicated profile was requested because that is what the launcher
     # will use.
-    repair_agent_dir_expr = repr(pi_agent_dir) if pi_agent_dir else '"$HOME/.pi/agent"'
+    repair_agent_dir_expr = shlex.quote(pi_agent_dir) if pi_agent_dir else '"$HOME/.pi/agent"'
     lines += [
         f'if command -v pi-omlx-repair >/dev/null 2>&1; then',
         f'  PI_OMLX_AGENT_DIR={repair_agent_dir_expr} pi-omlx-repair >/dev/null 2>&1 || true',
@@ -556,8 +596,8 @@ def render_launchers(
     lines += [
         "_pi_gw_launch() {",
         "  local pi_provider=\"$1\" model=\"$2\" alias_name=\"$3\"; shift 3",
-        f'  if ! curl -sf --max-time 2 {gateway_url}/health >/dev/null 2>&1; then',
-        f'    echo "WARNING: model-gateway not healthy on {gw_host} — try: pi-restart model-gw"',
+        f'  if ! curl -sf --max-time 2 {shlex.quote(gateway_url.rstrip("/") + "/health")} >/dev/null 2>&1; then',
+        f'    print -r -- {shlex.quote(f"WARNING: model-gateway not healthy on {gw_host} — try: pi-restart model-gw")}',
         "  fi",
         '  echo "Pi → model-gateway (${alias_name} → ${model})"',
         f"  {launch_cmd}",
@@ -566,10 +606,40 @@ def render_launchers(
     ]
     for alias, model_id, _name, _is_cloud in rows:
         lines.append(
-            f"pi-{alias}() {{ _pi_gw_launch {provider_name!r} {model_id!r} {alias!r} \"$@\"; }}"
+            f"pi-{alias}() {{ _pi_gw_launch {shlex.quote(provider_name)} "
+            f"{shlex.quote(model_id)} {shlex.quote(alias)} \"$@\"; }}"
         )
 
     lines += [
+        "",
+        "pi-long() {",
+        '  if (( $# == 0 )); then',
+        '    print -u2 -r -- "Usage: pi-long <alias> [pi args...]"',
+        "    return 2",
+        "  fi",
+        '  local alias_name="$1" launcher',
+        "  shift",
+        '  case "$alias_name" in',
+    ]
+    if long_cache_aliases:
+        lines += [f"    {'|'.join(shlex.quote(alias) for alias in long_cache_aliases)}) ;;"]
+    if unsupported_long_aliases:
+        lines += [
+            f"    {'|'.join(shlex.quote(alias) for alias in unsupported_long_aliases)})",
+            '      print -u2 -r -- "ERROR: pi-long supports Anthropic-message aliases only: $alias_name"',
+            "      return 2",
+            "      ;;",
+        ]
+    lines += [
+        "    *)",
+        '      print -u2 -r -- "ERROR: unknown Pi model alias: $alias_name"',
+        '      print -u2 -r -- "Run pi-list to see available aliases."',
+        "      return 2",
+        "      ;;",
+        "  esac",
+        '  launcher="pi-${alias_name}"',
+        '  PI_CACHE_RETENTION=long "$launcher" "$@"',
+        "}",
         "",
         "pi-list() {",
         '  echo "Pi quick-start commands:"',
@@ -580,10 +650,13 @@ def render_launchers(
             continue
         lines += [
             '  echo ""',
-            f'  echo "{title} (via {provider_name} → {gw_host}):"',
+            f"  print -r -- {shlex.quote(f'{title} (via {provider_name} → {gw_host}):')}",
         ]
         for alias, model_id, name, _is_cloud in section_rows:
-            lines.append(f'  printf "  %-{width}s %s\\n" "pi-{alias}" {name + " (" + model_id + ")"!r}')
+            lines.append(
+                f'  printf "  %-{width}s %s\\n" {shlex.quote(f"pi-{alias}")} '
+                f'{shlex.quote(name + " (" + model_id + ")")}'
+            )
     if ls99_extras:
         lines += [
             '  echo ""',
@@ -592,6 +665,9 @@ def render_launchers(
             '  echo "  pi-openai                      OpenAI subscription (ChatGPT Plus/Pro via /login OAuth)"',
         ]
     lines += [
+        '  echo ""',
+        '  echo "Prompt cache:"',
+        '  echo "  pi-long <alias> [args...]      1-hour Anthropic cache for this launch only"',
         '  echo ""',
         '  echo "Management:"',
         '  echo "  pi-restart [service]           restart gateway/oMLX/services (default: model-gw)"',
@@ -633,7 +709,6 @@ def render_launchers(
 def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, gateway_url, gateway_api_key, pi_agent_dir, ls99_extras, shared_dir, omlx_status_path, omlx_status_url) -> list[str]:
     # Build the pi-catalog invocation that reproduces this launcher. Bakes the
     # machine-specific paths so `pi-regen` refreshes both outputs in one call.
-    import shlex
     catalog_bin = str(Path(shared_dir) / "bin" / "pi-catalog") if shared_dir else "pi-catalog"
     cmd = [catalog_bin]
     if aliases_path:
@@ -654,11 +729,12 @@ def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, 
     if shared_dir:
         cmd += ["--shared-dir", shared_dir]
     cmd_str = " ".join(shlex.quote(c) for c in cmd)
+    regen_message = f"Regenerating Pi artifacts from {aliases_path or 'the alias catalog'}..."
     return [
         "pi-regen() {",
         "  # Regenerate this launcher + models.json from the alias catalog.",
         "  # (model-gateway writes the alias file; pi-catalog renders Pi artifacts.)",
-        f'  echo "Regenerating Pi artifacts from {aliases_path or "the alias catalog"}..."',
+        f"  print -r -- {shlex.quote(regen_message)}",
         f"  {cmd_str} \"$@\"",
         "}",
         "",
@@ -671,8 +747,6 @@ def _render_pi_shared_update(*, launchers_out: str, shared_dir: str) -> list[str
     This must be a shell function—not a standalone script or Git hook—because
     only the current shell can load the regenerated launcher definitions.
     """
-    import shlex
-
     launcher = shlex.quote(launchers_out)
     repo = shlex.quote(shared_dir)
     catalog = shlex.quote(str(Path(shared_dir) / "bin" / "pi-catalog"))
@@ -817,7 +891,7 @@ def _render_pi_restart(*, auto_regen: bool = False, aliases_path: str | None = N
     ]
     if aliases_path:
         out += [
-            f'    _af={aliases_path!r}',
+            f'    _af={shlex.quote(aliases_path)}',
             '    if [ -f "$_af" ]; then',
             '      _pre=$(stat -f %m "$_af" 2>/dev/null || echo 0)',
             '      _w=0',
