@@ -6,8 +6,8 @@ generic ``model-aliases.json`` catalog (its public contract); this module
 consumes that catalog and renders the Pi-specific artifacts:
 
   1. ``models.json`` — a Pi provider/models config targeting the gateway (or
-     any OpenAI-compatible endpoint) with full reasoning/thinkingFormat compat
-     knowledge that lives here, not in the gateway.
+     any OpenAI-compatible endpoint) with capability-aware thinking controls
+     plus the Pi protocol/tool/replay compatibility that lives here.
   2. ``pi-launchers.zsh`` — ``pi-<alias>()`` quick-start functions + ``pi-list``
      + ``pi-restart`` (+ optional ``pi-default`` / ``pi-openai``).
 
@@ -48,6 +48,7 @@ from pathlib import Path
 # Thinking values that mean "this model can reason" (optional = user toggle,
 # always = on by default). Mirrors model-info.json's `thinking` field.
 THINKING_VALUES = {"optional", "always"}
+THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 ANTHROPIC_PROVIDERS = {"anthropic"}
 
 # Default provider-level compat sent for an openai-completions provider. Per-model
@@ -120,6 +121,10 @@ def _reasoning_kind(key: str, meta: dict, status: dict) -> str:
     thinking_format = (meta.get("thinking_format") or "").strip().lower()
     chat_template_kwargs = meta.get("chat_template_kwargs") if isinstance(meta.get("chat_template_kwargs"), dict) else {}
 
+    if "thinking_levels" in meta and meta.get("thinking_levels") == []:
+        # An explicit empty capability list is authoritative even when oMLX
+        # status heuristics would otherwise identify a thinking model.
+        return ""
     if meta.get("enable_thinking") is False or chat_template_kwargs.get("enable_thinking") is False:
         return ""
     # Explicit Pi hint wins in both directions: reasoning: false silences a
@@ -142,6 +147,8 @@ def _reasoning_kind(key: str, meta: dict, status: dict) -> str:
         # in model-info: treat thinking as optional so Pi can still turn it off.
         if _is_qwen_family(key, meta) and (thinking in THINKING_VALUES or status.get("thinking_default") is True):
             return "local-qwen"
+        if meta.get("thinking_levels"):
+            return "gateway"
         return ""
 
     if provider == "gguf":
@@ -289,6 +296,51 @@ def _apply_reasoning(model: dict, kind: str, meta: dict) -> None:
         model["thinkingLevelMap"] = level_map
 
 
+def _apply_thinking_capabilities(model: dict, meta: dict) -> None:
+    """Apply the gateway's explicit canonical thinking-level contract.
+
+    Legacy catalogs omit ``thinking_levels`` and retain the historical maps
+    above. When the field is present it is authoritative: every unavailable Pi
+    level is explicitly nulled because omitted standard levels are otherwise
+    treated as supported by Pi. Provider-native translation belongs to the
+    gateway, so OpenAI-completions models send exact canonical levels through
+    ``reasoning_effort``. Protocol/tool/replay compatibility remains intact.
+    """
+    if "thinking_levels" not in meta:
+        return
+
+    levels = meta.get("thinking_levels")
+    if not isinstance(levels, list):
+        return  # The gateway validates this field; tolerate malformed legacy input.
+
+    hints = _pi_hints(meta)
+    if not levels or hints.get("reasoning") is False:
+        model["reasoning"] = False
+        model.pop("thinkingLevelMap", None)
+        return
+
+    model["reasoning"] = True
+    supported = set(levels)
+    off_value = "none" if model.get("api") == "openai-responses" else "off"
+    model["thinkingLevelMap"] = {
+        level: (off_value if level == "off" else level) if level in supported else None
+        for level in THINKING_LEVELS
+    }
+
+    if model.get("api") == "openai-completions":
+        # Pi's format-specific encoders pre-translate or discard canonical
+        # levels. The gateway accepts canonical reasoning_effort and owns the
+        # provider-specific conversion, so retain only non-translation compat.
+        compat = model.setdefault("compat", {})
+        compat.pop("thinkingFormat", None)
+        compat.pop("chatTemplateKwargs", None)
+        compat["supportsReasoningEffort"] = True
+    elif model.get("api") == "anthropic-messages":
+        # Adaptive shape carries the selected canonical effort exactly to the
+        # gateway; the gateway converts it for budget-based upstream models.
+        model.setdefault("compat", {})["forceAdaptiveThinking"] = True
+
+
 def _cost() -> dict:
     return {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
 
@@ -412,6 +464,7 @@ def render_models(
         _apply_reasoning(model, kind, meta)
         if kind == "gateway":
             model["reasoning"] = True
+        _apply_thinking_capabilities(model, meta)
         if isinstance(hints.get("thinkingLevelMap"), dict):
             model["thinkingLevelMap"] = dict(hints["thinkingLevelMap"])
         if isinstance(hints.get("compat"), dict):

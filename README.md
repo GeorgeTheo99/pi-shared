@@ -109,10 +109,12 @@ Current generated `pi-*` shell launchers call this automatically before writing 
 
 It reads the alias file and emits:
 
-- `models.json` — a Pi provider/models config with full reasoning/thinkingFormat compat knowledge (local-qwen/glm/deepseek, fireworks-messages, zai, openrouter, openai-responses, anthropic), api_type selection, vision heuristics, and anthropic baseUrl overrides.
+- `models.json` — a Pi provider/models config with capability-aware reasoning controls, protocol/tool/replay compatibility, api_type selection, vision heuristics, and anthropic baseUrl overrides.
 - `pi-launchers.zsh` — `pi-<alias>()` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai` via `--ls99-extras`). `pi-list` groups catalog launchers into local and cloud sections from the catalog's canonical `cloud:` key namespace, with direct Pi and management commands shown separately. No `claude-*`/`codex-*` — standardize on `pi`.
 
 The model id in the launcher always matches the id in `models.json` (local = alias key / omlx_id, cloud = provider_model_id), so the two can never drift.
+
+When a catalog entry includes `thinking_levels`, it is the authoritative ordered subset of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. `pi-catalog` nulls every unsupported Pi level, sends supported levels canonically to the gateway (`off` becomes `none` only where Pi's API encoding requires it), preserves strict `thinking: always` and optional-Off behavior, and renders an empty list as `reasoning: false`. Provider-specific effort translation remains in `model-gateway`. An explicit `pi.thinkingLevelMap` is the machine override; catalogs that omit `thinking_levels` retain the legacy generated maps.
 
 Install per-machine:
 

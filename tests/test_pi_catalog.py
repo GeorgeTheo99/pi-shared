@@ -109,6 +109,69 @@ def test_local_glm_gets_graded_reasoning(tmp_path):
     assert m["thinkingLevelMap"]["high"] == "high"
 
 
+def test_capability_levels_constrain_generic_glm_openai_and_anthropic(tmp_path):
+    aliases = {
+        "cloud:generic": {
+            "name": "generic-reasoner", "alias": "generic", "provider": "databricks",
+            "provider_model_id": "generic-reasoner", "thinking": "optional",
+            "thinking_levels": ["off", "low", "max"],
+        },
+        "glm-local": {
+            "name": "glm-5.2", "alias": "glm", "provider": "local",
+            "thinking": "always", "thinking_format": "glm-chat-template",
+            "thinking_levels": ["high", "max"],
+        },
+        "cloud:gpt": {
+            "name": "gpt-5.4", "alias": "gpt", "provider": "openai",
+            "provider_model_id": "gpt-5.4", "thinking": "optional",
+            "thinking_levels": ["off", "minimal", "high", "xhigh"],
+        },
+        "cloud:claude": {
+            "name": "claude-opus-4.8", "alias": "claude", "provider": "anthropic",
+            "provider_model_id": "claude-opus-4-8", "thinking": "optional",
+            "thinking_levels": ["off", "low", "high", "max"],
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"]
+    by_id = {model["id"]: model for model in models}
+
+    generic = by_id["generic-reasoner"]
+    assert generic["thinkingLevelMap"] == {
+        "off": "off", "minimal": None, "low": "low", "medium": None,
+        "high": None, "xhigh": None, "max": "max",
+    }
+    assert list(generic["thinkingLevelMap"]) == [
+        "off", "minimal", "low", "medium", "high", "xhigh", "max",
+    ]
+    assert generic["compat"]["supportsReasoningEffort"] is True
+    assert "thinkingFormat" not in generic["compat"]
+
+    glm = by_id["glm-local"]
+    assert glm["thinkingLevelMap"] == {
+        "off": None, "minimal": None, "low": None, "medium": None,
+        "high": "high", "xhigh": None, "max": "max",
+    }
+    assert glm["reasoning"] is True
+    assert glm["compat"] == {"supportsReasoningEffort": True}
+
+    gpt = by_id["gpt-5.4"]
+    assert gpt["thinkingLevelMap"] == {
+        "off": "none", "minimal": "minimal", "low": None, "medium": None,
+        "high": "high", "xhigh": "xhigh", "max": None,
+    }
+
+    claude = by_id["claude-opus-4-8"]
+    assert claude["thinkingLevelMap"] == {
+        "off": "off", "minimal": None, "low": "low", "medium": None,
+        "high": "high", "xhigh": None, "max": "max",
+    }
+    assert claude["compat"]["forceAdaptiveThinking"] is True
+    assert claude["compat"]["supportsEagerToolInputStreaming"] is False
+
+
 def test_cloud_anthropic_uses_messages_api_and_root_baseurl(tmp_path):
     aliases = {
         "cloud:claude-opus-4-8": {
@@ -239,7 +302,8 @@ def test_cloud_kimi_k3_uses_native_deferred_tools_and_max_only(tmp_path):
         "cloud:kimi-k3": {
             "name": "kimi-k3", "alias": "kimi3", "desc": "Kimi K3",
             "provider": "moonshot", "provider_model_id": "kimi-k3",
-            "thinking": "always", "context": 1000000, "max_output_tokens": 131072,
+            "thinking": "always", "thinking_levels": ["max"],
+            "context": 1000000, "max_output_tokens": 131072,
         },
     }
     p = _load_aliases(tmp_path, aliases)
@@ -257,7 +321,8 @@ def test_cloud_kimi_k3_uses_native_deferred_tools_and_max_only(tmp_path):
         "xhigh": None,
         "max": "max",
     }
-    assert m["compat"]["thinkingFormat"] == "deepseek"
+    assert "thinkingFormat" not in m["compat"]
+    assert m["compat"]["supportsReasoningEffort"] is True
     assert m["compat"]["requiresReasoningContentOnAssistantMessages"] is True
     assert m["compat"]["deferredToolsMode"] == "kimi"
 
@@ -608,6 +673,59 @@ def test_enable_thinking_false_disables_reasoning(tmp_path):
     m = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["models"][0]
     assert m["reasoning"] is False
     assert "compat" not in m  # no thinkingFormat
+
+
+def test_empty_capability_levels_disable_local_qwen_status_fallback(tmp_path):
+    aliases = {
+        "qwen3.5-VL-9b-8bit-10gb": {
+            "name": "qwen3.5-9b", "alias": "qwen35tinyvl", "provider": "local",
+            "omlx_id": "qwen3.5-VL-9b-8bit-10gb", "thinking_levels": [],
+        },
+    }
+    status = tmp_path / "status.json"
+    status.write_text(json.dumps({"models": [{
+        "id": "qwen3.5-VL-9b-8bit-10gb", "thinking_default": True,
+    }]}))
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"),
+             "--omlx-status", str(status))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["reasoning"] is False
+    assert "thinkingLevelMap" not in m
+    assert "compat" not in m
+
+
+def test_pi_thinking_level_map_overrides_gateway_capabilities(tmp_path):
+    aliases = {
+        "cloud:override": {
+            "name": "override", "alias": "override", "provider": "databricks",
+            "provider_model_id": "override", "thinking": "always",
+            "thinking_levels": ["max"],
+            "pi": {"thinkingLevelMap": {"off": None, "high": "machine-high"}},
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["thinkingLevelMap"] == {"off": None, "high": "machine-high"}
+
+
+def test_legacy_catalog_without_capability_levels_keeps_generated_map(tmp_path):
+    aliases = {
+        "legacy-glm": {
+            "name": "glm-5.2", "alias": "legacy", "provider": "local",
+            "thinking": "optional", "thinking_format": "glm-chat-template",
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["thinkingLevelMap"]["xhigh"] == "max"
+    assert m["thinkingLevelMap"]["max"] == "max"
+    assert m["compat"]["thinkingFormat"] == "chat-template"
 
 
 def test_provider_compat_not_shared_between_providers(tmp_path):
