@@ -110,22 +110,13 @@ Current generated `pi-*` shell launchers call this automatically before writing 
 It reads the alias file and emits:
 
 - `models.json` — a Pi provider/models config with capability-aware reasoning controls, protocol/tool/replay compatibility, api_type selection, vision heuristics, and anthropic baseUrl overrides.
-- `pi-launchers.zsh` — `pi-<alias>()` + `pi-long <alias>` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai` via `--ls99-extras`). `pi-list` groups catalog launchers into local and cloud sections from the catalog's canonical `cloud:` key namespace, with prompt-cache, direct Pi, and management commands shown separately. No `claude-*`/`codex-*` — standardize on `pi`.
+- `pi-launchers.zsh` — `pi-<alias>()` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai` via `--ls99-extras`). `pi-list` groups catalog launchers into local and cloud sections from the catalog's canonical `cloud:` key namespace, with direct Pi and management commands shown separately. No `claude-*`/`codex-*` — standardize on `pi`.
 
 The model id in the launcher always matches the id in `models.json` (local = alias key / omlx_id, cloud = provider_model_id), so the two can never drift.
 
-Anthropic prompt caching remains 5 minutes by default. Use
-`pi-long <alias> [pi args...]` when a session is expected to reuse a stable prefix after a 5–60
-minute gap, for example `pi-long opus5 --thinking high`. The helper accepts only
-native-Anthropic `anthropic-messages` aliases whose compatibility does not disable
-long retention. It sets `PI_CACHE_RETENTION=long` for that child launch only; it does
-not change the parent shell, generate per-model long variants, predict task
-length, or attempt to promote a warm 5-minute entry. Ordinary `pi-<alias>`
-launchers keep Pi's short default.
-
-Generated native-Anthropic models also ask Pi to send its opaque session-affinity
-header to model-gateway. The gateway HMAC-pseudonymizes that value for cache-retention
-measurement and does not forward or expose the raw identifier.
+Prompt caching uses Pi's default short retention. The generated launchers do not
+select provider-specific long retention or send session-affinity identifiers for
+gateway analytics.
 
 When a catalog entry includes `thinking_levels`, it is the authoritative ordered subset of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. `pi-catalog` nulls every unsupported Pi level, sends supported levels canonically to the gateway (`off` becomes `none` only where Pi's API encoding requires it), preserves strict `thinking: always` and optional-Off behavior, and renders an empty list as `reasoning: false`. Provider-specific effort translation remains in `model-gateway`. An explicit `pi.thinkingLevelMap` is the machine override; catalogs that omit `thinking_levels` retain the legacy generated maps.
 

@@ -192,7 +192,7 @@ def test_cloud_anthropic_uses_messages_api_and_root_baseurl(tmp_path):
     assert m["thinkingLevelMap"]["max"] == "max"
     assert m["compat"]["forceAdaptiveThinking"] is True
     assert m["compat"]["supportsTemperature"] is False
-    assert m["compat"]["sendSessionAffinityHeaders"] is True
+    assert "sendSessionAffinityHeaders" not in m["compat"]
     assert m["baseUrl"] == "http://localhost:9111"  # root, not /v1 (avoid /v1/v1/messages)
     assert m["input"] == ["text", "image"]  # cloud always image-capable
 
@@ -462,7 +462,8 @@ def test_launcher_and_models_ids_agree(tmp_path):
         assert f" {shlex.quote(m['id'])} " in launchers, f"launcher missing model id {m['id']!r}"
     assert "pi-qwen36mlx()" in launchers
     assert "pi-opus48()" in launchers
-    assert "pi-long()" in launchers
+    assert "pi-long()" not in launchers
+    assert "PI_CACHE_RETENTION" not in launchers
     assert "pi-list()" in launchers
     assert "pi-restart()" in launchers
     # pi-agent-dir wrapping
@@ -477,7 +478,7 @@ def test_launcher_and_models_ids_agree(tmp_path):
     assert not re.search(r'\bcodex-[A-Za-z0-9_]+\s*\(\)', launchers), "launcher defines codex-* functions"
 
 
-def test_pi_long_is_anthropic_only_child_scoped_and_preserves_args(tmp_path):
+def test_launcher_removes_legacy_pi_long_function(tmp_path):
     if not shutil.which("zsh"):
         pytest.skip("zsh not available")
     aliases = {
@@ -485,113 +486,21 @@ def test_pi_long_is_anthropic_only_child_scoped_and_preserves_args(tmp_path):
             "name": "Opus", "alias": "opus", "provider": "anthropic",
             "provider_model_id": "claude-opus-5",
         },
-        "cloud:kimi": {
-            "name": "Kimi", "alias": "kimi", "provider": "moonshot",
-            "provider_model_id": "kimi-k3",
-        },
-        "cloud:no-long": {
-            "name": "No Long", "alias": "nolong", "provider": "anthropic",
-            "provider_model_id": "claude-no-long",
-            "pi": {"compat": {"supportsLongCacheRetention": False}},
-        },
-        "cloud:fireworks-reasoning": {
-            "name": "Fireworks Reasoning", "alias": "fw", "provider": "fireworks",
-            "provider_model_id": "fireworks/reasoning", "thinking": "optional",
-        },
-        "cloud:anthropic-openai-protocol": {
-            "name": "Translated Anthropic", "alias": "anthopenai", "provider": "anthropic",
-            "protocol": "openai", "provider_model_id": "translated-anthropic",
-        },
     }
     p = _load_aliases(tmp_path, aliases)
     launcher = tmp_path / "launchers.zsh"
-    models_out = tmp_path / "models.json"
-    r = _run(
-        "--aliases", str(p), "--models-out", str(models_out),
-        "--launchers-out", str(launcher),
-    )
+    r = _run("--aliases", str(p), "--launchers-out", str(launcher))
     assert r.returncode == 0, r.stderr
-    launchers = launcher.read_text()
-    rendered_models = json.loads(models_out.read_text())["providers"]["ls99-models"]["models"]
-    translated = next(m for m in rendered_models if m["id"] == "translated-anthropic")
-    assert "sendSessionAffinityHeaders" not in translated.get("compat", {})
-    assert "pi-long()" in launchers
-    assert "PI_CACHE_RETENTION=long \"$launcher\" \"$@\"" in launchers
-    assert "Anthropic-message aliases only" in launchers
-    assert "pi-long <alias> [args...]" in launchers
-
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    (fake_bin / "curl").write_text("#!/bin/sh\nexit 0\n")
-    (fake_bin / "curl").chmod(0o755)
-    (fake_bin / "pi").write_text(
-        "#!/bin/sh\n"
-        "printf 'cache=%s\\n' \"${PI_CACHE_RETENTION-unset}\" > \"$PI_CAPTURE\"\n"
-        "for arg in \"$@\"; do printf 'arg=<%s>\\n' \"$arg\" >> \"$PI_CAPTURE\"; done\n"
-    )
-    (fake_bin / "pi").chmod(0o755)
-    long_capture = tmp_path / "long.txt"
-    unset_capture = tmp_path / "long-unset-parent.txt"
-    short_capture = tmp_path / "short.txt"
-    script = f"""
-        pi() {{ {fake_bin / 'pi'} \"$@\"; }}
-        curl() {{ return 0; }}
-        pi-omlx-repair() {{ return 0; }}
-        source {launcher!s}
-        export PI_CACHE_RETENTION=short
-        export PI_CAPTURE={long_capture!s}
-        pi-long opus --thinking high 'two words'
-        print -r -- "parent=$PI_CACHE_RETENTION"
-        export PI_CAPTURE={short_capture!s}
-        pi-opus --plain
-        unset PI_CACHE_RETENTION
-        export PI_CAPTURE={unset_capture!s}
-        pi-long opus --unset-parent
-        print -r -- "parent-unset=${{PI_CACHE_RETENTION-unset}}"
-    """
-    z = subprocess.run(
-        ["zsh", "-c", script],
-        capture_output=True,
-        text=True,
-        env={**os.environ, "PATH": f"{fake_bin}:/usr/bin:/bin"},
-    )
-    assert z.returncode == 0, z.stderr
-    assert "parent=short" in z.stdout
-    assert "parent-unset=unset" in z.stdout
-    assert long_capture.read_text().splitlines() == [
-        "cache=long",
-        "arg=<--provider>",
-        "arg=<ls99-models>",
-        "arg=<--model>",
-        "arg=<claude-opus-5>",
-        "arg=<--thinking>",
-        "arg=<high>",
-        "arg=<two words>",
-    ]
-    assert short_capture.read_text().splitlines()[0] == "cache=short"
-    assert unset_capture.read_text().splitlines()[0] == "cache=long"
-
-    invalid = subprocess.run(
+    result = subprocess.run(
         [
             "zsh", "-c",
-            f"pi-omlx-repair() {{ return 0; }}; source {launcher!s}; "
-            "pi-long kimi; print u=$?; pi-long nolong; print n=$?; "
-            "pi-long fw; print f=$?; pi-long anthopenai; print a=$?; "
-            "pi-long missing; print x=$?; pi-long; print m=$?",
+            f"pi-omlx-repair() {{ return 0; }}; pi-long() {{ return 0; }}; "
+            f"source {launcher!s}; (( ! $+functions[pi-long] ))",
         ],
         capture_output=True,
         text=True,
-        env={**os.environ, "PATH": f"{fake_bin}:/usr/bin:/bin", "PI_CAPTURE": str(tmp_path / "invalid")},
     )
-    assert invalid.returncode == 0
-    assert {"u=2", "n=2", "f=2", "a=2", "x=2", "m=2"} <= set(invalid.stdout.splitlines())
-    assert "supports Anthropic-message aliases only: kimi" in invalid.stderr
-    assert "supports Anthropic-message aliases only: nolong" in invalid.stderr
-    assert "supports Anthropic-message aliases only: fw" in invalid.stderr
-    assert "supports Anthropic-message aliases only: anthopenai" in invalid.stderr
-    assert "unknown Pi model alias: missing" in invalid.stderr
-    assert "Usage: pi-long <alias>" in invalid.stderr
-    assert not (tmp_path / "invalid").exists()
+    assert result.returncode == 0, result.stderr
 
 
 def test_pi_list_groups_local_and_cloud_models(tmp_path):
