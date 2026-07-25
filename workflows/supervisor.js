@@ -89,10 +89,15 @@ return {
 
 function parseVerdict(text) {
   const normalized = String(text ?? "").trim();
-  if (/^accept$/i.test(normalized)) return { kind: "ACCEPT" };
   const firstLine = normalized.split("\n")[0]?.trim() ?? "";
+  // Protocol: the FIRST line is the verdict. Honor a first-line ACCEPT even when
+  // the reviewer adds explanation on later lines. This is still strict: the
+  // verdict word must occupy the whole first line (no prefix/suffix prose).
+  if (/^accept$/i.test(firstLine)) return { kind: "ACCEPT" };
   const m = firstLine.match(/^revise\s*:\s*(.+)$/i);
   if (m && m[1].trim()) return { kind: "REVISE", instruction: m[1].trim() };
+  // Whole-reply single-word ACCEPT (legacy/no-explanation form).
+  if (/^accept$/i.test(normalized)) return { kind: "ACCEPT" };
   // Malformed verdict: never silently accept. Steer using the whole reply.
   const fallback = String(text ?? "").trim();
   return { kind: "REVISE", instruction: fallback || "Re-attempt the task and satisfy the rubric." };
