@@ -1,7 +1,7 @@
 ---
 name: powerpoint
 description: >-
-  Use this skill whenever a .pptx or .potx file is involved as input or output: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text; editing/updating existing presentations; combining/splitting decks; working with templates, layouts, speaker notes, or comments. Also use when the user mentions deck, slides, presentation, PowerPoint, PPTX/POTX, or deck-generation code.
+  Use this skill whenever a .pptx or .potx file is involved as input or output: creating PowerPoint decks or presentations; reading, parsing, or extracting text; editing/updating existing PowerPoint files; combining/splitting decks; working with PowerPoint templates, layouts, speaker notes, or comments; or writing PptxGenJS deck-generation code. Do not use it for Google Slides URLs or Google Slides API/CLI operations.
 ---
 
 This skill guides high-quality PowerPoint generation, inspection, editing, and repair.
@@ -14,14 +14,27 @@ Before writing or revising PptxGenJS deck-generation code, read:
 
 Use it as the source of truth for PptxGenJS layout dimensions, text formatting, bullets, shapes, images, icons, native charts, speaker notes, recompression, and common corruption/visual pitfalls.
 
+## Bundled helpers
+
+Use the vendored helpers when their extra machinery improves a deck; do not copy or invoke every helper by default:
+
+- `helpers/layout.js`: dependency-free geometry helpers for overlap and out-of-bounds diagnostics, element comparison, alignment, and distribution.
+- `helpers/text.js`: `autoFontSize`, `calcTextBox`, and `calcTextBoxHeightSimple` for measured text fitting. Copy it into the deck workspace, install `skia-canvas`, `linebreak`, and `fontkit` there (`npm install skia-canvas linebreak fontkit`), and ensure Fontconfig's `fc-match` is on `PATH`. Do not import it until those dependencies are available because they load eagerly.
+- `scripts/detect_font.py`: reports fonts missing from the system or substituted by LibreOffice. It uses Python's standard library plus the installed `soffice`/LibreOffice and Fontconfig's `fc-list` commands.
+
+Import the dependency-free CommonJS layout helper directly from this skill directory or copy it into the task workspace. Copy the text helper into the workspace with its dependencies as described above. For generated or substantially edited PptxGenJS slides, run `warnIfSlideHasOverlaps(slide, pptx)` and `warnIfSlideElementsOutOfBounds(slide, pptx)` after adding slide elements. Fix unintended warnings; document intentional overlaps near the relevant code. Text measurements remain estimates, so always confirm them with `pptx_preview`.
+
+The upstream origin and Apache-2.0 license for vendored files are recorded under `third_party/openai-slides/`.
+
 ## Workflow
 
 1. Clarify the deck goal, audience, constraints, brand/template requirements, and desired visual tone when those materially affect the result.
 2. For existing `.pptx`/`.potx` files, inspect both content and visuals before editing. Preserve template structure, masters, notes, comments, and user content unless explicitly asked to remove them.
 3. Prefer real editable PowerPoint objects: native text, shapes, connectors, tables, charts, and speaker notes.
 4. Avoid image-rendered charts unless the requested visualization has no native PowerPoint representation.
-5. Generate or edit the `.pptx`, then use `pptx_preview` to inspect rendered slides visually.
-6. Fix user-visible layout, clipping, spacing, contrast, placeholder, file-size, or corruption issues and preview again when needed.
+5. Generate or substantially edit the `.pptx`; run the geometry helpers for those PptxGenJS slides, and run `scripts/detect_font.py` when custom or QA-unreliable fonts are present.
+6. Use `pptx_preview` to inspect the rendered slides visually. This is mandatory even if helper checks pass.
+7. Fix user-visible layout, clipping, spacing, contrast, placeholder, file-size, font-substitution, or corruption issues and preview again when needed.
 
 ## Design guidance
 
@@ -47,6 +60,7 @@ Suggested sizes: slide titles 36-44pt, section headers 20-24pt, body text 14-16p
 
 - Check content order, missing content, typos, and leftover placeholders.
 - Check text bounds first: no clipped, overflowing, or cramped text.
-- Check overlaps, collisions, low contrast, uneven spacing, insufficient margins, misaligned columns/cards, and stale template decorations.
+- Check overlaps, collisions, low contrast, uneven spacing, insufficient margins, misaligned columns/cards, and stale template decorations. Helper warnings are diagnostics, not a substitute for rendered-image review.
+- For font diagnostics, run `python3 scripts/detect_font.py deck.pptx --json` from this skill directory. Treat missing or substituted fonts as defects unless the fallback is explicitly acceptable.
 - Use fresh eyes for nontrivial decks: ask a reviewer/subagent to inspect rendered slide images when possible.
 - Stop after one fix-and-verify cycle unless a new user-visible defect remains; do not chase sub-pixel perfection.
