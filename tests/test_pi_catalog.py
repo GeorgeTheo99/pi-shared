@@ -300,19 +300,22 @@ def test_cloud_gpt_uses_responses_api(tmp_path):
     assert "baseUrl" not in m  # openai-shaped uses provider /v1 base
 
 
-def test_cloud_kimi_k3_uses_native_deferred_tools_and_max_only(tmp_path):
+def test_cloud_fireworks_kimi_k3_keeps_native_deferred_tools_and_logical_id(tmp_path):
     aliases = {
         "cloud:kimi-k3": {
             "name": "kimi-k3", "alias": "kimi3", "desc": "Kimi K3",
-            "provider": "moonshot", "provider_model_id": "kimi-k3",
+            "provider": "fireworks",
+            "provider_model_id": "accounts/fireworks/models/kimi-k3",
             "thinking": "always", "thinking_levels": ["max"],
             "context": 1000000, "max_output_tokens": 131072,
+            "pi": {"id": "kimi-k3"},
         },
     }
     p = _load_aliases(tmp_path, aliases)
     r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
     assert r.returncode == 0, r.stderr
     m = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["id"] == "kimi-k3"
     assert m["api"] == "openai-completions"
     assert m["reasoning"] is True
     assert m["thinkingLevelMap"] == {

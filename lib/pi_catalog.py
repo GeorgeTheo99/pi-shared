@@ -158,9 +158,20 @@ def _reasoning_kind(key: str, meta: dict, status: dict) -> str:
     if provider == "gguf":
         return ""
 
+    if thinking in THINKING_VALUES and provider in {
+        "fireworks", "moonshot", "moonshotai", "moonshotai-cn",
+    }:
+        identities = {
+            str(meta.get(field) or "").lower()
+            for field in ("name", "provider_model_id")
+            if meta.get(field)
+        }
+        if "kimi-k3" in identities or any(value.endswith("/kimi-k3") for value in identities):
+            return "kimi-k3"
+
     if provider == "fireworks" and thinking in THINKING_VALUES:
-        # Pi's upstream registry uses Anthropic Messages shape for Fireworks
-        # reasoning models; the gateway's /v1/messages path translates that.
+        # Pi's upstream registry uses Anthropic Messages shape for other
+        # Fireworks reasoning models; the gateway's /v1/messages path translates that.
         return "fireworks-messages"
 
     if provider in {"zhipuai", "zai", "zai_coding", "bigmodel"} and thinking in THINKING_VALUES:
@@ -168,11 +179,6 @@ def _reasoning_kind(key: str, meta: dict, status: dict) -> str:
 
     if provider == "openrouter" and thinking in THINKING_VALUES:
         return "openrouter"
-
-    if provider in {"moonshot", "moonshotai", "moonshotai-cn"} and thinking in THINKING_VALUES:
-        model_id = str(meta.get("provider_model_id") or meta.get("name") or "").lower()
-        if model_id == "kimi-k3":
-            return "kimi-k3"
 
     if provider == "openai" and thinking in THINKING_VALUES:
         # GPT-5.x rejects some reasoning+tools shapes on Chat Completions.
