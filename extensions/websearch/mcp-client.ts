@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 export const CONFIG_PATH = join(homedir(), ".pi", "research", "config.json");
 export const DEFAULT_LOCAL_MCP = ["http://127.0.0.1:8889/mcp"];
+export const WEB_SEARCH_TIMEOUT_MS = 20_000;
+export const WEB_FETCH_TIMEOUT_MS = 65_000;
 
 type Environment = Record<string, string | undefined>;
 

@@ -49,7 +49,7 @@ Broker authentication and Tavily forwarding use separate credentials:
 
 Pi forwards a Tavily key only for `web_search` calls to a loopback broker (`localhost`, `127.0.0.0/8`, or `::1`); `web_fetch` never receives it. Broker authentication may be sent to loopback HTTP or any HTTPS endpoint. No credential headers are sent to a non-loopback plain-HTTP endpoint, MCP redirects are rejected, embedded URL credentials are refused, and sensitive endpoint query parameters are redacted from diagnostics.
 
-Each `web_search` or `web_fetch` call has one total deadline across all configured endpoint attempts (20 seconds for search, 30 seconds for fetch). Cancelling the Pi tool call aborts the in-flight broker request and remains a cancellation rather than a broker error.
+Each `web_search` or `web_fetch` call has one total deadline across all configured endpoint attempts (20 seconds for search, 65 seconds for fetch). Cancelling the Pi tool call aborts the in-flight broker request and remains a cancellation rather than a broker error. The longer fetch deadline lets the broker finish its own 60-second fallback chain.
 
 ## Search details
 

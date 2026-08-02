@@ -8,7 +8,14 @@ import {
 	mcpResultText,
 	mcpToolCall,
 	resolveConfiguredMcpUrls,
+	WEB_FETCH_TIMEOUT_MS,
+	WEB_SEARCH_TIMEOUT_MS,
 } from "../extensions/websearch/mcp-client.ts";
+
+test("web fetch allows the broker fallback chain without slowing search", () => {
+	assert.equal(WEB_SEARCH_TIMEOUT_MS, 20_000);
+	assert.equal(WEB_FETCH_TIMEOUT_MS, 65_000);
+});
 
 test("explicit MCP URLs are authoritative and deduplicated", () => {
 	assert.deepEqual(resolveConfiguredMcpUrls({}, {}), DEFAULT_LOCAL_MCP);

@@ -12,6 +12,8 @@ import {
 	CONFIG_PATH,
 	mcpToolCall,
 	readConfiguredMcpUrls,
+	WEB_FETCH_TIMEOUT_MS,
+	WEB_SEARCH_TIMEOUT_MS,
 	type McpToolCallResult,
 } from "./mcp-client.js";
 import { normalizeCount, normalizeToolText, TOOL_OUTPUT_CHAR_LIMIT } from "./text.ts";
@@ -108,7 +110,7 @@ const webSearch = defineTool({
 				query: params.query,
 				num_results: numResults,
 			},
-			{ signal, timeoutMs: 20_000, requestId: "pi-websearch" },
+			{ signal, timeoutMs: WEB_SEARCH_TIMEOUT_MS, requestId: "pi-websearch" },
 		);
 
 		if (!mcp.text) {
@@ -177,7 +179,7 @@ const webFetch = defineTool({
 			readConfiguredMcpUrls(),
 			"web_fetch",
 			{ url: params.url, max_chars: maxChars },
-			{ signal, timeoutMs: 30_000, requestId: "pi-websearch" },
+			{ signal, timeoutMs: WEB_FETCH_TIMEOUT_MS, requestId: "pi-websearch" },
 		);
 
 		if (!mcp.text) {
