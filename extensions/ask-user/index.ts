@@ -32,10 +32,13 @@ function textResult(text: string, details: AskUserDetails) {
 	};
 }
 
-function dialogOptions(timeoutMs: number | undefined) {
-	return typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
-		? { timeout: timeoutMs }
-		: undefined;
+function dialogOptions(timeoutMs: number | undefined, signal: AbortSignal | undefined) {
+	return {
+		signal,
+		...(typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+			? { timeout: timeoutMs }
+			: {}),
+	};
 }
 
 const askUserTool = defineTool({
@@ -71,8 +74,9 @@ const askUserTool = defineTool({
 			Type.Number({ description: "Optional timeout in milliseconds. Timeout is treated as cancellation." }),
 		),
 	}),
+	executionMode: "sequential",
 
-	async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		const question = params.question.trim();
 		const options = normalizeOptions(params.options);
 		const allowCustom = params.allow_custom ?? options.length === 0;
@@ -125,7 +129,7 @@ const askUserTool = defineTool({
 			const answer = await ctx.ui.input(
 				params.custom_prompt?.trim() || question,
 				"Type your answer",
-				dialogOptions(params.timeout_ms),
+				dialogOptions(params.timeout_ms, signal),
 			);
 			const trimmed = answer?.trim();
 			if (!trimmed) {
@@ -141,7 +145,7 @@ const askUserTool = defineTool({
 		const existing = new Set(options);
 		const customLabel = customOptionLabel(existing);
 		const displayedOptions = allowCustom ? [...options, customLabel] : options;
-		const selected = await ctx.ui.select(question, displayedOptions, dialogOptions(params.timeout_ms));
+		const selected = await ctx.ui.select(question, displayedOptions, dialogOptions(params.timeout_ms, signal));
 
 		if (!selected) {
 			return cancelledResult({ ...baseDetails, cancelled: true });
@@ -151,7 +155,7 @@ const askUserTool = defineTool({
 			const answer = await ctx.ui.input(
 				params.custom_prompt?.trim() || question,
 				"Type your answer",
-				dialogOptions(params.timeout_ms),
+				dialogOptions(params.timeout_ms, signal),
 			);
 			const trimmed = answer?.trim();
 			if (!trimmed) {

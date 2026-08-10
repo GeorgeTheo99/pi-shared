@@ -2,9 +2,10 @@
   "name": "pi-shared",
   "private": true,
   "scripts": {
-    "test": "npm run test:websearch && npm run test:goal && npm run test:self-handoff && npm run test:tool-summary && npm run test:panel && npm run test:subagents",
+    "test": "npm run test:websearch && npm run test:goal && npm run test:ask-user && npm run test:self-handoff && npm run test:tool-summary && npm run test:panel && npm run test:subagents",
     "test:websearch": "node --no-warnings --test tests/websearch_mcp_client.test.mts",
     "test:goal": "node --no-warnings --experimental-loader ./tests/fixtures/goal_test_loader.mjs --test tests/goal_abort.test.mts",
+    "test:ask-user": "node --no-warnings --experimental-loader ./tests/fixtures/ask_user_test_loader.mjs --test tests/ask_user.test.mts",
     "test:self-handoff": "node --no-warnings --test tests/self_handoff.test.mts",
     "test:tool-summary": "node --no-warnings --test tests/tool_summary_policy.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/tool_summary_test_loader.mjs --test tests/tool_summary_extension.test.mts",
     "test:panel": "node --no-warnings --experimental-loader ./tests/fixtures/panel_test_loader.mjs --test tests/panel_models.test.mts",
