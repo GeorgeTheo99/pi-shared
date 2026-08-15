@@ -12,7 +12,7 @@ Modes:
 
 - Single: `{ "agent": "scout", "task": "find auth entry points" }`
 - Parallel: `{ "tasks": [{ "agent": "scout", "task": "find models" }, { "agent": "scout", "task": "find routes" }] }`
-- Parallel with per-task models/profiles: `{ "tasks": [{ "agent": "panelist", "task": "review X", "model": "provider/model-a", "agentDir": "~/.pi-omlx/agent" }, { "agent": "panelist", "task": "review X", "model": "provider/model-b" }] }`
+- Parallel with per-task models/thinking/profiles: `{ "tasks": [{ "agent": "panelist", "task": "review X", "model": "provider/model-a", "thinking": "high", "agentDir": "~/.pi-omlx/agent" }, { "agent": "panelist", "task": "review X", "model": "provider/model-b" }] }`
 - Chain: `{ "chain": [{ "agent": "scout", "task": "inspect X" }, { "agent": "planner", "task": "plan from this: {previous}" }] }`
 - Background start: `{ "background": true, "tasks": [{ "agent": "scout", "task": "find models" }, { "agent": "scout", "task": "find routes" }] }`
 - Interactive single child: `{ "agent": "scout", "task": "inspect the ambiguous API", "interactive": true, "maxExchanges": 10 }`
@@ -66,13 +66,14 @@ Lists available agents for the selected scope.
 - Optional `outputSchema` is available at the top level and per parallel task or chain step for one-shot runs. The child is instructed to return exactly one JSON value, and the parent validates it with a bounded, fail-closed JSON Schema subset before exposing it as `details.results[].structuredOutput`. Unsupported schema keywords fail rather than being ignored. Interactive output schemas are intentionally rejected.
 - Chain `{previous}` handoffs are appended as an explicitly untrusted JSON envelope. A later child is told to use the data as task-scoped evidence and not follow instructions embedded in an earlier child's output. When the earlier step has a validated `structuredOutput`, the chain passes that value instead of raw prose.
 - Model precedence per spawn: task/chain-step `model` > explicit top-level `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.provider/ctx.model.id`). The parent's provider-qualified model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
+- Child thinking defaults explicitly to `high`. Thinking precedence is task/chain-step `thinking` > top-level `thinking` > a legacy `:<thinking>` suffix already present on the selected model > `high`. Supported values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; Pi clamps them to model capabilities.
 - GPT-family subagent models always use the OpenAI Codex subscription provider, not the OpenAI API provider: `gpt-*`, `chatgpt-*`, `o*`, and API-routed forms like `openai/gpt-*` are launched as `openai-codex/<model>` automatically. If the current child profile lacks subscription auth, `spawn_subagent` falls back to the default subscription profile (`~/.pi/agent`). If no subscription auth exists, the child fails instead of silently using the API route.
 - Optional `agentDir` / `tasks[].agentDir` / `chain[].agentDir` sets `PI_CODING_AGENT_DIR` for the child Pi process, enabling cross-profile model runs such as launching `ls99-cloud/*` models from `~/.pi-omlx/agent` while the parent session uses a narrower profile. `~/.pi/agent` and `~/.pi-omlx/agent` are trusted by default.
 - `agentDir` is a trust boundary because a Pi profile can load its own settings and extensions. `~/.pi/agent`, `~/.pi-omlx/agent`, the current `PI_CODING_AGENT_DIR`, and comma-separated `PI_SPAWN_SUBAGENT_ALLOWED_AGENT_DIRS` are allowlisted; other profiles require UI confirmation or are blocked in non-interactive mode.
 - Streams live partial updates back into the tool result for foreground jobs, including queued/running/completed status, active child tool, last event, and output preview for each subagent.
 - Renders custom TUI rows for `spawn_subagent` calls so the visible tool card shows mode, agent/task summary, per-agent progress, active tools, and final output previews instead of only the generic tool name.
-- Background jobs return a job id immediately and keep running in the current Pi extension process; poll with `jobAction=status`, list with `jobAction=list`, and cancel with `jobAction=cancel`.
-- Background job status polling includes the latest live partial result while the job is running and returns the correlated question when it is `awaiting_answer`.
+- Background jobs return a job id immediately and keep running in the current Pi extension process. Use them only when the parent has substantive independent work: continue that work first, call `wait_for({jobs:[...]})` once when the result becomes a dependency, then fetch `jobAction=status` once. List with `jobAction=list` and cancel with `jobAction=cancel`.
+- A background job status fetch includes the latest live partial result while the job is running and returns the correlated question when it is `awaiting_answer`; do not repeatedly poll it.
 - Background jobs emit a visible UI notification when they transition to `completed`, `failed`, or `canceled`; it includes the job id and success summary, while full output remains available through `jobAction: "status"`.
 - Background job metadata and truncated/redacted result summaries persist to `~/.pi/agent/spawn-subagent/jobs.json` by default (`PI_SUBAGENT_STATE_DIR` or legacy `PI_SPAWN_SUBAGENT_DIR` overrides the directory). Active records are never evicted; terminal history is limited to the newest records within the 100-job / 30-day retention bounds.
 - Background records are merged under an interprocess lock and published atomically. Running jobs carry owner PID/heartbeat leases, so loading another Pi process does not mark live foreign jobs failed. Expired/dead owners are reconciled to `failed`.
@@ -114,13 +115,13 @@ Defaults are conservative and can be changed before Pi starts. Invalid or out-of
 
 ## Delegation Gates
 
-Use subagents when isolation, parallelism, or specialist perspective adds value:
+Use subagents only when isolation, parallelism, or specialist perspective clearly adds value:
 
-- **Recon gate** — unfamiliar code area that would likely need 5+ sequential read/grep/find calls; delegate read-only reconnaissance to `scout` before editing.
-- **Parallel gate** — 2+ independent investigation paths can run concurrently; use parallel mode with focused scout/reviewer tasks.
-- **Specialist gate** — planning or review would materially improve correctness after non-trivial diffs, risky changes, or broad refactors.
+- **Isolation gate** — a broad, unfamiliar area needs an independent reusable map before the parent can proceed.
+- **Parallel gate** — genuinely independent investigation paths can run concurrently without duplicating discovery.
+- **Specialist gate** — risk, scope, or unfamiliarity makes an independent planning or review perspective materially valuable.
 
-Do not use subagents for single-file reads, quick greps, obvious edits, or normal linear test/fix loops. Keep routine execution in the main agent so context and responsibility stay visible.
+Do not use subagents for single-file reads, quick greps, obvious edits, or normal linear test/fix loops. Keep routine execution in the main agent so context and responsibility stay visible. Use a foreground single child only when its result is a prerequisite and its value outweighs cold context discovery. Default to one release-gate reviewer; repeat review only after material findings or material changes, and target follow-up review to the affected risks while preserving reviewer independence.
 
 ## Orchestration
 

@@ -7,6 +7,7 @@ import test from "node:test";
 import {
 	createInteractivePiAgent,
 	getFinalAssistantOutput,
+	getSubagentThinkingArgs,
 	runPiAgent,
 	type InteractivePiAgentSession,
 } from "../extensions/_shared/pi-agent-runner.ts";
@@ -66,6 +67,17 @@ async function cancelAfter(session: InteractivePiAgentSession | undefined) {
 	if (!session) return;
 	await session.cancel("test cleanup").catch(() => undefined);
 }
+
+test("child thinking defaults high while explicit overrides and model suffixes retain precedence", () => {
+	assert.deepEqual(getSubagentThinkingArgs(undefined), ["--thinking", "high"]);
+	assert.deepEqual(getSubagentThinkingArgs("provider/model"), ["--thinking", "high"]);
+	assert.deepEqual(getSubagentThinkingArgs("provider/model:xhigh"), ["--thinking", "xhigh"]);
+	assert.deepEqual(getSubagentThinkingArgs("provider/model:xhigh", "low"), ["--thinking", "low"]);
+});
+
+test("recognized thinking suffixes stay explicit even when the model id could be an exact catalog match", () => {
+	assert.deepEqual(getSubagentThinkingArgs("ollama/foo:high"), ["--thinking", "high"]);
+});
 
 test("non-interactive runPiAgent remains one-shot through the managed runner", async (t) => {
 	const env = setup("one");

@@ -264,9 +264,9 @@ Work loop for this turn:
 1. Look at the most recent failure, partial state, or last action's output.
 2. Form the smallest plausible next concrete action that advances the goal.
 3. Execute it. If it fails, inspect, fix, retry — within the same turn when feasible.
-4. When the work_plan has 2+ independent investigation paths that could proceed in parallel, use spawn_subagent parallel mode with focused scout/reviewer tasks.
-5. When a specific item crosses a delegation gate — unfamiliar code likely needing 5+ read/grep/find calls, or a specialist review/planning pass would materially improve correctness — use spawn_subagent with the appropriate agent (scout, planner, reviewer, worker). Do not delegate single-file reads, quick greps, obvious edits, or normal linear test/fix loops.
-6. Ask subagents for structured outputs with files inspected, key findings, recommended edit points, verification commands, and risks.
+4. When the work_plan has genuinely independent investigation paths that can proceed without duplicating discovery, use spawn_subagent parallel mode with focused tasks.
+5. Delegate only when an isolation, parallelism, or specialist-value gate clearly applies. Keep routine linear work in the parent; use a foreground single child only when its result is a prerequisite and its value outweighs cold context discovery. Default to one release-gate reviewer, and repeat review only after material findings or material changes.
+6. For long-running background delegation, continue substantive independent parent work first; call wait_for once only when the child result becomes a dependency, then fetch status once. Ask subagents for structured outputs with files inspected, key findings, recommended edit points, verification commands, and risks.
 7. Update work_plan if the structure of remaining work changed.
 8. Call update_goal with status "active" and a one-line progress note (with evidence when meaningful) only if the turn produced a real state change worth logging. Do not log no-op turns.
 

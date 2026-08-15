@@ -42,7 +42,31 @@ test("nested delegation is blocked in child CLI arguments as defense in depth", 
 
 test("subagent model overrides recognize Pi's max thinking suffix", () => {
 	const runner = read("extensions/_shared/pi-agent-runner.ts");
-	assert.match(runner, /THINKING_LEVELS[^\n]+"xhigh", "max"/);
+	assert.match(runner, /SUBAGENT_THINKING_LEVELS[^\n]+"xhigh", "max"/);
+});
+
+test("both child runner modes apply the shared high-default thinking policy", () => {
+	const runner = read("extensions/_shared/pi-agent-runner.ts");
+	assert.match(runner, /DEFAULT_SUBAGENT_THINKING_LEVEL[^\n]+"high"/);
+	assert.equal((runner.match(/args\.push\(\.\.\.getSubagentThinkingArgs\(model, options\.thinking\)\)/g) ?? []).length, 2);
+});
+
+test("subagent guidance is continuation-first and avoids numeric delegation budgets", () => {
+	const spawnExtension = read("extensions/spawn-subagent/index.ts");
+	const agentsGuide = read("AGENTS.md");
+	const goalExtension = read("extensions/goal/index.ts");
+	for (const source of [spawnExtension, agentsGuide, goalExtension]) {
+		assert.doesNotMatch(source, /likely 5\+|5\+ sequential/);
+	}
+	assert.doesNotMatch(spawnExtension, /Poll later with jobAction=status|poll with jobAction=status/i);
+	assert.match(spawnExtension, /Continue substantive independent parent work first/);
+	assert.match(spawnExtension, /wait_for\(\{jobs:/);
+});
+
+test("workflow journal identity distinguishes omitted thinking from explicit high", () => {
+	const workflow = read("extensions/workflow/index.ts");
+	assert.match(workflow, /thinking: defaultThinking \?\? null/);
+	assert.doesNotMatch(workflow, /thinking: defaultThinking \?\? "high"/);
 });
 
 test("workflow tracks even fire-and-forget agent promises before returning", () => {

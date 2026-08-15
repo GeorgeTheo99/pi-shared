@@ -23,7 +23,10 @@ import {
 
 const OPENAI_CODEX_PROVIDER = "openai-codex";
 const OPENAI_CODEX_AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
-const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+export const SUBAGENT_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type SubagentThinkingLevel = (typeof SUBAGENT_THINKING_LEVELS)[number];
+export const DEFAULT_SUBAGENT_THINKING_LEVEL: SubagentThinkingLevel = "high";
+const THINKING_LEVELS = new Set<string>(SUBAGENT_THINKING_LEVELS);
 
 export interface PiAgentUsage {
 	input: number;
@@ -72,6 +75,7 @@ export interface RunPiAgentOptions {
 	cwd?: string;
 	model?: string;
 	parentModel?: string;
+	thinking?: SubagentThinkingLevel;
 	agentDir?: string;
 	signal?: AbortSignal;
 	onUpdate?: (result: PiAgentResult) => void;
@@ -362,6 +366,18 @@ function splitThinkingSuffix(model: string): { base: string; suffix: string } {
 	return { base: model.slice(0, colon), suffix: model.slice(colon) };
 }
 
+export function getSubagentThinkingArgs(
+	model: string | undefined,
+	thinking?: SubagentThinkingLevel,
+): string[] {
+	if (thinking) return ["--thinking", thinking];
+	if (model) {
+		const suffix = splitThinkingSuffix(model).suffix.slice(1) as SubagentThinkingLevel | "";
+		if (suffix) return ["--thinking", suffix];
+	}
+	return ["--thinking", DEFAULT_SUBAGENT_THINKING_LEVEL];
+}
+
 function isGptModelId(modelId: string): boolean {
 	return /^(?:gpt|chatgpt|o[1-9])(?:[-.]|$)/i.test(modelId);
 }
@@ -502,6 +518,7 @@ export async function createInteractivePiAgent(
 		args.push("--exclude-tools", "spawn_subagent,workflow");
 	}
 	if (model) args.push("--model", model);
+	args.push(...getSubagentThinkingArgs(model, options.thinking));
 	if (agent.tools && agent.tools.length > 0) {
 		args.push("--tools", Array.from(new Set([...agent.tools, "ask_parent"])).join(","));
 	}
@@ -941,6 +958,7 @@ export async function runPiAgent(options: RunPiAgentOptions): Promise<PiAgentRes
 		args.push("--exclude-tools", "spawn_subagent,workflow");
 	}
 	if (model) args.push("--model", model);
+	args.push(...getSubagentThinkingArgs(model, options.thinking));
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpPromptDir: string | undefined;

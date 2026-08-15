@@ -37,7 +37,7 @@ import crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Type } from "@mariozechner/pi-ai";
+import { StringEnum, Type } from "@mariozechner/pi-ai";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { discoverAgents, formatAgentList, type AgentConfig } from "../spawn-subagent/agents.js";
@@ -52,7 +52,12 @@ import {
 	createSubagentExecutionGroup,
 	type SubagentExecutionGroup,
 } from "../_shared/subagent-scheduler.ts";
-import { getFinalAssistantOutput, runPiAgent } from "../_shared/pi-agent-runner.ts";
+import {
+  getFinalAssistantOutput,
+  runPiAgent,
+  SUBAGENT_THINKING_LEVELS,
+  type SubagentThinkingLevel,
+} from "../_shared/pi-agent-runner.ts";
 import { PromiseTracker } from "./promise-tracker.ts";
 import {
 	exactJournalValue,
@@ -135,6 +140,14 @@ interface AgentExecResult {
   errorMessage?: string;
 }
 
+interface WorkflowAgentOptions {
+  agent?: string;
+  model?: string;
+  thinking?: SubagentThinkingLevel;
+  cwd?: string;
+  onProgress?: (text: string) => void;
+}
+
 async function runAgent(options: {
   config: SubagentConfig;
   group: SubagentExecutionGroup;
@@ -145,6 +158,7 @@ async function runAgent(options: {
   cwd?: string;
   model?: string;
   parentModel?: string;
+  thinking?: SubagentThinkingLevel;
   signal?: AbortSignal;
   onStatus: (patch: Partial<AgentRun>) => void;
   onStream?: (text: string) => void;
@@ -161,6 +175,7 @@ async function runAgent(options: {
     cwd: options.cwd,
     model: options.model,
     parentModel: options.parentModel,
+    thinking: options.thinking,
     signal: options.signal,
     onUpdate: (partial) => {
       const text = partial.lastText ?? "";
@@ -216,6 +231,7 @@ interface RuntimeOptions {
   cwd: string;
   agents: AgentConfig[];
   parentModel?: string;
+  defaultThinking?: SubagentThinkingLevel;
   signal?: AbortSignal;
   details: WorkflowDetails;
   onUpdate?: OnUpdateCallback;
@@ -223,7 +239,7 @@ interface RuntimeOptions {
 }
 
 function buildRuntime(opts: RuntimeOptions) {
-  const { config, group, args, cwd, agents, parentModel, signal, details, onUpdate, journal } = opts;
+  const { config, group, args, cwd, agents, parentModel, defaultThinking, signal, details, onUpdate, journal } = opts;
   let lastEmitMs = 0;
   const emit = (force = false) => {
     const now = Date.now();
@@ -248,7 +264,7 @@ function buildRuntime(opts: RuntimeOptions) {
 
   const runAgentCall = async (
     prompt: string,
-    agentOpts?: { agent?: string; model?: string; cwd?: string; onProgress?: (text: string) => void },
+    agentOpts?: WorkflowAgentOptions,
   ): Promise<string> => {
     if (typeof prompt !== "string") throw new Error("agent(prompt, opts?): prompt must be a string");
     const agentName = agentOpts?.agent ?? "worker";
@@ -264,6 +280,7 @@ function buildRuntime(opts: RuntimeOptions) {
       cwd: agentOpts?.cwd,
       model: agentOpts?.model,
       parentModel,
+      thinking: agentOpts?.thinking ?? defaultThinking,
       signal,
       onStatus: (patch) => {
         Object.assign(run, patch);
@@ -300,7 +317,7 @@ function buildRuntime(opts: RuntimeOptions) {
 
   const agent = (
     prompt: string,
-    agentOpts?: { agent?: string; model?: string; cwd?: string; onProgress?: (text: string) => void },
+    agentOpts?: WorkflowAgentOptions,
   ): Promise<string> => {
     if (!acceptingAgents) return Promise.reject(new Error("Workflow is no longer accepting agent calls."));
     return pendingAgents.track(runAgentCall(prompt, agentOpts));
@@ -467,6 +484,7 @@ const WorkflowParams = Type.Object({
   script: Type.Optional(Type.String({ description: "Inline trusted JS workflow body. Treated as an async function body with `agent`, `parallel`, `phase`, `log`, `cache`, `args`, `cwd` in scope. Mutually exclusive with `name` and `scriptPath`." })),
   name: Type.Optional(Type.String({ description: "Name of a saved workflow. Resolved from the shared workflows dir (pi-shared/workflows/<name>.js) first, then the nearest .pi/workflows/<name>.js. Mutually exclusive with `script` and `scriptPath`." })),
   scriptPath: Type.Optional(Type.String({ description: "Explicit path to a .js workflow file (absolute or relative to cwd). Mutually exclusive with `script` and `name`." })),
+  thinking: Type.Optional(StringEnum(SUBAGENT_THINKING_LEVELS, { description: "Default thinking level for workflow children. Defaults to high; agent(..., {thinking}) overrides it." })),
   args: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Optional object passed to the workflow as the `args` global." })),
 });
 
@@ -506,6 +524,7 @@ return defineTool({
       return { content: [{ type: "text", text: configurationError }], details, isError: true };
     }
     const parentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+    const defaultThinking = params.thinking;
     const agents = discoverAgents(ctx.cwd, "shared").agents;
     const args = (params.args && typeof params.args === "object" ? params.args : {}) as Record<string, unknown>;
 
@@ -600,6 +619,8 @@ return defineTool({
               name: source.name,
               scriptPath: source.scriptPath,
               codeSha256: hashText(source.code),
+              // Keep omission distinct from explicit high: omission still honors a model's legacy :<thinking> suffix.
+              thinking: defaultThinking ?? null,
             },
             args: journalArgs,
             cwd: path.resolve(ctx.cwd),
@@ -638,6 +659,7 @@ return defineTool({
       cwd: ctx.cwd,
       agents,
       parentModel,
+      defaultThinking,
       signal,
       details,
       onUpdate: onUpdateCb,

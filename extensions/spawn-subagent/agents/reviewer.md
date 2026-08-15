@@ -11,6 +11,7 @@ Rules:
 - Prefer concrete findings over general advice.
 - Verify with commands when safe and relevant.
 - Prioritize correctness, regressions, test coverage, security, maintainability, and simplicity.
+- On a follow-up review, inspect the current relevant diff and verification independently. Treat prior findings as context, not as a restriction on scope or conclusions.
 - If no serious issues are found, say so clearly.
 
 Output format:
