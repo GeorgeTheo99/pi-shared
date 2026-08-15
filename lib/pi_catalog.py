@@ -245,7 +245,7 @@ def _apply_reasoning(model: dict, kind: str, meta: dict) -> None:
         level_map.update({"minimal": None, "low": None, "medium": None, "xhigh": None, "max": None})
     elif kind == "zai":
         compat = {"supportsDeveloperRole": False, "thinkingFormat": "zai"}
-        if identities & {"glm-4.7", "glm-5-turbo", "glm-5.1", "glm-5.2"}:
+        if identities & {"glm-4.7", "glm-5-turbo", "glm-5.1", "glm-5.2", "glm-5.3"}:
             compat["zaiToolStream"] = True
         if "glm-5.2" in identities:
             compat["supportsReasoningEffort"] = True
@@ -392,13 +392,17 @@ def _eligible_entries(aliases: dict) -> list[tuple[str, dict]]:
             seen_local.add(key)
         # Validate only entries that survive the documented eligibility rules.
         alias = str(meta["alias"])
-        if not _ALIAS_RE.fullmatch(alias):
-            raise ValueError(f"invalid Pi launcher alias {alias!r}")
-        if alias in _RESERVED_ALIASES:
-            raise ValueError(f"reserved Pi launcher alias {alias!r}")
-        if alias in seen_aliases:
-            raise ValueError(f"duplicate Pi launcher alias {alias!r}")
-        seen_aliases.add(alias)
+        extra_aliases = _pi_hints(meta).get("aliases") or []
+        if not isinstance(extra_aliases, list) or any(not isinstance(value, str) for value in extra_aliases):
+            raise ValueError(f"Pi launcher aliases for {alias!r} must be a list of strings")
+        for launcher_alias in [alias, *extra_aliases]:
+            if not _ALIAS_RE.fullmatch(launcher_alias):
+                raise ValueError(f"invalid Pi launcher alias {launcher_alias!r}")
+            if launcher_alias in _RESERVED_ALIASES:
+                raise ValueError(f"reserved Pi launcher alias {launcher_alias!r}")
+            if launcher_alias in seen_aliases:
+                raise ValueError(f"duplicate Pi launcher alias {launcher_alias!r}")
+            seen_aliases.add(launcher_alias)
         out.append((key, meta))
     return out
 
@@ -540,7 +544,11 @@ def render_launchers(
         alias = str(meta["alias"])
         model_id = _model_id_for(key, meta)
         name = meta.get("name") or model_id
-        rows.append((alias, model_id, str(name), _is_cloud_key(key)))
+        launcher_aliases = [alias, *(_pi_hints(meta).get("aliases") or [])]
+        rows.extend(
+            (launcher_alias, model_id, str(name), _is_cloud_key(key))
+            for launcher_alias in launcher_aliases
+        )
     rows.sort(key=lambda r: r[0])
     local_rows = [row for row in rows if not row[3]]
     cloud_rows = [row for row in rows if row[3]]

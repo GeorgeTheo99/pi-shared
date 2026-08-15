@@ -333,7 +333,7 @@ def test_cloud_fireworks_kimi_k3_keeps_native_deferred_tools_and_logical_id(tmp_
     assert m["compat"]["deferredToolsMode"] == "kimi"
 
 
-def test_zai_exposes_graded_max_only_for_glm_5_2(tmp_path):
+def test_zai_exposes_model_specific_graded_efforts(tmp_path):
     aliases = {
         "cloud:glm-5.1": {
             "name": "glm-5.1", "alias": "glm51", "provider": "zai",
@@ -356,6 +356,53 @@ def test_zai_exposes_graded_max_only_for_glm_5_2(tmp_path):
         "minimal": None, "low": "high", "medium": "high", "high": "high", "max": "max",
     }
     assert by_id["glm-5.2"]["compat"]["supportsReasoningEffort"] is True
+
+
+def test_zai_glm53_compatibility_route_preserves_legacy_launcher(tmp_path):
+    thinking_map = {
+        "off": "low",
+        "minimal": "minimal",
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": "max",
+    }
+    aliases = {
+        "cloud:glm-5.2": {
+            "name": "glm-5.3-zai",
+            "alias": "glm53zai",
+            "provider": "zai_coding",
+            "provider_model_id": "glm-5.2",
+            "thinking": "always",
+            "thinking_levels": ["minimal", "low", "medium", "high", "xhigh", "max"],
+            "pi": {
+                "id": "glm-5.3",
+                "aliases": ["glm52zai"],
+                "thinkingLevelMap": thinking_map,
+            },
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    models_out = tmp_path / "models.json"
+    launchers_out = tmp_path / "launchers.zsh"
+    r = _run(
+        "--aliases", str(p),
+        "--models-out", str(models_out),
+        "--launchers-out", str(launchers_out),
+    )
+    assert r.returncode == 0, r.stderr
+    models = json.loads(models_out.read_text())["providers"]["ls99-models"]["models"]
+    assert len(models) == 1
+    model = models[0]
+    assert model["id"] == "glm-5.3"
+    assert model["thinkingLevelMap"] == thinking_map
+    assert model["compat"]["supportsReasoningEffort"] is True
+    assert model["compat"]["zaiToolStream"] is True
+    launchers = launchers_out.read_text()
+    assert "pi-glm53zai()" in launchers
+    assert "pi-glm52zai()" in launchers
+    assert launchers.count('glm-5.3') >= 2
 
 
 def test_openrouter_deepseek_v4_matches_current_pi_effort_map(tmp_path):
@@ -784,6 +831,22 @@ def test_launcher_aliases_reject_unsafe_or_reserved_names(tmp_path, alias):
     r = _run("--aliases", str(p), "--launchers-out", str(tmp_path / "l.zsh"))
     assert r.returncode != 0
     assert "Pi launcher alias" in r.stderr
+
+
+def test_launcher_aliases_reject_unsafe_pi_compat_aliases(tmp_path):
+    aliases = {
+        "cloud:x": {
+            "name": "x",
+            "alias": "safe",
+            "provider": "openai",
+            "provider_model_id": "x",
+            "pi": {"aliases": ["bad alias"]},
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--launchers-out", str(tmp_path / "l.zsh"))
+    assert r.returncode != 0
+    assert "invalid Pi launcher alias" in r.stderr
 
 
 def test_launcher_shell_quotes_all_catalog_and_cli_values(tmp_path):
