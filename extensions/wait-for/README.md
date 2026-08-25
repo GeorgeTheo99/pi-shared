@@ -105,7 +105,7 @@ A `WatchPaths`‑triggered launchd job that runs the fixed shell tail when the l
 <dict>
   <key>Label</key><string>com.local.glm52-download-tail</string>
   <key>WatchPaths</key>
-  <array><string>/Users/localserver99/models/mlx/GLM-5.2-mxfp4.download.log</string></array>
+  <array><string>/Users/<user>/models/mlx/GLM-5.2-mxfp4.download.log</string></array>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string><string>-lc</string>
