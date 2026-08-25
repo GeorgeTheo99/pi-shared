@@ -1,0 +1,4 @@
+# Synthetic credentials used to test self-handoff redaction.
+561e6ab11c326c7c30a0ce733b1b63edf0c26fbc:tests/self_handoff.test.mts:generic-api-key:409
+561e6ab11c326c7c30a0ce733b1b63edf0c26fbc:tests/self_handoff.test.mts:aws-access-token:409
+561e6ab11c326c7c30a0ce733b1b63edf0c26fbc:tests/self_handoff.test.mts:aws-access-token:413

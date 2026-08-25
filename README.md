@@ -266,6 +266,20 @@ git push github main
 
 Confirm both refs match with `git rev-parse origin/main github/main`. Consumer machines may clone or pull the GitHub repository normally; this maintainer-only topology does not apply to them.
 
+Secret scanning is enforced in three layers: tracked pre-commit/pre-push hooks,
+the local bare repository's pre-receive hook, and the pinned GitHub Gitleaks
+workflow. Install Gitleaks and activate the tracked worktree hooks once per
+clone:
+
+```bash
+brew install gitleaks
+git config core.hooksPath .githooks
+```
+
+Do not bypass a failed scan. `.gitleaksignore` contains only exact fingerprints
+for synthetic test credentials; never allowlist an entire file or credential
+pattern.
+
 ### What goes in `pi-databricks`
 
 Put machine-specific resources here. Do not commit this directory to `pi-shared`.
