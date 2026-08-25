@@ -242,6 +242,30 @@ Put resources here only when they should travel to every machine that installs t
 
 When you `git add`, `git commit`, and `git push` from `pi-shared`, those resources become available to other machines after they `git pull` and run `/reload` in Pi. Helper launchers in `bin/` also need a local symlink or PATH entry on each machine.
 
+### Maintainer Git topology
+
+On the maintainer server, the local bare repository is the authoritative Git remote for day-to-day work:
+
+```text
+~/local_code/pi-shared   --push origin-->   ~/repos/pi-shared.git
+                                      \
+                                       --manual publish--> GitHub
+```
+
+The checkout keeps two remotes:
+
+- `origin` — `~/repos/pi-shared.git`, the authoritative local bare repository
+- `github` — the public GitHub mirror used for distribution to other machines
+
+GitHub publishing is intentionally **not automatic**. Update the local source of truth first, then publish the same commit explicitly:
+
+```bash
+git push origin main
+git push github main
+```
+
+Confirm both refs match with `git rev-parse origin/main github/main`. Consumer machines may clone or pull the GitHub repository normally; this maintainer-only topology does not apply to them.
+
 ### What goes in `pi-databricks`
 
 Put machine-specific resources here. Do not commit this directory to `pi-shared`.
