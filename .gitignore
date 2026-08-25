@@ -20,3 +20,7 @@ bin/*
 # pi-shared travels by git and should not carry per-machine activation state.
 .pi/
 __pycache__/
+
+# Copyrighted book PDFs are never committed; kb_search indexes markdown only.
+knowledge/software-engineering/corpus/pdf-downloads/
+*.pdf
