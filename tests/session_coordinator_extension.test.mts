@@ -1,0 +1,325 @@
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test, { after } from "node:test";
+import type { PeerPresence } from "../extensions/session-coordinator/state.ts";
+
+const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-coordinator-extension-test-"));
+const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-coordinator-workspace-"));
+process.env.PI_SESSION_COORDINATOR_DIR = stateDir;
+process.env.PI_SESSION_COORDINATOR_HEARTBEAT_MS = "100";
+process.env.PI_SESSION_COORDINATOR_POLL_MS = "50";
+process.env.PI_SESSION_COORDINATOR_LEASE_MS = "1000";
+
+const state = await import("../extensions/session-coordinator/state.ts");
+const { default: sessionCoordinator, formatPeers } = await import("../extensions/session-coordinator/index.ts");
+after(() => {
+	fs.rmSync(stateDir, { recursive: true, force: true });
+	fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+	const started = Date.now();
+	while (!predicate()) {
+		if (Date.now() - started >= timeoutMs) throw new Error("Timed out waiting for session coordinator event");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
+function createHarness(
+	options: { entries?: any[]; sessionId?: string; idle?: boolean; sessionFile?: string } = {},
+) {
+	const handlers = new Map<string, Array<(event: any, ctx: any) => Promise<void> | void>>();
+	const tools = new Map<string, any>();
+	const commands = new Map<string, any>();
+	const sentMessages: Array<{ message: any; options: any }> = [];
+	const notifications: Array<{ message: string; level: string }> = [];
+	const entries: any[] = options.entries ?? [];
+	const sessionId = options.sessionId ?? crypto.randomUUID();
+	let idle = options.idle ?? true;
+	const ctx = {
+		cwd: workspace,
+		hasUI: true,
+		isIdle: () => idle,
+		sessionManager: {
+			getSessionId: () => sessionId,
+			getSessionName: () => "Coordinator test",
+			getSessionFile: () => options.sessionFile,
+			getEntries: () => entries,
+			getBranch: () => entries,
+		},
+		ui: {
+			notify(message: string, level: string) {
+				notifications.push({ message, level });
+			},
+		},
+	};
+	const pi = {
+		on(event: string, handler: (event: any, ctx: any) => Promise<void> | void) {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		registerTool(tool: any) {
+			tools.set(tool.name, tool);
+		},
+		registerCommand(name: string, command: any) {
+			commands.set(name, command);
+		},
+		appendEntry(customType: string, data: unknown) {
+			entries.push({ type: "custom", customType, data });
+		},
+		sendMessage(message: any, options?: any) {
+			sentMessages.push({ message, options });
+			entries.push({ type: "custom_message", customType: message.customType, details: message.details });
+		},
+	};
+	sessionCoordinator(pi as any);
+	return {
+		handlers,
+		tools,
+		commands,
+		sentMessages,
+		notifications,
+		entries,
+		ctx,
+		setIdle(value: boolean) {
+			idle = value;
+		},
+	};
+}
+
+async function emit(harness: ReturnType<typeof createHarness>, event: string) {
+	for (const handler of harness.handlers.get(event) ?? []) await handler({ type: event }, harness.ctx);
+}
+
+test("extension publishes status, discovers peers, and delivers notification-only messages", async () => {
+	const harness = createHarness();
+	let cleanupRoom: string | undefined;
+	const cleanupPeers: string[] = [];
+	await emit(harness, "session_start");
+	try {
+		const scope = state.discoverRepository(workspace);
+		const self = state.listActivePeers(scope.roomId).find((peer) => peer.sessionId === harness.ctx.sessionManager.getSessionId());
+		assert.ok(self, "the extension should publish its own presence");
+
+		const now = Date.now();
+		const peer: PeerPresence = {
+			version: 1,
+			roomId: scope.roomId,
+			runtimeId: crypto.randomUUID(),
+			pid: process.pid,
+			sessionId: crypto.randomUUID(),
+			sessionName: "Peer worker",
+			cwd: workspace,
+			worktreeRoot: workspace,
+			branch: "peer-branch",
+			activity: "busy",
+			status: "Reviewing coordinator tests",
+			startedAt: now,
+			heartbeatAt: now,
+			leaseExpiresAt: now + 10_000,
+			capabilities: ["messages"],
+		};
+		await state.writePresence(peer);
+		cleanupRoom = scope.roomId;
+		cleanupPeers.push(peer.runtimeId);
+
+		const peerSessions = harness.tools.get("peer_sessions");
+		const listing = await peerSessions.execute("list", {}, undefined, undefined, harness.ctx);
+		assert.match(listing.content[0].text, /Peer worker/);
+		assert.match(listing.content[0].text, /Reviewing coordinator tests/);
+		assert.match(listing.content[0].text, new RegExp(peer.runtimeId.slice(0, 8)));
+
+		const peerSend = harness.tools.get("peer_send");
+		const sent = await peerSend.execute(
+			"send",
+			{ target: peer.runtimeId.slice(0, 8), message: "I am updating the presence lifecycle." },
+			undefined,
+			undefined,
+			harness.ctx,
+		);
+		assert.match(sent.content[0].text, /Queued peer message/);
+		assert.equal(state.readInbox(scope.roomId, peer.runtimeId).length, 1);
+
+		const incoming = state.createEnvelope({
+			roomId: scope.roomId,
+			targetRuntimeId: self.runtimeId,
+			sender: {
+				runtimeId: peer.runtimeId,
+				sessionId: peer.sessionId,
+				sessionName: peer.sessionName,
+				worktreeRoot: peer.worktreeRoot,
+			},
+			message: "I am only touching the README.",
+		});
+		await state.enqueueMessage(incoming);
+		await waitUntil(() => harness.sentMessages.some((item) => item.message.details?.messageId === incoming.id));
+		const delivered = harness.sentMessages.find((item) => item.message.details?.messageId === incoming.id)!;
+		assert.equal(delivered.message.customType, "pi-peer-message");
+		assert.match(delivered.message.content, /Untrusted peer-session message/);
+		assert.deepEqual(delivered.options, { triggerTurn: false });
+		assert.equal(state.readInbox(scope.roomId, self.runtimeId).length, 0);
+
+		await harness.commands.get("peer-status").handler("Running integration tests", harness.ctx);
+		const updatedSelf = state.listActivePeers(scope.roomId, peer.runtimeId).find((candidate) => candidate.runtimeId === self.runtimeId);
+		assert.equal(updatedSelf?.status, "Running integration tests");
+
+		const wrongPeer: PeerPresence = {
+			...peer,
+			runtimeId: crypto.randomUUID(),
+			sessionId: crypto.randomUUID(),
+			sessionName: "Wrong peer",
+		};
+		await state.writePresence(wrongPeer);
+		cleanupPeers.push(wrongPeer.runtimeId);
+		await assert.rejects(
+			peerSend.execute(
+				"wrong-reply",
+				{ target: wrongPeer.runtimeId, message: "Misdirected reply", inReplyTo: incoming.id },
+				undefined,
+				undefined,
+				harness.ctx,
+			),
+			/must target the session that sent/,
+		);
+
+		await peerSend.execute(
+			"reply",
+			{ target: peer.runtimeId, message: "Acknowledged.", inReplyTo: incoming.id },
+			undefined,
+			undefined,
+			harness.ctx,
+		);
+		const reply = state.readInbox(scope.roomId, peer.runtimeId).find((item) => item.envelope.inReplyTo === incoming.id);
+		assert.equal(reply?.envelope.hops, 1);
+
+		const replyToReply = state.createEnvelope({
+			roomId: scope.roomId,
+			targetRuntimeId: self.runtimeId,
+			sender: {
+				runtimeId: peer.runtimeId,
+				sessionId: peer.sessionId,
+				sessionName: peer.sessionName,
+				worktreeRoot: peer.worktreeRoot,
+			},
+			message: "Second hop",
+			hops: 1,
+		});
+		await state.enqueueMessage(replyToReply);
+		await waitUntil(() => harness.sentMessages.some((item) => item.message.details?.messageId === replyToReply.id));
+		await assert.rejects(
+			peerSend.execute(
+				"loop",
+				{ target: peer.runtimeId, message: "Do not loop", inReplyTo: replyToReply.id },
+				undefined,
+				undefined,
+				harness.ctx,
+			),
+			/hop limit/,
+		);
+	} finally {
+		await emit(harness, "session_shutdown");
+		if (cleanupRoom) {
+			for (const runtimeId of cleanupPeers) await state.removeRuntimeState(cleanupRoom, runtimeId).catch(() => undefined);
+		}
+	}
+});
+
+test("busy-session receipts survive shutdown and are delivered after reload without waking the agent", async () => {
+	const entries: any[] = [];
+	const sessionId = "custom.session-reload-1";
+	const sessionFile = path.join(workspace, `${sessionId}.jsonl`);
+	const first = createHarness({ entries, sessionId, idle: false, sessionFile });
+	let roomId: string | undefined;
+	let peerRuntimeId: string | undefined;
+	await emit(first, "session_start");
+	try {
+		const scope = state.discoverRepository(workspace);
+		roomId = scope.roomId;
+		const self = state.listActivePeers(scope.roomId).find((peer) => peer.sessionId === sessionId);
+		assert.ok(self);
+		const now = Date.now();
+		const peer: PeerPresence = {
+			version: 1,
+			roomId: scope.roomId,
+			runtimeId: crypto.randomUUID(),
+			pid: process.pid,
+			sessionId: crypto.randomUUID(),
+			sessionName: "Reload peer",
+			cwd: workspace,
+			worktreeRoot: workspace,
+			activity: "idle",
+			status: "Waiting",
+			startedAt: now,
+			heartbeatAt: now,
+			leaseExpiresAt: now + 10_000,
+			capabilities: ["messages"],
+		};
+		peerRuntimeId = peer.runtimeId;
+		await state.writePresence(peer);
+		const incoming = state.createEnvelope({
+			roomId: scope.roomId,
+			targetRuntimeId: self.runtimeId,
+			sender: {
+				runtimeId: peer.runtimeId,
+				sessionId: peer.sessionId,
+				sessionName: peer.sessionName,
+				worktreeRoot: peer.worktreeRoot,
+			},
+			message: "Persist this across reload.",
+		});
+		await state.enqueueMessage(incoming);
+		await waitUntil(() => state.readSessionReceipts(sessionId).some((item) => item.envelope.id === incoming.id));
+		assert.equal(first.sentMessages.length, 0, "busy sessions must not receive context messages immediately");
+		assert.equal(state.readInbox(scope.roomId, self.runtimeId).length, 0, "durable receipt should replace the file envelope");
+		await emit(first, "session_shutdown");
+		assert.equal(state.readSessionReceipts(sessionId).some((item) => item.envelope.id === incoming.id), true);
+		fs.writeFileSync(sessionFile, "persisted session\n");
+
+		const second = createHarness({ entries: [], sessionId, idle: true, sessionFile });
+		await emit(second, "session_start");
+		try {
+			await waitUntil(() => second.sentMessages.some((item) => item.message.details?.messageId === incoming.id));
+			const delivered = second.sentMessages.find((item) => item.message.details?.messageId === incoming.id)!;
+			assert.deepEqual(delivered.options, { triggerTurn: false });
+			assert.equal(
+				second.sentMessages.filter((item) => item.message.details?.messageId === incoming.id).length,
+				1,
+			);
+			assert.equal(state.readSessionReceipts(sessionId).some((item) => item.envelope.id === incoming.id), false);
+		} finally {
+			await emit(second, "session_shutdown");
+		}
+	} finally {
+		await emit(first, "session_shutdown").catch(() => undefined);
+		fs.rmSync(sessionFile, { force: true });
+		if (roomId && peerRuntimeId) await state.removeRuntimeState(roomId, peerRuntimeId).catch(() => undefined);
+	}
+});
+
+test("peer rendering escapes control metadata and caps large peer sets", () => {
+	const now = Date.now();
+	const peers: PeerPresence[] = Array.from({ length: 30 }, (_, index) => ({
+		version: 1,
+		roomId: `cwd-${"f".repeat(32)}`,
+		runtimeId: crypto.randomUUID(),
+		pid: process.pid,
+		sessionId: crypto.randomUUID(),
+		sessionName: `peer-${index}\n\u001b[31mred`,
+		cwd: workspace,
+		worktreeRoot: `${workspace}/${"x".repeat(700)}\nnext`,
+		branch: "feature\n\u001b[2J",
+		activity: "idle",
+		status: "Waiting",
+		startedAt: now,
+		heartbeatAt: now,
+		leaseExpiresAt: now + 10_000,
+		capabilities: ["messages"],
+	}));
+	const rendered = formatPeers(peers, peers[0].roomId);
+	assert.doesNotMatch(rendered, /\u001b/);
+	assert.doesNotMatch(rendered, /feature\n/);
+	assert.match(rendered, /5 additional live peers omitted/);
+	assert.ok(Buffer.byteLength(rendered, "utf8") < 50 * 1_024);
+});
