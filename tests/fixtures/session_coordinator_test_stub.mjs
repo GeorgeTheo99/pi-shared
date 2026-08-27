@@ -9,6 +9,12 @@ export const Type = {
 	String(options = {}) {
 		return schema("string", options);
 	},
+	Literal(value) {
+		return schema("literal", { value });
+	},
+	Union(values, options = {}) {
+		return schema("union", { values, ...options });
+	},
 	Optional(value) {
 		return { ...value, optional: true };
 	},

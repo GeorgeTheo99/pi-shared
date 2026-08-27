@@ -174,9 +174,25 @@ function assertRuntimeId(value: string): void {
 	if (!RUNTIME_ID_RE.test(value)) throw new Error("Invalid session-coordinator runtime id");
 }
 
+function roomsRoot(): string {
+	return path.join(coordinatorConfig().stateDir, "rooms");
+}
+
+function listRoomIds(): string[] {
+	try {
+		return fs
+			.readdirSync(roomsRoot(), { withFileTypes: true })
+			.filter((entry) => entry.isDirectory() && ROOM_ID_RE.test(entry.name))
+			.map((entry) => entry.name)
+			.sort();
+	} catch {
+		return [];
+	}
+}
+
 function roomDir(room: string): string {
 	assertRoomId(room);
-	return path.join(coordinatorConfig().stateDir, "rooms", room);
+	return path.join(roomsRoot(), room);
 }
 
 function presenceDir(room: string): string {
@@ -357,6 +373,12 @@ export function listActivePeers(room: string, selfRuntimeId?: string, now = Date
 		.map((name) => normalizePresence(readJsonFile<unknown>(path.join(presenceDir(room), name), undefined)))
 		.filter((peer): peer is PeerPresence => Boolean(peer))
 		.filter((peer) => peer.roomId === room && peer.runtimeId !== selfRuntimeId && isPresenceActive(peer, now))
+		.sort((left, right) => left.startedAt - right.startedAt || left.runtimeId.localeCompare(right.runtimeId));
+}
+
+export function listAllActivePeers(selfRuntimeId?: string, now = Date.now()): PeerPresence[] {
+	return listRoomIds()
+		.flatMap((room) => listActivePeers(room, selfRuntimeId, now))
 		.sort((left, right) => left.startedAt - right.startedAt || left.runtimeId.localeCompare(right.runtimeId));
 }
 
@@ -608,4 +630,8 @@ export async function pruneRoom(room: string, now = Date.now()): Promise<void> {
 			{ timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 },
 		);
 	}
+}
+
+export async function pruneCoordinatorState(now = Date.now()): Promise<void> {
+	for (const room of listRoomIds()) await pruneRoom(room, now).catch(() => undefined);
 }

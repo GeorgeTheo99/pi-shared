@@ -82,6 +82,47 @@ test("presence lists only fresh live peers and excludes the caller", async () =>
 	assert.equal(peers[0].status, "Running tests");
 });
 
+test("machine-wide presence discovery spans rooms while excluding self, expired, and dead sessions", async () => {
+	const now = Date.now();
+	const roomA = `git-${"4".repeat(32)}`;
+	const roomB = `cwd-${"5".repeat(32)}`;
+	const self = presence({ roomId: roomA, startedAt: now });
+	const sameRoom = presence({ roomId: roomA, startedAt: now + 1, sessionName: "Same room" });
+	const otherRoom = presence({ roomId: roomB, startedAt: now + 2, sessionName: "Other room" });
+	const expired = presence({ roomId: roomB, startedAt: now + 3, leaseExpiresAt: now - 1 });
+	const dead = presence({ roomId: roomB, startedAt: now + 4, pid: 99_999_999 });
+	await Promise.all([self, sameRoom, otherRoom, expired, dead].map(coordinator.writePresence));
+
+	const peers = coordinator
+		.listAllActivePeers(self.runtimeId, now)
+		.filter((peer: PeerPresence) => peer.roomId === roomA || peer.roomId === roomB);
+	assert.deepEqual(peers.map((peer: PeerPresence) => peer.runtimeId), [sameRoom.runtimeId, otherRoom.runtimeId]);
+});
+
+test("cross-room messages are routed only through the target room", async () => {
+	const senderRoom = `git-${"6".repeat(32)}`;
+	const targetRoom = `cwd-${"7".repeat(32)}`;
+	const target = presence({ roomId: targetRoom });
+	await coordinator.writePresence(target);
+	const envelope = coordinator.createEnvelope({
+		roomId: target.roomId,
+		targetRuntimeId: target.runtimeId,
+		sender: {
+			runtimeId: crypto.randomUUID(),
+			sessionId: crypto.randomUUID(),
+			worktreeRoot: process.cwd(),
+		},
+		message: "cross-room coordination",
+	});
+
+	await coordinator.enqueueMessage(envelope);
+	assert.equal(coordinator.readInbox(senderRoom, target.runtimeId).length, 0);
+	assert.deepEqual(
+		coordinator.readInbox(targetRoom, target.runtimeId).map((item: { envelope: { id: string } }) => item.envelope.id),
+		[envelope.id],
+	);
+});
+
 test("message envelopes are bounded, delivered, and expired messages are removed", async () => {
 	const roomId = `cwd-${"c".repeat(32)}`;
 	const targetRuntimeId = crypto.randomUUID();
@@ -201,6 +242,38 @@ test("runtime cleanup drains racing messages and rejects delivery after presence
 		),
 		/no longer live/,
 	);
+});
+
+test("coordinator-wide pruning removes stale dead presence across rooms", async () => {
+	const roomId = `git-${"8".repeat(32)}`;
+	const stale = presence({ roomId, pid: 99_999_999, leaseExpiresAt: 0 });
+	await coordinator.writePresence(stale);
+	const presencePath = path.join(stateDir, "rooms", roomId, "presence", `${stale.runtimeId}.json`);
+	assert.equal(fs.existsSync(presencePath), true);
+
+	await coordinator.pruneCoordinatorState(Date.now() + 25 * 60 * 60 * 1_000);
+	assert.equal(fs.existsSync(presencePath), false);
+});
+
+test("coordinator-wide pruning preserves live targets during concurrent delivery", async () => {
+	const now = Date.now();
+	const roomId = `git-${"9".repeat(32)}`;
+	const target = presence({ roomId, leaseExpiresAt: now + 20_000 });
+	await coordinator.writePresence(target);
+	const envelope = coordinator.createEnvelope({
+		roomId,
+		targetRuntimeId: target.runtimeId,
+		sender: {
+			runtimeId: crypto.randomUUID(),
+			sessionId: crypto.randomUUID(),
+			worktreeRoot: process.cwd(),
+		},
+		message: "deliver while pruning",
+	});
+
+	await Promise.all([coordinator.pruneCoordinatorState(now + 25 * 60 * 60 * 1_000), coordinator.enqueueMessage(envelope)]);
+	assert.equal(coordinator.listAllActivePeers(undefined, now).some((peer: PeerPresence) => peer.runtimeId === target.runtimeId), true);
+	assert.equal(coordinator.readInbox(roomId, target.runtimeId).some((item: { envelope: { id: string } }) => item.envelope.id === envelope.id), true);
 });
 
 test("orphan inbox directories are pruned independently of presence files", async () => {
