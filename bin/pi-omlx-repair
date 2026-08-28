@@ -22,7 +22,7 @@ _DEFAULT_PI_SHARED_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
 
 PI_OMLX_AGENT_DIR="${PI_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
 PI_SHARED_DIR="${PI_SHARED_DIR:-$_DEFAULT_PI_SHARED_DIR}"
-PI_LOCAL_EXTENSIONS_DIR="${PI_LOCAL_EXTENSIONS_DIR:-$HOME/local_code/pi-databricks/extensions}"
+PI_DATABRICKS_DIR="${PI_DATABRICKS_DIR:-$HOME/local_code/pi-databricks}"
 if [[ -z "${PI_INSTALL_DIR:-}" ]]; then
   for _pi_install_candidate in \
     "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent" \
@@ -39,7 +39,7 @@ fi
 
 mkdir -p "$PI_OMLX_AGENT_DIR"
 
-python3 - "$PI_OMLX_AGENT_DIR/settings.json" "$PI_SHARED_DIR" "$PI_LOCAL_EXTENSIONS_DIR" <<'PY'
+python3 - "$PI_OMLX_AGENT_DIR/settings.json" "$PI_SHARED_DIR" "$PI_DATABRICKS_DIR" <<'PY'
 import json
 import os
 import sys
@@ -48,7 +48,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 settings_dir = path.parent
 pi_shared_dir = Path(sys.argv[2]).expanduser().resolve()
-local_extensions_arg = Path(sys.argv[3]).expanduser()
+pi_databricks_arg = Path(sys.argv[3]).expanduser()
 settings = {}
 if path.exists():
     try:
@@ -62,12 +62,17 @@ def rel_from_settings(target: Path) -> str:
     except OSError:
         return str(target)
 
-settings["packages"] = [rel_from_settings(pi_shared_dir)]
-if local_extensions_arg.exists():
-    settings["extensions"] = [rel_from_settings(local_extensions_arg.resolve())]
-elif settings.get("extensions") == ["../../local_code/pi-databricks/extensions"]:
+# pi-databricks is loaded as a full package (extensions + skills + skills-das),
+# so no separate top-level "extensions"/"skills" entries are needed. Re-adding
+# them (e.g. "~/.codex/skills") causes duplicate-name skill/extension collisions.
+packages = [rel_from_settings(pi_shared_dir)]
+if pi_databricks_arg.exists():
+    packages.append(rel_from_settings(pi_databricks_arg.resolve()))
+settings["packages"] = packages
+if settings.get("extensions") == ["../../local_code/pi-databricks/extensions"]:
     settings.pop("extensions", None)
-settings["skills"] = ["~/.codex/skills"]
+if settings.get("skills") == ["~/.codex/skills"]:
+    settings.pop("skills", None)
 settings["enableSkillCommands"] = True
 # Default thinking on for reasoning models in this profile. Pi clamps this
 # preference to each model's supported levels (for example, max-only Kimi K3
@@ -136,9 +141,13 @@ fi
 OPENAI_COMPLETIONS_JS=""
 for candidate in \
   "$PI_INSTALL_DIR/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js" \
-  "$PI_INSTALL_DIR/node_modules/@earendil-works/pi-ai/dist/providers/openai-completions.js"; do
+  "$PI_INSTALL_DIR/node_modules/@earendil-works/pi-ai/dist/providers/openai-completions.js" \
+  "$PI_INSTALL_DIR/../../node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js" \
+  "$PI_INSTALL_DIR/../../node_modules/@earendil-works/pi-ai/dist/providers/openai-completions.js"; do
   if [[ -f "$candidate" ]]; then
-    OPENAI_COMPLETIONS_JS="$candidate"
+    # Canonicalize so ".." segments through the npm symlink resolve correctly
+    # for downstream tooling that normalizes paths textually.
+    OPENAI_COMPLETIONS_JS="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$candidate")"
     break
   fi
 done
