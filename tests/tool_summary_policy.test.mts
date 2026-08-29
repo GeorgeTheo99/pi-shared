@@ -64,6 +64,8 @@ test("policy uses the agreed 24K high-fidelity and 16K standard thresholds", () 
 
 test("policy assigns LLM, deterministic, error, unknown, and exempt classes", () => {
 	assert.equal(resolvePolicy("read", textContent("prose"), false).method, "llm");
+	assert.equal(resolvePolicy("browser_fetch", textContent("rendered prose"), false).method, "llm");
+	assert.equal(resolvePolicy("browser_inspect", textContent("extracted prose"), false).method, "llm");
 	assert.equal(resolvePolicy("read", textContent("error"), true).method, "deterministic");
 	assert.equal(resolvePolicy("bash", textContent("log"), false).method, "deterministic");
 	assert.equal(resolvePolicy("app_api_request", textContent('{"id":"abc"}'), false).method, "deterministic");

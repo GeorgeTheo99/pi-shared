@@ -176,10 +176,10 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - `peer_message_status` exposes truthful `pending`, `queued`, `delivered`, `surfaced`, `acknowledged`, `replied`, `expired`, and `unread_session_ended` checkpoints; `surfaced` never claims read
   - exact same-session successors can safely adopt unread dead-runtime inboxes; ambiguous, different-session, and legacy ownership fails closed
   - see `extensions/session-coordinator/README.md` for storage, compatibility, lifecycle, and trust semantics
-- `extensions/pi-browser-capture` — shared Playwright runtimes for browser work and local app testing:
-  - canonical `browser_*` tools for actual public web browsing: `browser_open`, `browser_navigate`, `browser_open_tab`, `browser_list_tabs`, `browser_switch_tab`, `browser_close_tab`, `browser_click`, `browser_type`, `browser_wait_for`, `browser_extract_text`, `browser_screenshot`, `browser_export_pdf`, `browser_console_logs`, `browser_page_state`, `browser_close`
-  - `app_*` tools for local/private web app testing: `app_open`, `app_click`, `app_type_text`, `app_wait_for`, `app_extract_text`, `app_screenshot`, `app_console_logs`, `app_network_log`, `app_api_request`, `app_page_state`, and tab helpers
-  - `browser_*` private hosts are blocked by default; use `app_*` tools for local app testing or set `BROWSER_MCP_WEB_ALLOW_PRIVATE_HOSTS=true`
+- `extensions/pi-browser-capture` — standalone public-browser wrappers plus unchanged local app testing:
+  - exactly two public browser tools backed by browser-worker: `browser_fetch` for one-shot rendered retrieval and `browser_inspect` for short-lived sessions/actions
+  - `app_*` tools for local/private web app testing remain in-process and unchanged: `app_open`, `app_click`, `app_type_text`, `app_wait_for`, `app_extract_text`, `app_screenshot`, `app_console_logs`, `app_network_log`, `app_api_request`, `app_page_state`, and tab helpers
+  - browser-worker enforces authenticated public-network-only egress; the retired granular public `browser_*` family must never be loaded with the two worker tools
 - `extensions/spawn-subagent` — native subagent delegation:
   - `spawn_subagent` keeps existing isolated `pi --mode json -p --no-session` behavior for non-interactive single, parallel, or chained specialist work
   - opt-in single-mode `interactive:true` uses one persistent RPC child for 10 correlated `ask_parent` exchanges by default (20 maximum); resume with `jobAction:"answer"`, the current `jobId`, and exact `questionId`

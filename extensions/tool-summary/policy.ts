@@ -67,19 +67,6 @@ const CONTROL_OR_MUTATION_TOOLS = new Set([
 	"pptx_preview",
 	"pptx_preview_cleanup",
 	"wait_for",
-	"browser_open",
-	"browser_navigate",
-	"browser_open_tab",
-	"browser_list_tabs",
-	"browser_switch_tab",
-	"browser_close_tab",
-	"browser_click",
-	"browser_type",
-	"browser_wait_for",
-	"browser_screenshot",
-	"browser_export_pdf",
-	"browser_page_state",
-	"browser_close",
 	"app_open",
 	"app_open_tab",
 	"app_list_tabs",
@@ -102,7 +89,8 @@ const HIGH_FIDELITY_TOOLS = new Set([
 
 const EXTRACTED_PROSE_TOOLS = new Set([
 	"web_fetch",
-	"browser_extract_text",
+	"browser_fetch",
+	"browser_inspect",
 	"app_extract_text",
 ]);
 

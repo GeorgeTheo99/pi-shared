@@ -7,7 +7,7 @@
   },
   "pi": {
     "extensions": [
-      "./src/index.ts",
+      "./src/browser-worker.ts",
       "./src/app-testing.ts"
     ]
   }

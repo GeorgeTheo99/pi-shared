@@ -1,31 +1,28 @@
 # Pi Browser Capture
 
-Shared Playwright extension for actual public web browsing, local/private web app testing, screenshots, PDF export, console/network inspection, tab management, and visible-text extraction.
+Shared Pi package entrypoints for the standalone public browser worker and the unchanged in-process local/private app-testing runtime.
 
-## Browser tools
+## Public browser tools
 
-Prefer `browser_*` for actual interaction with public web pages:
+The production public-browser inventory is exactly:
 
-- `browser_open`
-- `browser_navigate`
-- `browser_open_tab`
-- `browser_list_tabs`
-- `browser_switch_tab`
-- `browser_close_tab`
-- `browser_click`
-- `browser_type`
-- `browser_wait_for`
-- `browser_extract_text`
-- `browser_evaluate`
-- `browser_screenshot`
-- `browser_export_pdf`
-- `browser_console_logs`
-- `browser_page_state`
-- `browser_close`
+- `browser_fetch` — render one public page in an isolated one-shot browser and return visible text, optional links, or an owner-bound screenshot handle.
+- `browser_inspect` — create and operate a short-lived caller-owned browser session through one explicit action.
+
+The retired granular public-browser entrypoint (`src/index.ts`) remains in source only for whole-revision rollback and is not loaded. It must never be loaded at the same time as `src/browser-worker.ts`.
+
+Browser-worker defaults:
+
+```bash
+BROWSER_WORKER_MCP_URL=http://127.0.0.1:8890/mcp
+BROWSER_WORKER_MCP_TOKEN_FILE=~/srv/browser-worker/shared/tokens/pi-production
+```
+
+The token value is read from the owner-only file for each call and is never stored in Pi settings.
 
 ## App testing tools
 
-Use `app_*` for local/private web app testing:
+`app_*` remains loaded from the existing `src/app-testing.ts` entrypoint for local/private app testing:
 
 - `app_open`
 - `app_open_tab`
@@ -55,33 +52,16 @@ export BROWSER_MCP_APP_ALLOWED_HOSTS='127.0.0.1,localhost,dev.internal'
 
 ## Intended use
 
-- Use `browser_*` for actual browser interaction with public web pages.
-- Use `web_search` / `web_fetch` for informational research and current-facts lookup.
+- Use `browser_fetch` / `browser_inspect` for actual interaction with public web pages.
+- Use `web_search` / `web_fetch` for informational research and current-facts lookup; they remain independently owned by `local_web_search`.
 - Use `app_*` for local/private app UI and API testing.
-- Use `browser_evaluate` / `app_evaluate` only for targeted page inspection or test setup that needs JavaScript, such as computed styles, DOM measurements, localStorage, or client-side state. Prefer returning plain JSON-serializable objects/arrays.
+- Use the privileged `browser_inspect` actions only when the authenticated caller has the matching server-side capability.
 
-Example:
+## Safety boundary
 
-```json
-{
-  "script": "(selector) => { const el = document.querySelector(selector); const cs = getComputedStyle(el); return { text: el?.textContent, wordSpacing: cs.wordSpacing, rect: el?.getBoundingClientRect().toJSON?.() }; }",
-  "arg": ".headline"
-}
-```
+Browser-worker authenticates every MCP call, binds sessions/artifacts to the caller, and enforces public-network-only browser egress. Callers do not control profile or artifact paths. Do not add a compatibility shim, a fallback through `local_web_search`, or a dual-registration window with the retired public browser family.
 
-## Safety and private hosts
-
-`browser_*` blocks private hosts by default, including `localhost`, `.local`, `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, and private IPv6 ranges.
-
-If a machine intentionally needs browser tools to access private hosts, set:
-
-```bash
-export BROWSER_MCP_WEB_ALLOW_PRIVATE_HOSTS=true
-```
-
-Prefer `app_*` tools for local app testing instead of enabling private-host access for general browsing.
-
-## Setup on a new machine
+## Local app setup
 
 ```bash
 cd ~/local_code/pi-shared/extensions/pi-browser-capture
@@ -89,31 +69,16 @@ npm install
 npx playwright install chromium
 ```
 
-## Environment variables
+The Playwright/Patchright dependencies above are for the separate `app_*` runtime. Public browser execution belongs to the standalone browser-worker service.
 
-Shared:
-
-- `BROWSER_MCP_HEADLESS` — default `true`
-- `BROWSER_MCP_STORAGE_ROOT` — browser/app storage root
-- `BROWSER_MCP_DEFAULT_TIMEOUT_MS` — default `15000`
-- `BROWSER_MCP_VIEWPORT_WIDTH` — default `1440`
-- `BROWSER_MCP_VIEWPORT_HEIGHT` — browser default `900`, app default `1000`
-- `BROWSER_MCP_IGNORE_HTTPS_ERRORS` — default `false`
-- `BROWSER_MCP_BROWSER_CHANNEL` — optional Chromium channel
-- `BROWSER_MCP_BROWSER_EXECUTABLE_PATH` — optional browser executable path
-- `BROWSER_MCP_USER_AGENT` — optional user agent
-- `BROWSER_MCP_CONSOLE_LOG_LIMIT` — default `200`
-
-Browser-specific:
-
-- `BROWSER_MCP_WEB_PROFILE_DIR` — public-browser profile directory
-- `BROWSER_MCP_WEB_ARTIFACT_DIR` — screenshots/PDF output directory, default `~/.pi/browser-capture`
-- `BROWSER_MCP_WEB_ALLOW_PRIVATE_HOSTS` — default `false`
-
-App-specific:
+## App environment variables
 
 - `BROWSER_MCP_APP_BASE_URL` — default `http://127.0.0.1:8100`
 - `BROWSER_MCP_APP_ALLOWED_HOSTS` — comma-separated allowed hosts for absolute app URLs
 - `BROWSER_MCP_APP_PROFILE_DIR` — app browser profile directory
 - `BROWSER_MCP_APP_ARTIFACT_DIR` — app screenshot output directory
 - `BROWSER_MCP_NETWORK_LOG_LIMIT` — default `400`
+- `BROWSER_MCP_HEADLESS` — app runtime default `true`
+- `BROWSER_MCP_DEFAULT_TIMEOUT_MS` — default `15000`
+- `BROWSER_MCP_VIEWPORT_WIDTH` — default `1440`
+- `BROWSER_MCP_VIEWPORT_HEIGHT` — app default `1000`
