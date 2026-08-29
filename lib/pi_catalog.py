@@ -656,6 +656,7 @@ def render_launchers(
         lines += _render_pi_shared_update(launchers_out=launchers_out, shared_dir=shared_dir)
 
     lines += _render_pi_restart(
+        gateway_url=gateway_url,
         auto_regen=bool(models_out or launchers_out),
         aliases_path=aliases_path,
     )
@@ -754,7 +755,7 @@ def _render_pi_shared_update(*, launchers_out: str, shared_dir: str) -> list[str
     ]
 
 
-def _render_pi_restart(*, auto_regen: bool = False, aliases_path: str | None = None) -> list[str]:
+def _render_pi_restart(*, gateway_url: str, auto_regen: bool = False, aliases_path: str | None = None) -> list[str]:
     """pi-restart() — restart model-gateway portably, with server-ci fallback.
 
     `model-gateway restart` is the portable repo-owned restart surface. ls99's
@@ -763,6 +764,7 @@ def _render_pi_restart(*, auto_regen: bool = False, aliases_path: str | None = N
     also runs `pi-regen` so launcher + models.json stay in sync with the
     freshly-regenerated alias catalog.
     """
+    gateway_health_url = gateway_url.rstrip("/") + "/health"
     out = [
         "pi-restart() {",
         "  # Restart model-gateway via its portable CLI when available; fall",
@@ -773,8 +775,8 @@ def _render_pi_restart(*, auto_regen: bool = False, aliases_path: str | None = N
         '    echo ""',
         "    echo 'For model-gw, calls model-gateway restart when available.'",
         "    echo 'Falls back to server-ci restart --<service> for legacy services.'",
-        '    echo "  model-gw  Model gateway (port 9111)  [default]"',
-        '    echo "  omlx      oMLX inference server (port 9110; server-ci only)"',
+        f"    print -r -- {shlex.quote(f'  model-gw  Model gateway ({gateway_url})  [default]')}",
+        '    echo "  omlx      oMLX inference server (server-ci only)"',
         '    echo "  all       All server-ci services"',
         '    echo "  status    Show gateway/server-ci status (no restart)"',
         "    return 0",
@@ -807,39 +809,43 @@ def _render_pi_restart(*, auto_regen: bool = False, aliases_path: str | None = N
         '    server-ci restart --"$svc"',
         "    rc=$?",
         "  fi",
-        '  if [ $rc -eq 0 ] && [ "$svc" != "all" ] && [ "$svc" != "status" ]; then',
-        "    # Poll until the service port reports UP (or ~25s elapse).",
-        '    local port=""',
-        '    case "$svc" in',
-        "      model-gw) port=9111 ;;",
-        "      omlx) port=9110 ;;",
-        "    esac",
-        '    if [ -n "$port" ]; then',
-        "      local elapsed=0 line=\"\"",
-        "      while [ $elapsed -lt 25 ]; do",
-        '        if [ "$svc" = "model-gw" ]; then',
-        '          if curl -fsS --max-time 3 "http://127.0.0.1:$port/health" 2>/dev/null | grep -q "\\\"status\\\""; then',
-        '            line="  $port ($svc): UP"',
-        "            break",
-        "          fi",
-        '        elif command -v server-ci >/dev/null 2>&1; then',
-        '          line=$(server-ci restart --status 2>/dev/null | grep -E "^[[:space:]]*$port " | head -1)',
-        '          if echo "$line" | grep -qi "UP"; then',
-        "            break",
-        "          fi",
-        "        fi",
-        "        sleep 2",
-        "        elapsed=$((elapsed + 2))",
-        "      done",
-        '      echo ""',
-        '      if [ -n "$line" ]; then',
-        "        echo \"$line\"",
-        "      else",
-        '        echo "  $port ($svc): status unknown"',
+        '  if [ $rc -eq 0 ] && [ "$svc" = "model-gw" ]; then',
+        "    # Poll the same configured gateway URL used by generated clients.",
+        f"    local health_url={shlex.quote(gateway_health_url)} elapsed=0 healthy=0",
+        "    while [ $elapsed -lt 25 ]; do",
+        '      if curl -fsS --max-time 3 "$health_url" 2>/dev/null | grep -q "\\\"status\\\""; then',
+        "        healthy=1",
+        "        break",
         "      fi",
-        '      if [ $elapsed -ge 25 ]; then',
-        '        echo "WARNING: $svc did not report UP within 25s"',
+        "      sleep 2",
+        "      elapsed=$((elapsed + 2))",
+        "    done",
+        '    echo ""',
+        '    if [ $healthy -eq 1 ]; then',
+        '      echo "  $health_url ($svc): UP"',
+        "    else",
+        '      echo "  $health_url ($svc): status unknown"',
+        '      echo "WARNING: $svc did not report UP within 25s"',
+        "    fi",
+        '  elif [ $rc -eq 0 ] && [ "$svc" = "omlx" ] && command -v server-ci >/dev/null 2>&1; then',
+        "    # Poll server-ci by service name; do not duplicate its configured port.",
+        '    local elapsed=0 line="" ready=0',
+        "    while [ $elapsed -lt 25 ]; do",
+        '      line=$(server-ci restart --status 2>/dev/null | grep -i "omlx" | head -1)',
+        '      if echo "$line" | grep -qi "UP"; then',
+        "        ready=1",
+        "        break",
         "      fi",
+        "      sleep 2",
+        "      elapsed=$((elapsed + 2))",
+        "    done",
+        '    echo ""',
+        '    if [ $ready -eq 1 ]; then',
+        '      echo "$line"',
+        "    else",
+        '      echo "  omlx: status unknown"',
+        '      echo "WARNING: omlx did not report UP within 25s"',
+        "      rc=1",
         "    fi",
         "  fi",
         "  if [ $rc -eq 0 ] && [ \"$svc\" = model-gw ] && command -v pi-regen >/dev/null 2>&1; then",

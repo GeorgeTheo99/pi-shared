@@ -643,17 +643,103 @@ def test_pi_regen_baked_with_paths(tmp_path):
     assert "--provider-name" in launchers and "ls99-models" in launchers
 
 
-def test_pi_restart_calls_regen_after_model_gw(tmp_path):
+def test_pi_restart_calls_regen_after_model_gw_and_polls_configured_url(tmp_path):
     aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
     p = _load_aliases(tmp_path, aliases)
-    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), "--launchers-out", str(tmp_path / "l.zsh"))
+    gateway_url = "http://127.0.0.1:19111"
+    r = _run(
+        "--aliases", str(p),
+        "--models-out", str(tmp_path / "m.json"),
+        "--launchers-out", str(tmp_path / "l.zsh"),
+        "--gateway-url", gateway_url,
+    )
     assert r.returncode == 0, r.stderr
     launchers = (tmp_path / "l.zsh").read_text()
-    # pi-restart auto-regens after a successful model-gw restart
-    assert 'pi-regen --quiet' in launchers
-    assert '"$svc" = model-gw' in launchers
-    assert 'model-gateway restart' in launchers
-    assert 'server-ci restart --"$svc"' in launchers
+    restart = launchers.split("pi-restart() {", 1)[1].split("\n}", 1)[0]
+    # pi-restart auto-regens after a successful model-gw restart and uses the
+    # same endpoint as generated clients instead of a hard-coded port.
+    assert 'pi-regen --quiet' in restart
+    assert '"$svc" = model-gw' in restart
+    assert 'model-gateway restart' in restart
+    assert 'server-ci restart --"$svc"' in restart
+    assert f"{gateway_url}/health" in restart
+    assert "model-gw) port=9111" not in restart
+    assert "port=9110" not in restart
+
+
+def test_pi_restart_polls_omlx_readiness_by_service_name(tmp_path):
+    if not shutil.which("zsh"):
+        pytest.skip("zsh not available")
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x"}}
+    p = _load_aliases(tmp_path, aliases)
+    launcher = tmp_path / "l.zsh"
+    r = _run("--aliases", str(p), "--launchers-out", str(launcher))
+    assert r.returncode == 0, r.stderr
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    state = tmp_path / "status-count"
+    server_ci = fake_bin / "server-ci"
+    server_ci.write_text(
+        "#!/bin/sh\n"
+        f"state={shlex.quote(str(state))}\n"
+        "if [ \"$1 $2\" = \"restart --omlx\" ]; then exit 0; fi\n"
+        "if [ \"$1 $2\" = \"restart --status\" ]; then\n"
+        "  n=$(cat \"$state\" 2>/dev/null || echo 0); n=$((n + 1)); echo \"$n\" >\"$state\"\n"
+        "  if [ \"$n\" -lt 2 ]; then echo '  (omlx): STARTING'; else echo '  (omlx): UP'; fi\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    server_ci.chmod(0o755)
+    result = subprocess.run(
+        [
+            "zsh", "-c",
+            f"PATH={shlex.quote(str(fake_bin))}:$PATH; "
+            f"pi-omlx-repair() {{ return 0; }}; source {shlex.quote(str(launcher))}; "
+            "sleep() { return 0; }; pi-restart omlx",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert state.read_text().strip() == "2"
+    assert "(omlx): UP" in result.stdout
+
+
+def test_pi_restart_returns_nonzero_when_omlx_never_becomes_ready(tmp_path):
+    if not shutil.which("zsh"):
+        pytest.skip("zsh not available")
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x"}}
+    p = _load_aliases(tmp_path, aliases)
+    launcher = tmp_path / "l.zsh"
+    r = _run("--aliases", str(p), "--launchers-out", str(launcher))
+    assert r.returncode == 0, r.stderr
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    server_ci = fake_bin / "server-ci"
+    server_ci.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1 $2\" = \"restart --omlx\" ]; then exit 0; fi\n"
+        "if [ \"$1 $2\" = \"restart --status\" ]; then echo '  9110 (omlx): DOWN'; exit 0; fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    server_ci.chmod(0o755)
+    result = subprocess.run(
+        [
+            "zsh", "-c",
+            f"PATH={shlex.quote(str(fake_bin))}:$PATH; "
+            f"pi-omlx-repair() {{ return 0; }}; source {shlex.quote(str(launcher))}; "
+            "sleep() { return 0; }; pi-restart omlx",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "omlx did not report UP within 25s" in result.stdout
 
 
 def test_pi_restart_help_does_not_execute_backticked_commands(tmp_path):
