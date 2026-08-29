@@ -24,7 +24,7 @@
  *
  * v1 constraints (intentionally boring):
  *   - Pi-backed subagents only (spawns `pi --mode json -p --no-session`).
- *   - No external Codex/Claude backends.
+ *   - No external non-Pi backends.
  *   - Resume-by-replay via opt-in cache(key, fn) + args._journal (off by default).
  *   - No structured output schema validation.
  *   - Subagents inherit the parent's Pi profile (PI_CODING_AGENT_DIR); no

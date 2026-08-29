@@ -1,6 +1,6 @@
 # work-plan
 
-Adds an LLM-callable `work_plan` tool for Claude-Code-style execution checklists in Pi.
+Adds an LLM-callable `work_plan` tool for persistent execution checklists in Pi.
 
 Use it for non-trivial implementation, refactor, debugging, or UI work. The plan appears as a persistent widget above the editor with one active item, completed items, and dependency blockers.
 

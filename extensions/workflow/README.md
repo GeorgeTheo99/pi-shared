@@ -155,7 +155,7 @@ Each `agent(...)` call spawns an isolated `pi --mode json -p --no-session` subpr
 
 ## Constraints
 
-- Pi-backed subagents only — **no external Codex/Claude backends**.
+- Pi-backed subagents only — **no external non-Pi backends**.
 - **Resume-by-replay is opt-in** via `cache()` + `args._journal`. Without a journal id, a failed workflow re-runs from the start.
 - **No structured output schema validation.** Return whatever you want; it's serialized to JSON in the result.
 - **No per-call `agentDir` / `agentScope`.**

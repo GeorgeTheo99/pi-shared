@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Recovery launcher for a vanilla Pi session.
 # It intentionally bypasses shared/local Pi packages, extensions, skills, prompts,
-# themes, and AGENTS.md/CLAUDE.md context files so a broken custom harness does
+# themes, and AGENTS.md context files so a broken custom harness does
 # not prevent opening a usable Pi session.
 
 PI_BIN="${PI_VANILLA_PI_BIN:-}"

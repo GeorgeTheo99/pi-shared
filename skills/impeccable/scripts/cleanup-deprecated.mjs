@@ -9,7 +9,7 @@
  *   node {{scripts_path}}/cleanup-deprecated.mjs
  *
  * What it does:
- *   1. Finds every harness-specific skills directory (.claude/skills,
+ *   1. Finds every supported harness-specific skills directory (.pi/skills,
  *      .cursor/skills, .agents/skills, etc.).
  *   2. For each deprecated skill name (with and without i- prefix),
  *      checks if the directory exists and its SKILL.md mentions
@@ -53,7 +53,7 @@ const DEPRECATED_NAMES = [
 
 // All known harness directories that may contain a skills/ subfolder.
 const HARNESS_DIRS = [
-  '.claude', '.cursor', '.gemini', '.codex', '.agents',
+  '.cursor', '.gemini', '.codex', '.agents',
   '.trae', '.trae-cn', '.pi', '.opencode', '.kiro', '.rovodev',
 ];
 

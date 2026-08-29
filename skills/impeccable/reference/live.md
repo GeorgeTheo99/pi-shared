@@ -16,7 +16,7 @@ Execute in order. No step skipped, no step reordered.
 6. On `exit`: run the cleanup at the bottom.
 
 Harness policy:
-- **Claude Code**: run the poll as a **background task** (no short timeout). The harness notifies you when it completes, so the main conversation stays free. Do not block the shell.
+- **Pi**: run the poll in the **foreground** with a timeout longer than the poll's default 600000 ms wait. Do not use a detached task or subagent; the result must return directly to this session.
 - **Cursor**: run the poll in the **foreground** (blocking shell; not a background terminal, not a subagent). Cursor background terminals and subagents do not reliably resume the chat with poll stdout.
 - **Codex**: run the poll in the **foreground** (blocking shell; not a background task, not a subagent). Codex background exec sessions do not reliably surface poll stdout back into the conversation at the moment events arrive, so a "fire-and-forget" background poll will stall live mode.
 - **Other harnesses**: foreground unless you know stdout reliably returns to this session.
