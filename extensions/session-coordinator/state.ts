@@ -13,6 +13,9 @@ export const DEFAULT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1_000;
 export const MAX_MESSAGE_BYTES = 8 * 1_024;
 export const MAX_INBOX_MESSAGES = 100;
 export const MAX_STATUS_CHARS = 200;
+export const MAX_WORKSPACE_CHANGES = 10;
+export const MAX_OUTGOING_STATUS_RECORDS = 100;
+export const MAX_SESSION_RECEIPTS = 100;
 const STALE_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const RUNTIME_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ROOM_ID_RE = /^(?:git|cwd)-[0-9a-f]{32}$/;
@@ -27,6 +30,8 @@ export interface RepositoryScope {
 	cwd: string;
 	worktreeRoot: string;
 	branch?: string;
+	workspaceChanges?: string[];
+	workspaceChangesOmitted?: number;
 }
 
 export interface PeerPresence {
@@ -45,6 +50,9 @@ export interface PeerPresence {
 	heartbeatAt: number;
 	leaseExpiresAt: number;
 	capabilities: ["messages"];
+	protocolVersion?: 2;
+	workspaceChanges?: string[];
+	workspaceChangesOmitted?: number;
 }
 
 export interface PeerMessageSender {
@@ -59,9 +67,11 @@ export interface PeerMessageEnvelope {
 	id: string;
 	roomId: string;
 	targetRuntimeId: string;
+	targetSessionId?: string;
 	sender: PeerMessageSender;
 	message: string;
 	inReplyTo?: string;
+	requestAcknowledgment?: boolean;
 	hops: 0 | 1;
 	createdAt: number;
 	expiresAt: number;
@@ -71,6 +81,33 @@ export interface PeerMessageEnvelope {
 export interface InboxItem {
 	path: string;
 	envelope: PeerMessageEnvelope;
+}
+
+export type PersistedMessageStatus = "pending" | "queued" | "delivered" | "surfaced" | "acknowledged" | "replied";
+export type MessageStatus = PersistedMessageStatus | "expired" | "unread_session_ended";
+
+export interface PeerMessageStatusRecord {
+	version: 1;
+	messageId: string;
+	senderSessionId: string;
+	targetRoomId: string;
+	targetRuntimeId: string;
+	targetSessionId?: string;
+	targetSessionName?: string;
+	trackingSupported: boolean;
+	acknowledgmentRequested: boolean;
+	status: PersistedMessageStatus;
+	createdAt: number;
+	updatedAt: number;
+	expiresAt: number;
+	deliveredAt?: number;
+	surfacedAt?: number;
+	acknowledgedAt?: number;
+	repliedAt?: number;
+}
+
+export interface PeerMessageStatusView extends PeerMessageStatusRecord {
+	effectiveStatus: MessageStatus;
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number, minimum: number): number {
@@ -125,6 +162,31 @@ function git(cwd: string, args: string[]): string | undefined {
 	}
 }
 
+function gitWorkspaceChanges(cwd: string): { files?: string[]; omitted?: number } {
+	const raw = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=normal"]);
+	if (!raw) return {};
+	const entries = raw.split("\0").filter(Boolean);
+	const files: string[] = [];
+	for (let index = 0; index < entries.length; index++) {
+		const entry = entries[index];
+		if (entry.length < 4) continue;
+		const status = entry.slice(0, 2);
+		const file = entry
+			.slice(3)
+			.replace(/[\u0000-\u001f\u007f]/g, " ")
+			.replace(/\s+/g, " ")
+			.trim()
+			.slice(0, 512);
+		if (file) files.push(file);
+		if (status.includes("R") || status.includes("C")) index += 1;
+	}
+	const visible = files.slice(0, MAX_WORKSPACE_CHANGES);
+	return {
+		files: visible.length > 0 ? visible : undefined,
+		omitted: files.length > visible.length ? files.length - visible.length : undefined,
+	};
+}
+
 function roomId(kind: RepositoryScope["kind"], identityPath: string): string {
 	return `${kind}-${crypto.createHash("sha256").update(identityPath).digest("hex").slice(0, 32)}`;
 }
@@ -147,6 +209,7 @@ export function discoverRepository(cwd: string): RepositoryScope {
 	const worktreeRoot = canonicalPath(path.isAbsolute(worktreeRaw) ? worktreeRaw : path.resolve(canonicalCwd, worktreeRaw));
 	const symbolicBranch = git(canonicalCwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
 	const detachedCommit = symbolicBranch ? undefined : git(canonicalCwd, ["rev-parse", "--short", "HEAD"]);
+	const changes = gitWorkspaceChanges(canonicalCwd);
 	return {
 		roomId: roomId("git", identityPath),
 		kind: "git",
@@ -154,6 +217,8 @@ export function discoverRepository(cwd: string): RepositoryScope {
 		cwd: canonicalCwd,
 		worktreeRoot,
 		branch: symbolicBranch ?? (detachedCommit ? `detached@${detachedCommit}` : undefined),
+		workspaceChanges: changes.files,
+		workspaceChangesOmitted: changes.omitted,
 	};
 }
 
@@ -207,6 +272,10 @@ function receiptRoot(): string {
 	return path.join(coordinatorConfig().stateDir, "receipts");
 }
 
+function outgoingStatusRoot(): string {
+	return path.join(coordinatorConfig().stateDir, "outgoing-status");
+}
+
 function receiptKey(sessionId: string): string {
 	if (!sessionId || sessionId.length > 1_024) throw new Error("Invalid Pi session id for peer receipts");
 	return `session-${crypto.createHash("sha256").update(sessionId).digest("hex")}`;
@@ -214,6 +283,23 @@ function receiptKey(sessionId: string): string {
 
 function receiptDir(sessionId: string): string {
 	return path.join(receiptRoot(), receiptKey(sessionId));
+}
+
+function outgoingStatusDir(sessionId: string): string {
+	return path.join(outgoingStatusRoot(), receiptKey(sessionId));
+}
+
+function outgoingStatusPath(sessionId: string, messageId: string): string {
+	assertRuntimeId(messageId);
+	return path.join(outgoingStatusDir(sessionId), `${messageId}.json`);
+}
+
+function outgoingStatusRecordsLockPath(sessionId: string): string {
+	return path.join(outgoingStatusDir(sessionId), ".records.lock");
+}
+
+function receiptLockPath(sessionId: string): string {
+	return path.join(receiptDir(sessionId), ".receipts.lock");
 }
 
 function ensureRoomDirs(room: string): void {
@@ -230,6 +316,13 @@ function ensureReceiptDirs(sessionId: string): void {
 	ensurePrivateDir(stateDir);
 	ensurePrivateDir(receiptRoot());
 	ensurePrivateDir(receiptDir(sessionId));
+}
+
+function ensureOutgoingStatusDirs(sessionId: string): void {
+	const stateDir = coordinatorConfig().stateDir;
+	ensurePrivateDir(stateDir);
+	ensurePrivateDir(outgoingStatusRoot());
+	ensurePrivateDir(outgoingStatusDir(sessionId));
 }
 
 export function inboxDir(room: string, runtimeId: string): string {
@@ -270,6 +363,13 @@ export function sanitizeMessage(value: string): string {
 		.trim();
 }
 
+function normalizeWorkspaceChanges(value: unknown): string[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value) || value.length > MAX_WORKSPACE_CHANGES) return undefined;
+	const files = value.map((item) => boundedString(item, 512));
+	return files.every((item): item is string => Boolean(item)) ? files : undefined;
+}
+
 export function normalizePresence(value: unknown): PeerPresence | undefined {
 	if (!isRecord(value)) return undefined;
 	const runtimeId = boundedString(value.runtimeId, 64);
@@ -297,7 +397,10 @@ export function normalizePresence(value: unknown): PeerPresence | undefined {
 		!Number.isFinite(value.leaseExpiresAt) ||
 		!Array.isArray(value.capabilities) ||
 		value.capabilities.length !== 1 ||
-		value.capabilities[0] !== "messages"
+		value.capabilities[0] !== "messages" ||
+		(value.protocolVersion !== undefined && value.protocolVersion !== 2) ||
+		(value.workspaceChangesOmitted !== undefined &&
+			(!Number.isInteger(value.workspaceChangesOmitted) || Number(value.workspaceChangesOmitted) < 0))
 	) {
 		return undefined;
 	}
@@ -317,6 +420,10 @@ export function normalizePresence(value: unknown): PeerPresence | undefined {
 		heartbeatAt: value.heartbeatAt,
 		leaseExpiresAt: value.leaseExpiresAt,
 		capabilities: ["messages"],
+		protocolVersion: value.protocolVersion === 2 ? 2 : undefined,
+		workspaceChanges: normalizeWorkspaceChanges(value.workspaceChanges),
+		workspaceChangesOmitted:
+			typeof value.workspaceChangesOmitted === "number" ? value.workspaceChangesOmitted : undefined,
 	};
 }
 
@@ -382,11 +489,204 @@ export function listAllActivePeers(selfRuntimeId?: string, now = Date.now()): Pe
 		.sort((left, right) => left.startedAt - right.startedAt || left.runtimeId.localeCompare(right.runtimeId));
 }
 
+const MESSAGE_STATUS_RANK: Record<PersistedMessageStatus, number> = {
+	pending: 0,
+	queued: 1,
+	delivered: 2,
+	surfaced: 3,
+	acknowledged: 4,
+	replied: 5,
+};
+
+export function normalizeMessageStatusRecord(value: unknown): PeerMessageStatusRecord | undefined {
+	if (!isRecord(value)) return undefined;
+	const messageId = boundedString(value.messageId, 64);
+	const senderSessionId = boundedString(value.senderSessionId, 1_024);
+	const targetRoomId = boundedString(value.targetRoomId, 64);
+	const targetRuntimeId = boundedString(value.targetRuntimeId, 64);
+	const targetSessionId = boundedString(value.targetSessionId, 1_024);
+	const validStatus =
+		typeof value.status === "string" && Object.hasOwn(MESSAGE_STATUS_RANK, value.status)
+			? (value.status as PersistedMessageStatus)
+			: undefined;
+	if (
+		value.version !== 1 ||
+		!messageId ||
+		!RUNTIME_ID_RE.test(messageId) ||
+		!senderSessionId ||
+		!targetRoomId ||
+		!ROOM_ID_RE.test(targetRoomId) ||
+		!targetRuntimeId ||
+		!RUNTIME_ID_RE.test(targetRuntimeId) ||
+		(value.targetSessionId !== undefined && !targetSessionId) ||
+		typeof value.trackingSupported !== "boolean" ||
+		typeof value.acknowledgmentRequested !== "boolean" ||
+		!validStatus ||
+		![value.createdAt, value.updatedAt, value.expiresAt].every(
+			(item) => typeof item === "number" && Number.isFinite(item),
+		)
+	) {
+		return undefined;
+	}
+	const optionalTimestamp = (name: string): number | undefined => {
+		const item = value[name];
+		return typeof item === "number" && Number.isFinite(item) ? item : undefined;
+	};
+	return {
+		version: 1,
+		messageId,
+		senderSessionId,
+		targetRoomId,
+		targetRuntimeId,
+		targetSessionId,
+		targetSessionName: boundedString(value.targetSessionName, 200),
+		trackingSupported: value.trackingSupported,
+		acknowledgmentRequested: value.acknowledgmentRequested,
+		status: validStatus,
+		createdAt: value.createdAt as number,
+		updatedAt: value.updatedAt as number,
+		expiresAt: value.expiresAt as number,
+		deliveredAt: optionalTimestamp("deliveredAt"),
+		surfacedAt: optionalTimestamp("surfacedAt"),
+		acknowledgedAt: optionalTimestamp("acknowledgedAt"),
+		repliedAt: optionalTimestamp("repliedAt"),
+	};
+}
+
+function readOutgoingStatusRecords(sessionId: string): PeerMessageStatusRecord[] {
+	let names: string[];
+	try {
+		names = fs.readdirSync(outgoingStatusDir(sessionId)).filter((name) => name.endsWith(".json"));
+	} catch {
+		return [];
+	}
+	return names
+		.map((name) => normalizeMessageStatusRecord(readJsonFile<unknown>(path.join(outgoingStatusDir(sessionId), name), undefined)))
+		.filter((record): record is PeerMessageStatusRecord => Boolean(record))
+		.filter((record) => record.senderSessionId === sessionId)
+		.sort((left, right) => right.createdAt - left.createdAt || left.messageId.localeCompare(right.messageId));
+}
+
+function targetOrSuccessorActive(record: PeerMessageStatusRecord, now: number): boolean {
+	const target = normalizePresence(
+		readJsonFile<unknown>(presencePath(record.targetRoomId, record.targetRuntimeId), undefined),
+	);
+	if (
+		target &&
+		isPresenceActive(target, now) &&
+		(!record.targetSessionId || target.sessionId === record.targetSessionId)
+	) {
+		return true;
+	}
+	return Boolean(
+		record.targetSessionId &&
+			listActivePeers(record.targetRoomId, undefined, now).some((peer) => peer.sessionId === record.targetSessionId),
+	);
+}
+
+function statusView(record: PeerMessageStatusRecord, now: number): PeerMessageStatusView {
+	let effectiveStatus: MessageStatus = record.status;
+	if (!record.trackingSupported) return { ...record, effectiveStatus };
+	if (MESSAGE_STATUS_RANK[record.status] < MESSAGE_STATUS_RANK.surfaced && record.expiresAt <= now) {
+		effectiveStatus = "expired";
+	} else if (record.status === "queued" && !targetOrSuccessorActive(record, now)) {
+		effectiveStatus = "unread_session_ended";
+	}
+	return { ...record, effectiveStatus };
+}
+
+export function readOutgoingMessageStatuses(
+	senderSessionId: string,
+	messageId?: string,
+	now = Date.now(),
+): PeerMessageStatusView[] {
+	const records = readOutgoingStatusRecords(senderSessionId);
+	return records
+		.filter((record) => !messageId || record.messageId === messageId)
+		.map((record) => statusView(record, now));
+}
+
+export async function persistOutgoingMessageStatus(input: {
+	envelope: PeerMessageEnvelope;
+	targetSessionName?: string;
+	trackingSupported: boolean;
+}): Promise<PeerMessageStatusRecord> {
+	const { envelope } = input;
+	ensureOutgoingStatusDirs(envelope.sender.sessionId);
+	const record: PeerMessageStatusRecord = {
+		version: 1,
+		messageId: envelope.id,
+		senderSessionId: envelope.sender.sessionId,
+		targetRoomId: envelope.roomId,
+		targetRuntimeId: envelope.targetRuntimeId,
+		targetSessionId: envelope.targetSessionId,
+		targetSessionName: boundedString(input.targetSessionName, 200),
+		trackingSupported: input.trackingSupported,
+		acknowledgmentRequested: envelope.requestAcknowledgment === true,
+		status: "pending",
+		createdAt: envelope.createdAt,
+		updatedAt: envelope.createdAt,
+		expiresAt: envelope.expiresAt,
+	};
+	await withInterprocessLock(
+		outgoingStatusRecordsLockPath(envelope.sender.sessionId),
+		async () => {
+			const existingRecord = normalizeMessageStatusRecord(
+				readJsonFile<unknown>(outgoingStatusPath(envelope.sender.sessionId, envelope.id), undefined),
+			);
+			if (existingRecord) return;
+			const existing = readOutgoingStatusRecords(envelope.sender.sessionId);
+			for (const stale of existing.slice(MAX_OUTGOING_STATUS_RECORDS - 1)) {
+				await fs.promises.rm(outgoingStatusPath(envelope.sender.sessionId, stale.messageId), { force: true });
+			}
+			await atomicWriteJson(outgoingStatusPath(envelope.sender.sessionId, envelope.id), record);
+		},
+		{ timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 },
+	);
+	return record;
+}
+
+export async function removeOutgoingMessageStatus(senderSessionId: string, messageId: string): Promise<void> {
+	ensureOutgoingStatusDirs(senderSessionId);
+	await withInterprocessLock(
+		outgoingStatusRecordsLockPath(senderSessionId),
+		() => fs.promises.rm(outgoingStatusPath(senderSessionId, messageId), { force: true }),
+		{ timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 },
+	);
+}
+
+export async function updateOutgoingMessageStatus(
+	senderSessionId: string,
+	messageId: string,
+	status: Exclude<PersistedMessageStatus, "pending">,
+	now = Date.now(),
+): Promise<PeerMessageStatusRecord | undefined> {
+	const filePath = outgoingStatusPath(senderSessionId, messageId);
+	ensureOutgoingStatusDirs(senderSessionId);
+	return withInterprocessLock(
+		outgoingStatusRecordsLockPath(senderSessionId),
+		async () => {
+			const current = normalizeMessageStatusRecord(readJsonFile<unknown>(filePath, undefined));
+			if (!current || current.senderSessionId !== senderSessionId) return undefined;
+			if (MESSAGE_STATUS_RANK[status] <= MESSAGE_STATUS_RANK[current.status]) return current;
+			const next: PeerMessageStatusRecord = { ...current, status, updatedAt: now };
+			if (status === "delivered") next.deliveredAt = now;
+			if (status === "surfaced") next.surfacedAt = now;
+			if (status === "acknowledged") next.acknowledgedAt = now;
+			if (status === "replied") next.repliedAt = now;
+			await atomicWriteJson(filePath, next);
+			return next;
+		},
+		{ timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 },
+	);
+}
+
 export function normalizeEnvelope(value: unknown): PeerMessageEnvelope | undefined {
 	if (!isRecord(value) || !isRecord(value.sender)) return undefined;
 	const id = boundedString(value.id, 64);
 	const room = boundedString(value.roomId, 64);
 	const targetRuntimeId = boundedString(value.targetRuntimeId, 64);
+	const targetSessionId = boundedString(value.targetSessionId, 1_024);
 	const senderRuntimeId = boundedString(value.sender.runtimeId, 64);
 	const senderSessionId = boundedString(value.sender.sessionId, 1_024);
 	const senderWorktree = boundedString(value.sender.worktreeRoot, 8_192);
@@ -410,8 +710,10 @@ export function normalizeEnvelope(value: unknown): PeerMessageEnvelope | undefin
 		typeof value.expiresAt !== "number" ||
 		!Number.isFinite(value.createdAt) ||
 		!Number.isFinite(value.expiresAt) ||
+		(value.targetSessionId !== undefined && !targetSessionId) ||
 		(value.inReplyTo !== undefined &&
 			(typeof value.inReplyTo !== "string" || !RUNTIME_ID_RE.test(value.inReplyTo))) ||
+		(value.requestAcknowledgment !== undefined && typeof value.requestAcknowledgment !== "boolean") ||
 		value.untrusted !== true
 	) {
 		return undefined;
@@ -421,6 +723,7 @@ export function normalizeEnvelope(value: unknown): PeerMessageEnvelope | undefin
 		id,
 		roomId: room,
 		targetRuntimeId,
+		targetSessionId,
 		sender: {
 			runtimeId: senderRuntimeId,
 			sessionId: senderSessionId,
@@ -429,6 +732,7 @@ export function normalizeEnvelope(value: unknown): PeerMessageEnvelope | undefin
 		},
 		message,
 		inReplyTo: boundedString(value.inReplyTo, 64),
+		requestAcknowledgment: value.requestAcknowledgment === true ? true : undefined,
 		hops: value.hops,
 		createdAt: value.createdAt,
 		expiresAt: value.expiresAt,
@@ -439,9 +743,11 @@ export function normalizeEnvelope(value: unknown): PeerMessageEnvelope | undefin
 export function createEnvelope(input: {
 	roomId: string;
 	targetRuntimeId: string;
+	targetSessionId?: string;
 	sender: PeerMessageSender;
 	message: string;
 	inReplyTo?: string;
+	requestAcknowledgment?: boolean;
 	hops?: 0 | 1;
 	now?: number;
 }): PeerMessageEnvelope {
@@ -451,9 +757,11 @@ export function createEnvelope(input: {
 		id: crypto.randomUUID(),
 		roomId: input.roomId,
 		targetRuntimeId: input.targetRuntimeId,
+		targetSessionId: input.targetSessionId,
 		sender: input.sender,
 		message: sanitizeMessage(input.message),
 		inReplyTo: input.inReplyTo,
+		requestAcknowledgment: input.requestAcknowledgment === true ? true : undefined,
 		hops: input.hops ?? 0,
 		createdAt: now,
 		expiresAt: now + DEFAULT_MESSAGE_TTL_MS,
@@ -476,6 +784,9 @@ export async function enqueueMessage(envelope: PeerMessageEnvelope): Promise<voi
 			);
 			if (!target || target.roomId !== envelope.roomId || !isPresenceActive(target)) {
 				throw new Error("Peer session is no longer live; refresh peer_sessions before retrying.");
+			}
+			if (envelope.targetSessionId && target.sessionId !== envelope.targetSessionId) {
+				throw new Error("Peer runtime changed Pi sessions before delivery; refresh peer_sessions before retrying.");
 			}
 			const dir = inboxDir(envelope.roomId, envelope.targetRuntimeId);
 			ensurePrivateDir(dir);
@@ -508,6 +819,42 @@ export function readInbox(room: string, runtimeId: string, now = Date.now()): In
 	return items;
 }
 
+export async function adoptSessionInboxMessages(
+	room: string,
+	successorRuntimeId: string,
+	targetSessionId: string,
+	onMessage: (envelope: PeerMessageEnvelope) => Promise<void> | void,
+): Promise<number> {
+	ensureRoomDirs(room);
+	let entries: fs.Dirent[];
+	try {
+		entries = await fs.promises.readdir(inboxRoot(room), { withFileTypes: true });
+	} catch {
+		return 0;
+	}
+	let adopted = 0;
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !RUNTIME_ID_RE.test(entry.name) || entry.name === successorRuntimeId) continue;
+		const predecessor = normalizePresence(readJsonFile<unknown>(presencePath(room, entry.name), undefined));
+		if (predecessor && isProcessAlive(predecessor.pid)) continue;
+		await withInterprocessLock(
+			inboxLockPath(room, entry.name),
+			async () => {
+				const refreshed = normalizePresence(readJsonFile<unknown>(presencePath(room, entry.name), undefined));
+				if (refreshed && isProcessAlive(refreshed.pid)) return;
+				for (const item of readInbox(room, entry.name)) {
+					if (item.envelope.targetSessionId !== targetSessionId) continue;
+					await onMessage(item.envelope);
+					await removeInboxItem(item);
+					adopted += 1;
+				}
+			},
+			{ timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 },
+		);
+	}
+	return adopted;
+}
+
 export async function removeInboxItem(item: InboxItem): Promise<void> {
 	await fs.promises.rm(item.path, { force: true });
 }
@@ -520,7 +867,18 @@ export async function persistSessionReceipt(
 	if (!normalized) throw new Error("Invalid peer message receipt");
 	ensureReceiptDirs(sessionId);
 	const filePath = path.join(receiptDir(sessionId), `${envelope.id}.json`);
-	await atomicWriteJson(filePath, normalized);
+	await withInterprocessLock(
+		receiptLockPath(sessionId),
+		async () => {
+			if (fs.existsSync(filePath)) return;
+			const count = fs.readdirSync(receiptDir(sessionId)).filter((name) => name.endsWith(".json")).length;
+			if (count >= MAX_SESSION_RECEIPTS) {
+				throw new Error(`Peer session receipt inbox is full (${MAX_SESSION_RECEIPTS} messages).`);
+			}
+			await atomicWriteJson(filePath, normalized);
+		},
+		{ timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 },
+	);
 	return { path: filePath, envelope: normalized };
 }
 
@@ -549,7 +907,12 @@ export function readSessionReceipts(sessionId: string, now = Date.now()): InboxI
 }
 
 export async function removeSessionReceipt(item: InboxItem): Promise<void> {
-	await fs.promises.rm(item.path, { force: true });
+	const sessionDir = path.dirname(item.path);
+	await withInterprocessLock(
+		path.join(sessionDir, ".receipts.lock"),
+		() => fs.promises.rm(item.path, { force: true }),
+		{ timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 },
+	);
 }
 
 export async function pruneSessionReceipts(now = Date.now()): Promise<void> {
@@ -563,15 +926,6 @@ export async function pruneSessionReceipts(now = Date.now()): Promise<void> {
 		if (!sessionDir.isDirectory() || !RECEIPT_KEY_RE.test(sessionDir.name)) continue;
 		const dir = path.join(receiptRoot(), sessionDir.name);
 		readReceiptDirectory(dir, now);
-		try {
-			const remaining = await fs.promises.readdir(dir);
-			const age = now - (await fs.promises.stat(dir)).mtimeMs;
-			if (remaining.length === 0 && age > STALE_RETENTION_MS) {
-				await fs.promises.rm(dir, { recursive: true, force: true });
-			}
-		} catch {
-			// Already removed.
-		}
 	}
 }
 
@@ -632,6 +986,39 @@ export async function pruneRoom(room: string, now = Date.now()): Promise<void> {
 	}
 }
 
+export async function pruneOutgoingMessageStatuses(now = Date.now()): Promise<void> {
+	let sessionDirs: fs.Dirent[] = [];
+	try {
+		sessionDirs = await fs.promises.readdir(outgoingStatusRoot(), { withFileTypes: true });
+	} catch {
+		return;
+	}
+	for (const sessionDir of sessionDirs) {
+		if (!sessionDir.isDirectory() || !RECEIPT_KEY_RE.test(sessionDir.name)) continue;
+		const dir = path.join(outgoingStatusRoot(), sessionDir.name);
+		await withInterprocessLock(
+			path.join(dir, ".records.lock"),
+			async () => {
+				let names: string[] = [];
+				try {
+					names = await fs.promises.readdir(dir);
+				} catch {
+					return;
+				}
+				for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
+					const filePath = path.join(dir, name);
+					const record = normalizeMessageStatusRecord(readJsonFile<unknown>(filePath, undefined));
+					if (!record || record.expiresAt < now - STALE_RETENTION_MS) {
+						await fs.promises.rm(filePath, { force: true });
+					}
+				}
+			},
+			{ timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 },
+		).catch(() => undefined);
+	}
+}
+
 export async function pruneCoordinatorState(now = Date.now()): Promise<void> {
 	for (const room of listRoomIds()) await pruneRoom(room, now).catch(() => undefined);
+	await pruneOutgoingMessageStatuses(now).catch(() => undefined);
 }

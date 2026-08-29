@@ -7,7 +7,7 @@ Shared pi instructions and explicitly shareable pi resources.
 ## Contents
 
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
-- `extensions/` — shared pi extensions, including oversized tool-result summarization (`tool_result_recall`, `/tool-summary`), project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), same-process fresh-session handoff (`/self-handoff`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), local-search MCP-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
+- `extensions/` — shared pi extensions, including oversized tool-result summarization (`tool_result_recall`, `/tool-summary`), project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), same-process fresh-session handoff (`/self-handoff`), machine-local peer coordination (`peer_sessions`, `peer_send`, `peer_message_status`, `peer_acknowledge`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), local-search MCP-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
 - `knowledge/software-engineering/` — curated software engineering classics source catalog and local searchable corpus. Future state: ingest public/open texts and user-supplied lawful private copies for copyrighted books; metadata-only until then.
 - `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-databricks/skills`.
 - `prompts/` — shared prompt templates.
@@ -170,6 +170,12 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - transfers the latest active goal while preserving its identity and remaining turn budget without charging the orientation turn, and copies the latest non-empty work plan into the child; exact parent/child IDs and paths, session-wide audit checks, and an exclusive ownership lock gate goal finalization/reclaim
   - intentionally is not an LLM tool: stock Pi exposes session replacement only to user command contexts
   - see `extensions/self-handoff/README.md` for cancellation, `/goal reclaim`, and stock Pi's non-transactional replacement limits
+- `extensions/session-coordinator` — machine-local presence and asynchronous peer coordination:
+  - `peer_sessions` lists live sessions machine-wide or project-scoped with advisory branch/worktree/activity metadata and bounded Git workspace changes
+  - `peer_send` remains notification-only and never wakes or interrupts a peer; optional acknowledgments and one correlated reply hop are bounded against loops
+  - `peer_message_status` exposes truthful `pending`, `queued`, `delivered`, `surfaced`, `acknowledged`, `replied`, `expired`, and `unread_session_ended` checkpoints; `surfaced` never claims read
+  - exact same-session successors can safely adopt unread dead-runtime inboxes; ambiguous, different-session, and legacy ownership fails closed
+  - see `extensions/session-coordinator/README.md` for storage, compatibility, lifecycle, and trust semantics
 - `extensions/pi-browser-capture` — shared Playwright runtimes for browser work and local app testing:
   - canonical `browser_*` tools for actual public web browsing: `browser_open`, `browser_navigate`, `browser_open_tab`, `browser_list_tabs`, `browser_switch_tab`, `browser_close_tab`, `browser_click`, `browser_type`, `browser_wait_for`, `browser_extract_text`, `browser_screenshot`, `browser_export_pdf`, `browser_console_logs`, `browser_page_state`, `browser_close`
   - `app_*` tools for local/private web app testing: `app_open`, `app_click`, `app_type_text`, `app_wait_for`, `app_extract_text`, `app_screenshot`, `app_console_logs`, `app_network_log`, `app_api_request`, `app_page_state`, and tab helpers

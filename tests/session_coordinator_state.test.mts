@@ -32,6 +32,7 @@ function presence(overrides: Partial<PeerPresence> = {}): PeerPresence {
 		heartbeatAt: now,
 		leaseExpiresAt: now + 20_000,
 		capabilities: ["messages"],
+		protocolVersion: 2,
 		...overrides,
 	};
 }
@@ -59,6 +60,8 @@ test("repository identity groups linked worktrees while preserving worktree path
 		assert.notEqual(mainScope.worktreeRoot, linkedScope.worktreeRoot);
 		assert.equal(mainScope.branch, "main");
 		assert.equal(linkedScope.branch, "peer");
+		fs.writeFileSync(path.join(root, "changed.txt"), "workspace evidence\n");
+		assert.deepEqual(coordinator.discoverRepository(root).workspaceChanges, ["changed.txt"]);
 	} finally {
 		try {
 			git(root, ["worktree", "remove", "--force", linked]);
@@ -285,6 +288,237 @@ test("orphan inbox directories are pruned independently of presence files", asyn
 	fs.utimesSync(dir, old, old);
 	await coordinator.pruneRoom(roomId, 2 * 24 * 60 * 60 * 1_000);
 	assert.equal(fs.existsSync(dir), false);
+});
+
+test("legacy presence and envelopes remain valid without protocol-v2 fields", () => {
+	const legacyPresence = { ...presence(), protocolVersion: undefined };
+	assert.equal(coordinator.normalizePresence(legacyPresence)?.protocolVersion, undefined);
+	const legacyEnvelope = coordinator.createEnvelope({
+		roomId: legacyPresence.roomId,
+		targetRuntimeId: legacyPresence.runtimeId,
+		sender: {
+			runtimeId: crypto.randomUUID(),
+			sessionId: crypto.randomUUID(),
+			worktreeRoot: process.cwd(),
+		},
+		message: "legacy-compatible",
+	});
+	assert.equal(coordinator.normalizeEnvelope(legacyEnvelope)?.targetSessionId, undefined);
+	assert.equal(coordinator.normalizeEnvelope(legacyEnvelope)?.requestAcknowledgment, undefined);
+});
+
+test("outgoing lifecycle records are private, monotonic, and expose truthful terminal warnings", async () => {
+	const now = Date.now();
+	const roomId = `cwd-${"0".repeat(32)}`;
+	const senderSessionId = "sender-session-status";
+	const target = presence({ roomId, sessionId: "target-session-status" });
+	await coordinator.writePresence(target);
+	const envelope = coordinator.createEnvelope({
+		roomId,
+		targetRuntimeId: target.runtimeId,
+		targetSessionId: target.sessionId,
+		sender: {
+			runtimeId: crypto.randomUUID(),
+			sessionId: senderSessionId,
+			worktreeRoot: process.cwd(),
+		},
+		message: "track me",
+		requestAcknowledgment: true,
+		now,
+	});
+	await coordinator.persistOutgoingMessageStatus({ envelope, targetSessionName: "Tracked peer", trackingSupported: true });
+	assert.equal(coordinator.readOutgoingMessageStatuses(senderSessionId, envelope.id, now)[0].effectiveStatus, "pending");
+	await coordinator.updateOutgoingMessageStatus(senderSessionId, envelope.id, "queued", now + 1);
+	const statusPath = path.join(
+		stateDir,
+		"outgoing-status",
+		`session-${crypto.createHash("sha256").update(senderSessionId).digest("hex")}`,
+		`${envelope.id}.json`,
+	);
+	assert.equal(fs.statSync(statusPath).mode & 0o777, 0o600);
+
+	await coordinator.updateOutgoingMessageStatus(senderSessionId, envelope.id, "delivered", now + 1);
+	await coordinator.updateOutgoingMessageStatus(senderSessionId, envelope.id, "surfaced", now + 2);
+	await coordinator.updateOutgoingMessageStatus(senderSessionId, envelope.id, "acknowledged", now + 3);
+	await coordinator.updateOutgoingMessageStatus(senderSessionId, envelope.id, "delivered", now + 4);
+	let status = coordinator.readOutgoingMessageStatuses(senderSessionId, envelope.id, now + 4)[0];
+	assert.equal(status.effectiveStatus, "acknowledged", "later lower-ranked writes must not regress status");
+	await coordinator.updateOutgoingMessageStatus(senderSessionId, envelope.id, "replied", now + 5);
+	status = coordinator.readOutgoingMessageStatuses(senderSessionId, envelope.id, now + 5)[0];
+	assert.equal(status.effectiveStatus, "replied");
+	assert.equal(status.acknowledgmentRequested, true);
+
+	const unread = coordinator.createEnvelope({
+		roomId,
+		targetRuntimeId: target.runtimeId,
+		targetSessionId: target.sessionId,
+		sender: { runtimeId: crypto.randomUUID(), sessionId: senderSessionId, worktreeRoot: process.cwd() },
+		message: "runtime exits first",
+		now,
+	});
+	await coordinator.persistOutgoingMessageStatus({ envelope: unread, trackingSupported: true });
+	await coordinator.updateOutgoingMessageStatus(senderSessionId, unread.id, "queued", now + 1);
+	await coordinator.writePresence({ ...target, sessionId: "target-switched-sessions" });
+	assert.equal(
+		coordinator.readOutgoingMessageStatuses(senderSessionId, unread.id, now + 5)[0].effectiveStatus,
+		"unread_session_ended",
+		"a reused runtime must not count as the originally targeted Pi session",
+	);
+	await coordinator.removeRuntimeState(roomId, target.runtimeId);
+	assert.equal(
+		coordinator.readOutgoingMessageStatuses(senderSessionId, unread.id, now + 10)[0].effectiveStatus,
+		"unread_session_ended",
+	);
+
+	const expired = coordinator.createEnvelope({
+		roomId,
+		targetRuntimeId: crypto.randomUUID(),
+		targetSessionId: "expired-target",
+		sender: { runtimeId: crypto.randomUUID(), sessionId: senderSessionId, worktreeRoot: process.cwd() },
+		message: "expire me",
+		now: 0,
+	});
+	await coordinator.persistOutgoingMessageStatus({ envelope: expired, trackingSupported: true });
+	assert.equal(
+		coordinator.readOutgoingMessageStatuses(senderSessionId, expired.id, expired.expiresAt + 1)[0].effectiveStatus,
+		"expired",
+	);
+
+	const legacyUntracked = coordinator.createEnvelope({
+		roomId,
+		targetRuntimeId: crypto.randomUUID(),
+		sender: { runtimeId: crypto.randomUUID(), sessionId: senderSessionId, worktreeRoot: process.cwd() },
+		message: "legacy status remains unknown",
+		now: 0,
+	});
+	await coordinator.persistOutgoingMessageStatus({ envelope: legacyUntracked, trackingSupported: false });
+	await coordinator.updateOutgoingMessageStatus(senderSessionId, legacyUntracked.id, "queued", 1);
+	assert.equal(
+		coordinator.readOutgoingMessageStatuses(senderSessionId, legacyUntracked.id, legacyUntracked.expiresAt + 1)[0]
+			.effectiveStatus,
+		"queued",
+		"legacy peers must not produce false unread or expired claims",
+	);
+});
+
+test("outgoing lifecycle storage is capped and pruned after retention", async () => {
+	const senderSessionId = "bounded-status-sender";
+	const sender = { runtimeId: crypto.randomUUID(), sessionId: senderSessionId, worktreeRoot: process.cwd() };
+	const ids: string[] = [];
+	for (let index = 0; index < coordinator.MAX_OUTGOING_STATUS_RECORDS + 5; index++) {
+		const envelope = coordinator.createEnvelope({
+			roomId: `cwd-${"f".repeat(32)}`,
+			targetRuntimeId: crypto.randomUUID(),
+			targetSessionId: "bounded-target",
+			sender,
+			message: `bounded-${index}`,
+			now: index,
+		});
+		ids.push(envelope.id);
+		await coordinator.persistOutgoingMessageStatus({ envelope, trackingSupported: true });
+	}
+	const statuses = coordinator.readOutgoingMessageStatuses(senderSessionId, undefined, 1_000);
+	assert.equal(statuses.length, coordinator.MAX_OUTGOING_STATUS_RECORDS);
+	assert.equal(statuses.some((status: { messageId: string }) => status.messageId === ids[0]), false);
+	assert.equal(statuses.some((status: { messageId: string }) => status.messageId === ids.at(-1)), true);
+	const racingEnvelope = coordinator.createEnvelope({
+		roomId: `cwd-${"f".repeat(32)}`,
+		targetRuntimeId: crypto.randomUUID(),
+		targetSessionId: "bounded-target",
+		sender,
+		message: "racing-cap-write",
+		now: coordinator.MAX_OUTGOING_STATUS_RECORDS + 10,
+	});
+	await Promise.all([
+		coordinator.persistOutgoingMessageStatus({ envelope: racingEnvelope, trackingSupported: true }),
+		coordinator.updateOutgoingMessageStatus(senderSessionId, ids.at(-1)!, "queued"),
+	]);
+	assert.equal(
+		coordinator.readOutgoingMessageStatuses(senderSessionId, undefined, 1_000).length,
+		coordinator.MAX_OUTGOING_STATUS_RECORDS,
+	);
+	await coordinator.pruneOutgoingMessageStatuses(
+		coordinator.DEFAULT_MESSAGE_TTL_MS + 25 * 60 * 60 * 1_000,
+	);
+	assert.equal(coordinator.readOutgoingMessageStatuses(senderSessionId).length, 0);
+});
+
+test("a same-room successor adopts only messages bound to its exact Pi session id", async () => {
+	const roomId = `cwd-${"a".repeat(32)}`;
+	const predecessor = presence({ roomId, sessionId: "stable-target-session" });
+	await coordinator.writePresence(predecessor);
+	const sender = { runtimeId: crypto.randomUUID(), sessionId: "sender", worktreeRoot: process.cwd() };
+	const matching = coordinator.createEnvelope({
+		roomId,
+		targetRuntimeId: predecessor.runtimeId,
+		targetSessionId: predecessor.sessionId,
+		sender,
+		message: "adopt me",
+	});
+	const mismatched = coordinator.createEnvelope({
+		roomId,
+		targetRuntimeId: predecessor.runtimeId,
+		targetSessionId: "different-session",
+		sender,
+		message: "do not adopt me",
+	});
+	const legacy = coordinator.createEnvelope({
+		roomId,
+		targetRuntimeId: predecessor.runtimeId,
+		sender,
+		message: "legacy message fails closed",
+	});
+	await coordinator.enqueueMessage(matching);
+	await coordinator.enqueueMessage(legacy);
+	await assert.rejects(coordinator.enqueueMessage(mismatched), /changed Pi sessions/);
+	await coordinator.writePresence({ ...predecessor, sessionId: "different-session" });
+	await coordinator.enqueueMessage(mismatched);
+	await coordinator.writePresence({ ...predecessor, sessionId: "different-session", pid: 99_999_999 });
+
+	const adopted: string[] = [];
+	const count = await coordinator.adoptSessionInboxMessages(
+		roomId,
+		crypto.randomUUID(),
+		predecessor.sessionId,
+		(envelope: { id: string }) => adopted.push(envelope.id),
+	);
+	assert.equal(count, 1);
+	assert.deepEqual(adopted, [matching.id]);
+	assert.deepEqual(
+		new Set(
+			coordinator.readInbox(roomId, predecessor.runtimeId).map((item: { envelope: { id: string } }) => item.envelope.id),
+		),
+		new Set([mismatched.id, legacy.id]),
+	);
+});
+
+test("recipient session receipts enforce transactional backpressure", async () => {
+	const now = Date.now();
+	const sessionId = "bounded-recipient-session";
+	const sender = { runtimeId: crypto.randomUUID(), sessionId: "receipt-sender", worktreeRoot: process.cwd() };
+	const receipts: Array<{ path: string; envelope: { id: string } }> = [];
+	for (let index = 0; index < coordinator.MAX_SESSION_RECEIPTS; index++) {
+		const envelope = coordinator.createEnvelope({
+			roomId: `cwd-${"7".repeat(32)}`,
+			targetRuntimeId: crypto.randomUUID(),
+			targetSessionId: sessionId,
+			sender,
+			message: `receipt-${index}`,
+			now: now + index,
+		});
+		receipts.push(await coordinator.persistSessionReceipt(sessionId, envelope));
+	}
+	const overflow = coordinator.createEnvelope({
+		roomId: `cwd-${"7".repeat(32)}`,
+		targetRuntimeId: crypto.randomUUID(),
+		targetSessionId: sessionId,
+		sender,
+		message: "overflow",
+	});
+	await assert.rejects(coordinator.persistSessionReceipt(sessionId, overflow), /receipt inbox is full/);
+	await coordinator.removeSessionReceipt(receipts[0]);
+	await coordinator.persistSessionReceipt(sessionId, overflow);
+	assert.equal(coordinator.readSessionReceipts(sessionId).length, coordinator.MAX_SESSION_RECEIPTS);
 });
 
 test("session receipts remain durable independently of Pi session-file creation", async () => {

@@ -9,6 +9,9 @@ export const Type = {
 	String(options = {}) {
 		return schema("string", options);
 	},
+	Boolean(options = {}) {
+		return schema("boolean", options);
+	},
 	Literal(value) {
 		return schema("literal", { value });
 	},
