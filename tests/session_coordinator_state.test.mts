@@ -60,8 +60,9 @@ test("repository identity groups linked worktrees while preserving worktree path
 		assert.notEqual(mainScope.worktreeRoot, linkedScope.worktreeRoot);
 		assert.equal(mainScope.branch, "main");
 		assert.equal(linkedScope.branch, "peer");
+		fs.writeFileSync(path.join(root, "README.md"), "modified tracked file\n");
 		fs.writeFileSync(path.join(root, "changed.txt"), "workspace evidence\n");
-		assert.deepEqual(coordinator.discoverRepository(root).workspaceChanges, ["changed.txt"]);
+		assert.deepEqual(coordinator.discoverRepository(root).workspaceChanges, ["README.md", "changed.txt"]);
 	} finally {
 		try {
 			git(root, ["worktree", "remove", "--force", linked]);

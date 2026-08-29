@@ -148,7 +148,7 @@ function canonicalPath(value: string): string {
 	}
 }
 
-function git(cwd: string, args: string[]): string | undefined {
+function gitRaw(cwd: string, args: string[]): string | undefined {
 	try {
 		return execFileSync("git", args, {
 			cwd,
@@ -156,14 +156,18 @@ function git(cwd: string, args: string[]): string | undefined {
 			stdio: ["ignore", "pipe", "ignore"],
 			timeout: 2_000,
 			maxBuffer: 64 * 1_024,
-		}).trim() || undefined;
+		});
 	} catch {
 		return undefined;
 	}
 }
 
+function git(cwd: string, args: string[]): string | undefined {
+	return gitRaw(cwd, args)?.trim() || undefined;
+}
+
 function gitWorkspaceChanges(cwd: string): { files?: string[]; omitted?: number } {
-	const raw = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=normal"]);
+	const raw = gitRaw(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=normal"]);
 	if (!raw) return {};
 	const entries = raw.split("\0").filter(Boolean);
 	const files: string[] = [];
