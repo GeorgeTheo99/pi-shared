@@ -1066,10 +1066,41 @@ def test_no_output_targets_errors(tmp_path):
     assert "nothing to do" in r.stderr
 
 
-def test_installer_defaults_to_pi_owned_generated_directory():
+def test_installer_defaults_to_pi_owned_paths():
     installer = (SHARED_ROOT / "bin" / "pi-shared-install").read_text()
+    assert "$HOME/.pi/model-aliases.json" in installer
     assert "$HOME/.pi/generated/pi-launchers.zsh" in installer
     assert "model-gateway-runtime" not in installer
+
+
+def test_installer_renders_from_default_pi_alias_catalog(tmp_path):
+    home = tmp_path / "home"
+    aliases = home / ".pi" / "model-aliases.json"
+    aliases.parent.mkdir(parents=True)
+    aliases.write_text(json.dumps({
+        "cloud:x": {
+            "name": "x",
+            "alias": "x",
+            "provider": "openai",
+            "provider_model_id": "x",
+        }
+    }))
+    env = dict(os.environ)
+    env.update({
+        "HOME": str(home),
+        "PI_SHARED_BIN_DIR": str(home / ".local" / "bin"),
+        "PI_SHARED_AGENT_DIR": str(home / ".pi" / "agent"),
+        "PI_SHARED_OMLX_AGENT_DIR": str(home / ".pi-omlx" / "agent"),
+    })
+    r = subprocess.run(
+        [str(SHARED_ROOT / "bin" / "pi-shared-install"), "--pi-agent-dir", ""],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert r.returncode == 0, r.stderr
+    assert (home / ".pi-omlx" / "agent" / "models.json").is_file()
+    assert (home / ".pi" / "generated" / "pi-launchers.zsh").is_file()
 
 
 def test_installer_migrates_recognized_legacy_launcher(tmp_path):
@@ -1113,7 +1144,7 @@ def test_installer_migrates_recognized_legacy_launcher(tmp_path):
 
 def test_real_alias_file_renders(tmp_path):
     """Smoke test against the live ls99 alias file if present."""
-    af = Path.home() / ".claude" / "model-aliases.json"
+    af = Path.home() / ".pi" / "model-aliases.json"
     if not af.exists():
         pytest.skip("no live alias file")
     r = _run("--aliases", str(af), "--models-out", str(tmp_path / "m.json"),

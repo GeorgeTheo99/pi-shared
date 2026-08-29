@@ -28,7 +28,7 @@ Inputs:
   --check        drift check only; exit 1 when outputs are stale
 
 Modes:
-    pi-catalog --aliases ~/.claude/model-aliases.json \\
+    pi-catalog --aliases ~/.pi/model-aliases.json \\
                 --models-out ~/.pi-omlx/agent/models.json \\
                 --launchers-out ~/.pi/generated/pi-launchers.zsh \\
                 --pi-agent-dir ~/.pi-omlx/agent --ls99-extras

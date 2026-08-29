@@ -1,20 +1,18 @@
 ---
 name: handoff
-description: Hand off the current task to a new session (pi, Claude Code, or Codex CLI) with full context. Use when the user asks for a handoff, continuation note, or wants to pause and transfer work.
+description: Hand off the current task to a fresh Pi session with full context. Use when the user asks for a handoff, continuation note, or wants to pause and transfer work.
 ---
 
 # Handoff to New Session
 
-You are handing off the current conversation to a brand new session. Follow these rules exactly.
-
-Detect which tool you are running in by checking environment or context, then tailor the resume instructions accordingly.
+You are handing off the current conversation to a brand new Pi session. Follow these rules exactly.
 
 ## Hard Constraints (Handoff-Only Mode)
 
 When this skill is invoked, you must do handoff work only.
 
 1. Do not continue implementation work.
-2. Do not edit project/source files (except the handoff file under `~/.claude/handoffs/`).
+2. Do not edit project/source files (except the handoff file under `~/.pi/handoffs/`).
 3. Do not run commit/push/rebase or any destructive git commands.
 4. Do not run build/test/lint for new work.
 5. Do not execute follow-up task steps after writing the handoff.
@@ -23,7 +21,13 @@ Allowed actions are read-only context gathering plus creating one handoff file.
 
 ## Step 1: Write the Handoff File
 
-Create a comprehensive handoff document at `~/.claude/handoffs/handoff-$(date +%Y%m%d-%H%M%S).md` with the following structure:
+Ensure the canonical handoff directory exists:
+
+```bash
+mkdir -p ~/.pi/handoffs
+```
+
+Create a comprehensive handoff document at `~/.pi/handoffs/handoff-$(date +%Y%m%d-%H%M%S).md` with the following structure:
 
 ```markdown
 # Handoff Context
@@ -62,30 +66,15 @@ Before your final response, confirm all of the following:
 
 ## Step 3: Instruct the User
 
-After writing the file, output only the following:
+After writing the file, output only:
 
-1. The handoff file path
-2. A 1-2 line summary of what you wrote
-3. Then tell the user how to continue, based on which tool you are running in:
+1. The handoff file path.
+2. A 1–2 line summary of what you wrote.
+3. This continuation command, with the actual filename:
 
-**pi:**
-```
-To continue in a fresh pi session:
-  pi @~/.claude/handoffs/handoff-YYYYMMDD-HHMMSS.md "Continue from this handoff"
-```
-
-**Claude Code:**
-```
-To continue in a fresh Claude session:
-  1. Type /new to clear context
-  2. Type /resume-handoff to pick up where we left off
+```text
+To continue in a fresh Pi session:
+  pi @~/.pi/handoffs/handoff-YYYYMMDD-HHMMSS.md "Continue from this handoff"
 ```
 
-**Codex CLI:**
-```
-To continue in a fresh Codex session:
-  1. Start a new session with your codex-* launcher (e.g. codex-default)
-  2. Ask Codex to "resume from handoff" — it will find the latest file automatically
-```
-
-Only output the instructions for the tool you are currently running in. Stop after this output.
+Stop after this output.

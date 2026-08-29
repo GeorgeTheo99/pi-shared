@@ -49,14 +49,14 @@ The installer is idempotent and safe to rerun. It:
 - symlinks `pi-catalog`, `pi-omlx-repair`, and `pi-vanilla` into `~/.local/bin`
 - ensures `~/.pi/agent/settings.json` includes this repo in `packages`
 - symlinks `~/.pi/agent/AGENTS.md` to this repo's shared `AGENTS.md` unless a real file already exists
-- if `~/.claude/model-aliases.json` exists, renders `~/.pi-omlx/agent/models.json` and `~/.pi/generated/pi-launchers.zsh`
+- if `~/.pi/model-aliases.json` exists, renders `~/.pi-omlx/agent/models.json` and `~/.pi/generated/pi-launchers.zsh`
 
 Useful options:
 
 ```bash
 ./install.sh --no-catalog
 ./install.sh --force
-./install.sh --aliases ~/.claude/model-aliases.json \
+./install.sh --aliases ~/.pi/model-aliases.json \
   --models-out ~/.pi-omlx/agent/models.json \
   --launchers-out ~/.pi/generated/pi-launchers.zsh
 ```
@@ -130,7 +130,7 @@ ln -sfn ~/local_code/pi-shared/bin/pi-catalog ~/.local/bin/pi-catalog
 Generate for the oMLX profile (ls99):
 
 ```bash
-pi-catalog --aliases ~/.claude/model-aliases.json \
+pi-catalog --aliases ~/.pi/model-aliases.json \
   --models-out ~/.pi-omlx/agent/models.json \
   --launchers-out ~/.pi/generated/pi-launchers.zsh \
   --pi-agent-dir ~/.pi-omlx/agent --ls99-extras
@@ -214,7 +214,7 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
 ## Included shared skills
 
 - `skills/frontend-design` — high-quality frontend/UI design skill for building polished, distinctive web interfaces
-- `skills/handoff` — writes a structured continuation handoff for a fresh pi, Claude Code, or Codex CLI session
+- `skills/handoff` — writes a structured continuation handoff for a fresh Pi session
 - `skills/panel` — orchestrates `/panel` second-opinion and multi-model compare workflows using `panel_select` plus `spawn_subagent panelist`
 - `skills/resume-handoff` — resumes from the most recent handoff file and verifies current repo state before continuing
 

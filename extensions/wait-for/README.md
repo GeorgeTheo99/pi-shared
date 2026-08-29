@@ -117,7 +117,7 @@ grep -q '^DONE ' "$LOG" || exit 0
 mv "$HOME/models/mlx/GLM-5.2-mxfp4.partial"/* "$HOME/models/mlx/GLM-5.2-mxfp4/" 2>/dev/null || true
 cd "$HOME/local_code/server/omlx-config" && python3 fan_out_settings.py
 cd "$HOME/local_code/server" && scripts/update-home-server.sh --deploy-current
-launchctl kickstart -k gui/$(id -u)/com.local.claude-proxy
+launchctl kickstart -k gui/$(id -u)/com.local.model-gateway
 launchctl unload "$HOME/Library/LaunchAgents/com.local.glm52-download-tail.plist"  # one‑shot, clean up
 </string>
   </array>
@@ -144,10 +144,10 @@ Load with `launchctl load ~/Library/LaunchAgents/com.local.glm52-download-tail.p
 
 For tails that genuinely require the agent to inspect output, decide, and branch:
 
-1. Before exiting, Pi writes a handoff note (`handoff` skill → `~/.claude/handoffs/handoff‑<ts>.md`) describing the in‑flight task, the completion signal to expect, and exactly what to do once it fires. Keep the durable goal active.
+1. Before exiting, Pi writes a handoff note (`handoff` skill → `~/.pi/handoffs/handoff‑<ts>.md`) describing the in‑flight task, the completion signal to expect, and exactly what to do once it fires. Keep the durable goal active.
 2. A `WatchPaths`‑triggered launchd job fires when the completion marker appears and relaunches Pi pointed at that handoff:
    ```
-   PI_CODING_AGENT_DIR=~/.pi-omlx/agent pi @~/.claude/handoffs/handoff-<ts>.md \
+   PI_CODING_AGENT_DIR=~/.pi-omlx/agent pi @~/.pi/handoffs/handoff-<ts>.md \
      "The download finished. Read the handoff and continue the post-download steps autonomously."
    ```
 3. The resumed session re‑grounds from the handoff note + `git status`/repo state, then continues.

@@ -35,7 +35,7 @@ ROOT_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
 BIN_DIR="${PI_SHARED_BIN_DIR:-$HOME/.local/bin}"
 PI_AGENT_DIR="${PI_SHARED_AGENT_DIR:-$HOME/.pi/agent}"
 PI_OMLX_AGENT_DIR="${PI_SHARED_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
-ALIASES_PATH="${PI_SHARED_ALIASES:-$HOME/.claude/model-aliases.json}"
+ALIASES_PATH="${PI_SHARED_ALIASES:-$HOME/.pi/model-aliases.json}"
 MODELS_OUT="${PI_SHARED_MODELS_OUT:-$PI_OMLX_AGENT_DIR/models.json}"
 LAUNCHERS_OUT="${PI_SHARED_LAUNCHERS_OUT:-$HOME/.pi/generated/pi-launchers.zsh}"
 # Launcher Pi profile: default = the oMLX profile; empty = Pi default profile.
@@ -199,7 +199,7 @@ generate_catalog() {
     return 0
   fi
   if [ ! -f "$ALIASES_PATH" ]; then
-    warn "No alias catalog at $ALIASES_PATH; skipping initial pi-catalog generation"
+    warn "No alias catalog at $ALIASES_PATH; configure its producer or pass --aliases PATH. Skipping initial pi-catalog generation."
     return 0
   fi
   mkdir -p "$(dirname "$MODELS_OUT")" "$(dirname "$LAUNCHERS_OUT")"
