@@ -184,9 +184,13 @@ function modelScore(model: PanelModel, currentFamily?: string, preferredRank = 9
   return preference + differentFamily + subscriptionGpt + apiRoutedGptPenalty + reasoning + Math.floor(model.contextWindow / 10_000) + Math.floor(model.maxTokens / 10_000);
 }
 
-function orderedCandidates(models: PanelModel[], config: PanelConfig, current?: PanelModel, mode = "single"): PanelModel[] {
+function modelIsExcluded(model: PanelModel, config: PanelConfig): boolean {
   const exclusions = [...(config.excludeModels ?? []), ...(config.excludedModels ?? []), ...(config.exclusions ?? [])];
-  const candidates = models.filter((model) => !exclusions.some((pattern) => matchesPattern(model, pattern)));
+  return exclusions.some((pattern) => matchesPattern(model, pattern));
+}
+
+function orderedCandidates(models: PanelModel[], config: PanelConfig, current?: PanelModel, mode = "single"): PanelModel[] {
+  const candidates = models.filter((model) => !modelIsExcluded(model, config));
   const preferred = mode === "compare" ? config.compareModels ?? config.preferredModels ?? [] : config.preferredModels ?? [];
 
   return [...candidates].sort((a, b) => {
@@ -196,14 +200,32 @@ function orderedCandidates(models: PanelModel[], config: PanelConfig, current?: 
   });
 }
 
-function selectModels(models: PanelModel[], config: PanelConfig, options: { current?: string; explicit?: string[]; mode?: string; count?: number }) {
+export function selectModels(
+  models: PanelModel[],
+  config: PanelConfig,
+  options: { current?: string; explicit?: string[]; mode?: string; count?: number; requiresImages?: boolean },
+) {
   const current = options.current ? resolveModel(models, options.current) : undefined;
   const mode = options.mode === "compare" ? "compare" : "single";
+  const eligible = options.requiresImages ? models.filter((model) => model.images) : models;
+  const selectable = eligible.filter(
+    (model) => model.key !== current?.key && !modelIsExcluded(model, config),
+  );
   const explicitPatterns = options.explicit?.map((pattern) => pattern.trim()).filter(Boolean) ?? [];
   const resolvedExplicit: PanelModel[] = [];
   const unresolvedExplicit: string[] = [];
   for (const pattern of explicitPatterns) {
-    const resolved = resolveModel(models, pattern);
+    const normalized = pattern.toLowerCase();
+    const exact = models.find((model) =>
+      [model.key, model.id].some((value) => value.toLowerCase() === normalized),
+    );
+    if (exact) {
+      const selectableExact = selectable.find((model) => model.key === exact.key);
+      if (selectableExact) resolvedExplicit.push(selectableExact);
+      else unresolvedExplicit.push(pattern);
+      continue;
+    }
+    const resolved = resolveModel(selectable, pattern);
     if (resolved) resolvedExplicit.push(resolved);
     else unresolvedExplicit.push(pattern);
   }
@@ -211,10 +233,10 @@ function selectModels(models: PanelModel[], config: PanelConfig, options: { curr
   if (explicitPatterns.length > 0) return { selected: explicit, current, mode, unresolved: unresolvedExplicit };
 
   const count = Math.max(1, Math.min(8, options.count ?? config.defaultCompareCount ?? (mode === "compare" ? 3 : 1)));
-  const ordered = orderedCandidates(models, config, current, mode).filter((model) => model.key !== current?.key);
+  const ordered = orderedCandidates(eligible, config, current, mode).filter((model) => model.key !== current?.key);
 
   if (mode === "single") {
-    const selected = ordered.find((model) => model.family !== current?.family) ?? ordered[0] ?? models[0];
+    const selected = ordered.find((model) => model.family !== current?.family) ?? ordered[0];
     return { selected: selected ? [selected] : [], current, mode, unresolved: [] };
   }
 
@@ -237,11 +259,12 @@ function selectModels(models: PanelModel[], config: PanelConfig, options: { curr
 function formatModel(model: PanelModel): string {
   const context = model.contextWindow ? ` ctx:${Math.round(model.contextWindow / 1000)}K` : "";
   const thinking = model.reasoning ? " thinking" : "";
+  const imageCapability = model.images ? " vision" : " text-only";
   const profile = model.agentDir ? ` profile:${model.agentDir}` : "";
-  return `${model.key} (${model.family}${context}${thinking}${profile})`;
+  return `${model.key} (${model.family}${context}${thinking}${imageCapability}${profile})`;
 }
 
-function formatModelList(models: PanelModel[], search?: string): string {
+export function formatModelList(models: PanelModel[], search?: string): string {
   const filtered = search ? models.filter((model) => matchesPattern(model, search)) : models;
   if (filtered.length === 0) return search ? `No panel models matched: ${search}` : "No available panel models.";
   const grouped = new Map<string, PanelModel[]>();
@@ -256,7 +279,7 @@ function formatModelList(models: PanelModel[], search?: string): string {
 
 function panelPrompt(args: string): string {
   const trimmed = args.trim();
-  return `Use the panel skill to run a second-opinion Pi panel for the current conversation.\n\nOriginal /panel arguments: ${trimmed || "(none)"}\n\nFollow the panel workflow: list/select models with panel_models or panel_select, then call spawn_subagent with agent=panelist. If --compare is present, run parallel panelists with different task-specific models and synthesize the results. If no explicit task is provided, summarize the latest relevant user request, decisions, code/files, and open question from this conversation into the panelist prompt.`;
+  return `Use the panel skill to run a second-opinion Pi panel for the current conversation.\n\nOriginal /panel arguments: ${trimmed || "(none)"}\n\nFollow the panel workflow: list/select models with panel_models or panel_select, then call spawn_subagent with agent=panelist. If the task requires inspecting an image, call panel_select with requiresImages=true and give the selected vision-capable child the exact local image path and question. If --compare is present, run parallel panelists with different task-specific models and synthesize the results. If no explicit task is provided, summarize the latest relevant user request, decisions, code/files, and open question from this conversation into the panelist prompt.`;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -314,12 +337,13 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "panel_select",
     label: "Panel Select",
-    description: "Select alternate models for the /panel second-opinion workflow using runtime model discovery and optional panel config.",
+    description: "Select alternate models for the /panel second-opinion workflow using runtime model discovery, optional panel config, and an image-capability requirement for vision tasks.",
     parameters: Type.Object({
       mode: Type.Optional(Type.String({ description: "single or compare. Defaults to single." })),
       currentModel: Type.Optional(Type.String({ description: "Current model as provider/model. Defaults to the active session model." })),
       models: Type.Optional(Type.Array(Type.String(), { description: "Explicit model patterns to resolve and use." })),
       count: Type.Optional(Type.Number({ description: "Number of models for compare mode. Defaults to config or 3." })),
+      requiresImages: Type.Optional(Type.Boolean({ description: "Require selected models to accept image input. Use for image-dependent tasks." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const allModels = await availablePanelModels(ctx);
@@ -330,12 +354,14 @@ export default function (pi: ExtensionAPI) {
         explicit: params.models,
         mode: params.mode,
         count: params.count,
+        requiresImages: params.requiresImages,
       });
 
       const text = selected.length
         ? [
             `Panel mode: ${mode}`,
             current ? `Current model: ${formatModel(current)}` : undefined,
+            params.requiresImages ? "Required capability: vision" : undefined,
             unresolved.length ? `Unresolved explicit pattern(s): ${unresolved.join(", ")}` : undefined,
             "Selected model(s):",
             ...selected.map((model) => `- ${formatModel(model)}`),
@@ -345,8 +371,8 @@ export default function (pi: ExtensionAPI) {
             .filter(Boolean)
             .join("\n")
         : unresolved.length
-          ? `No explicit panel model pattern matched: ${unresolved.join(", ")}`
-          : "No available models matched the panel selection criteria.";
+          ? `No explicit panel model pattern matched${params.requiresImages ? " with vision capability" : ""}: ${unresolved.join(", ")}`
+          : `No available models matched the panel selection criteria${params.requiresImages ? " with vision capability" : ""}.`;
 
       return { content: [{ type: "text", text }], details: { selected, current, mode, unresolved, config } };
     },

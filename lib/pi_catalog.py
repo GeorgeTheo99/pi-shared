@@ -414,6 +414,26 @@ def _model_id_for(key: str, meta: dict) -> str:
     return key  # local: alias key == omlx_id
 
 
+def _supports_images(key: str, meta: dict) -> bool:
+    """Return the catalog's truthful image-input capability.
+
+    Cloud entries fail closed when ``vision`` is absent: claiming image support
+    causes Pi to preserve image blocks and can poison a text-only session before
+    the gateway can reject it. Legacy local entries retain the narrow VL/Gemma
+    name heuristic, while an explicit flag is authoritative everywhere.
+    """
+    vision = meta.get("vision")
+    if vision is not None:
+        return vision is True
+    if _is_cloud_key(key):
+        return False
+    haystack = " ".join(
+        str(meta.get(field, ""))
+        for field in ("alias", "name", "omlx_id", "provider_model_id", "desc")
+    ).lower()
+    return "vl" in haystack or "gemma" in haystack
+
+
 def render_models(
     aliases: dict,
     *,
@@ -446,24 +466,8 @@ def render_models(
             or meta.get("max_tokens")
             or 32768
         )
-        provider = _norm_provider(meta)
         kind = _reasoning_kind(key, meta, status)
         api_type = _api_type_for(kind, key, meta)
-        is_anthropic = _is_anthropic_shape(key, meta)
-        is_cloud = provider not in {"local", "omlx", "mlx", "gguf"}
-        # Cloud models route through the gateway, which handles vision fallback
-        # for text-only models (reroute to gemini). So mark every cloud model
-        # image-capable. Local VL models get image input via an explicit vision
-        # flag or, when that flag is absent, a VL/gemma name heuristic. An
-        # explicit false keeps text-only models text-only (no cloud reroute).
-        _hay = " ".join(
-            str(meta.get(k, ""))
-            for k in ("alias", "name", "omlx_id", "provider_model_id", "desc")
-        ).lower()
-        vision_flag = meta.get("vision")
-        is_vision = vision_flag is True or (
-            vision_flag is None and ("vl" in _hay or "gemma" in _hay)
-        )
         hints = _pi_hints(meta)
         desc = hints.get("name") or meta.get("desc") or key
         model: dict = {
@@ -471,7 +475,7 @@ def render_models(
             "name": desc,
             "api": api_type,
             "reasoning": False,
-            "input": (["text", "image"] if (is_anthropic or is_cloud or is_vision) else ["text"]),
+            "input": (["text", "image"] if _supports_images(key, meta) else ["text"]),
             "contextWindow": ctx,
             "maxTokens": max_out,
             "cost": _cost(),
@@ -537,16 +541,17 @@ def render_launchers(
     launcher can refresh itself + models.json after a catalog change.
     """
     gw_host = gateway_url.rstrip("/").replace("https://", "").replace("http://", "")
-    # Build the (alias, model_id, display) rows from the SAME eligibility rule
-    # as render_models, so launcher ids and models.json ids can never disagree.
-    rows: list[tuple[str, str, str, bool]] = []
+    # Build the (alias, model_id, display, locality, image capability) rows from
+    # the SAME eligibility rule as render_models, so launchers and models.json
+    # can never disagree.
+    rows: list[tuple[str, str, str, bool, bool]] = []
     for key, meta in _eligible_entries(aliases):
         alias = str(meta["alias"])
         model_id = _model_id_for(key, meta)
         name = meta.get("name") or model_id
         launcher_aliases = [alias, *(_pi_hints(meta).get("aliases") or [])]
         rows.extend(
-            (launcher_alias, model_id, str(name), _is_cloud_key(key))
+            (launcher_alias, model_id, str(name), _is_cloud_key(key), _supports_images(key, meta))
             for launcher_alias in launcher_aliases
         )
     rows.sort(key=lambda r: r[0])
@@ -595,7 +600,7 @@ def render_launchers(
         "}",
         "",
     ]
-    for alias, model_id, _name, _is_cloud in rows:
+    for alias, model_id, _name, _is_cloud, _supports_vision in rows:
         lines.append(
             f"pi-{alias}() {{ _pi_gw_launch {shlex.quote(provider_name)} "
             f"{shlex.quote(model_id)} {shlex.quote(alias)} \"$@\"; }}"
@@ -614,10 +619,11 @@ def render_launchers(
             '  echo ""',
             f"  print -r -- {shlex.quote(f'{title} (via {provider_name} → {gw_host}):')}",
         ]
-        for alias, model_id, name, _is_cloud in section_rows:
+        for alias, model_id, name, _is_cloud, supports_images in section_rows:
+            capability = "vision" if supports_images else "text-only"
             lines.append(
                 f'  printf "  %-{width}s %s\\n" {shlex.quote(f"pi-{alias}")} '
-                f'{shlex.quote(name + " (" + model_id + ")")}'
+                f'{shlex.quote(name + " (" + model_id + ") [" + capability + "]")}'
             )
     if ls99_extras:
         lines += [

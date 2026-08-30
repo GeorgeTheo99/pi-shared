@@ -197,7 +197,8 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
 - `extensions/panel` — user-invoked alternate-model second opinions:
   - `/panel` asks a runtime-selected alternate model for a second opinion on the current conversation or an explicit task
   - `/panel --compare` runs multiple model families through `spawn_subagent` in parallel and asks the main session to synthesize
-  - `/panel --list [search]`, `panel_models`, and `panel_select` use Pi model registries for portable runtime model discovery, including the alternate `~/.pi-omlx/agent` profile by default
+  - `/panel --list [search]`, `panel_models`, and `panel_select` use Pi model registries for portable runtime model discovery, including the alternate `~/.pi-omlx/agent` profile by default; lists disclose `vision`/`text-only` capability and `panel_select({requiresImages:true})` fails closed to vision-capable choices
+  - when a text-only model omits an image, the agent can delegate the accessible local path to a vision-capable panelist and consume bounded textual observations without putting image bytes in the parent request history
   - optional model preferences/exclusions live in `~/.pi/panel-config.json` or project `.pi/panel-config.json`; trusted `modelProfileDirs` overrides are honored only from `~/.pi/panel-config.json`
 - `extensions/workflow` — trusted JS workflow runner on top of Pi subagents:
   - `workflow` runs a JavaScript workflow body (inline `script`, saved `name`, or `scriptPath`) whose primitives are Pi subagent calls
@@ -221,7 +222,7 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
 
 - `skills/frontend-design` — high-quality frontend/UI design skill for building polished, distinctive web interfaces
 - `skills/handoff` — writes a structured continuation handoff for a fresh Pi session
-- `skills/panel` — orchestrates `/panel` second-opinion and multi-model compare workflows using `panel_select` plus `spawn_subagent panelist`
+- `skills/panel` — orchestrates `/panel` second-opinion, image-capable delegation, and multi-model compare workflows using `panel_select` plus `spawn_subagent panelist`
 - `skills/resume-handoff` — resumes from the most recent handoff file and verifies current repo state before continuing
 
 ## Shared vs local-only setup

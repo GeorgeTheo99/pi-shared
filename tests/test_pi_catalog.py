@@ -90,6 +90,31 @@ def test_explicit_false_vision_overrides_local_name_heuristic(tmp_path):
     assert by_id["gemma-vl"]["input"] == ["text", "image"]
 
 
+def test_cloud_vision_capability_is_explicit_and_fails_closed_when_absent(tmp_path):
+    aliases = {
+        "cloud:text": {
+            "name": "cloud-text", "alias": "cloudtext", "provider": "fireworks",
+            "provider_model_id": "cloud-text", "vision": False,
+        },
+        "cloud:unknown": {
+            "name": "cloud-vl-by-name", "alias": "cloudunknown", "provider": "anthropic",
+            "provider_model_id": "cloud-unknown",
+        },
+        "cloud:vision": {
+            "name": "cloud-vision", "alias": "cloudvision", "provider": "fireworks",
+            "provider_model_id": "cloud-vision", "vision": True,
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"]
+    by_id = {m["id"]: m for m in models}
+    assert by_id["cloud-text"]["input"] == ["text"]
+    assert by_id["cloud-unknown"]["input"] == ["text"]
+    assert by_id["cloud-vision"]["input"] == ["text", "image"]
+
+
 def test_local_glm_gets_graded_reasoning(tmp_path):
     aliases = {
         "glm-5.2-4.5bit": {
@@ -194,7 +219,7 @@ def test_cloud_anthropic_uses_messages_api_and_root_baseurl(tmp_path):
     assert m["compat"]["supportsTemperature"] is False
     assert "sendSessionAffinityHeaders" not in m["compat"]
     assert m["baseUrl"] == "http://localhost:9111"  # root, not /v1 (avoid /v1/v1/messages)
-    assert m["input"] == ["text", "image"]  # cloud always image-capable
+    assert m["input"] == ["text", "image"]  # explicit vision=True
 
 
 def test_gateway_proxied_anthropic_protocol_model(tmp_path):
@@ -562,15 +587,15 @@ def test_launcher_removes_retired_functions(tmp_path):
 
 def test_pi_list_groups_local_and_cloud_models(tmp_path):
     aliases = {
-        "local-z": {"name": "Local Z", "alias": "zlocal", "provider": "local"},
+        "local-z": {"name": "Local Z", "alias": "zlocal", "provider": "local", "vision": True},
         "cloud:z": {
             "name": "Cloud Z", "alias": "zcloud", "provider": "openai",
-            "provider_model_id": "cloud-z",
+            "provider_model_id": "cloud-z", "vision": False,
         },
         "local-a": {"name": "Local A", "alias": "alocal", "provider": "local"},
         "cloud:a": {
             "name": "Cloud A", "alias": "acloud", "provider": "anthropic",
-            "provider_model_id": "cloud-a",
+            "provider_model_id": "cloud-a", "vision": True,
         },
     }
     p = _load_aliases(tmp_path, aliases)
@@ -587,6 +612,10 @@ def test_pi_list_groups_local_and_cloud_models(tmp_path):
     assert "pi-acloud" not in local_section and "pi-zcloud" not in local_section
     assert cloud_section.index("pi-acloud") < cloud_section.index("pi-zcloud")
     assert "pi-alocal" not in cloud_section and "pi-zlocal" not in cloud_section
+    assert "Local Z (local-z) [vision]" in local_section
+    assert "Local A (local-a) [text-only]" in local_section
+    assert "Cloud A (cloud-a) [vision]" in cloud_section
+    assert "Cloud Z (cloud-z) [text-only]" in cloud_section
 
 
 @pytest.mark.parametrize(
