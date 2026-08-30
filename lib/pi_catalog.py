@@ -569,7 +569,7 @@ def render_launchers(
         "",
         "# Remove retired helpers from shells that source a newly generated file",
         "# over an older version. Keep tombstones for one release after retirement.",
-        "unfunction pi-long pi-qwen37fw 2>/dev/null || true",
+        "unfunction pi-long pi-qwen37fw pi-glm52fw pi-glm53zai pi-glm52zai 2>/dev/null || true",
         "",
     ]
     # Run the shared repair script once at source time so the profile used by
