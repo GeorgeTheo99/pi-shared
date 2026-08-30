@@ -63,7 +63,9 @@ Senders resolve targets from machine-wide presence and write each envelope to th
 { triggerTurn: false }
 ```
 
-The custom message is clearly marked as untrusted context and never starts or interrupts an agent turn. The recipient receipt is removed only after the matching custom-message entry is observable and Pi's JSONL session file exists; otherwise it remains available for retry.
+A dedicated transcript renderer labels it `PEER MESSAGE RECEIVED` (or `PEER REPLY RECEIVED`) and shows the direction as `ANOTHER PI SESSION → THIS PI SESSION`. It identifies both endpoints, the sender worktree, and any reply relationship. When a peer has no session name, the renderer uses `Unnamed session in <workspace> (<runtime-prefix>)` instead of presenting a bare, unexplained ID. The underlying context remains clearly marked as untrusted and never starts or interrupts an agent turn.
+
+The recipient receipt is removed only after the matching custom-message entry is observable and Pi's JSONL session file exists; otherwise it remains available for retry.
 
 A clean shutdown drains unread runtime inbox messages into the same recipient-session receipt store. After an unclean runtime exit, a same-room successor may adopt an unread inbox only when the envelope's exact target Pi session ID matches and the predecessor PID is no longer alive. Different/forked sessions, legacy envelopes without a target session ID, and ambiguous live predecessors fail closed rather than receiving another session's message.
 

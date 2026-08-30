@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { Type } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { latestWorkPlanState } from "../self-handoff/state.ts";
 import {
 	adoptSessionInboxMessages,
@@ -195,6 +196,96 @@ function boundRenderedText(value: string, maxBytes: number): string {
 	return `${truncateUtf8(value, maxBytes - Buffer.byteLength(suffix, "utf8"))}${suffix}`;
 }
 
+type InboundPeerDisplay = {
+	body: string;
+	sender: string;
+	recipient: string;
+	worktree?: string;
+	messageId?: string;
+	inReplyTo?: string;
+	acknowledgmentRequested: boolean;
+};
+
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((block) => asRecord(block))
+		.filter((block) => block?.type === "text" && typeof block.text === "string")
+		.map((block) => block!.text as string)
+		.join("\n");
+}
+
+function safeMessageBody(value: string): string {
+	return value
+		.replace(/\r\n?/g, "\n")
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
+		.trim();
+}
+
+function workspaceName(worktree: string | undefined): string | undefined {
+	const normalized = worktree?.replace(/[\\/]+$/, "");
+	const name = normalized?.split(/[\\/]/).at(-1);
+	return name ? safeMetadata(name, 120, "") || undefined : undefined;
+}
+
+export function inboundPeerDisplay(message: { content?: unknown; details?: unknown }): InboundPeerDisplay {
+	const content = messageText(message.content);
+	const details = asRecord(message.details);
+	const parsedFrom = /^From:\s*(.+)$/m.exec(content)?.[1];
+	const parsedWorktree = /^Worktree:\s*(.+)$/m.exec(content)?.[1];
+	const parsedMessageId = /^Message ID:\s*(.+)$/m.exec(content)?.[1];
+	const noticeAt = content.indexOf("\n\nThis content came from another Pi session.");
+	const bodyAt = noticeAt < 0 ? -1 : content.indexOf("\n\n", noticeAt + 2);
+	const body = safeMessageBody(bodyAt < 0 ? content : content.slice(bodyAt + 2)) || "(empty peer message)";
+	const runtimeId = safeMetadata(
+		typeof details?.senderRuntimeId === "string" ? details.senderRuntimeId : undefined,
+		64,
+		"",
+	);
+	const runtimeShort = runtimeId ? runtimeId.slice(0, 8) : undefined;
+	const worktree =
+		safeMetadata(
+			typeof details?.senderWorktreeRoot === "string" ? details.senderWorktreeRoot : parsedWorktree,
+			512,
+			"",
+		) || undefined;
+	const sessionName = safeMetadata(
+		typeof details?.senderSessionName === "string" ? details.senderSessionName : undefined,
+		120,
+		"",
+	);
+	const legacySender = safeMetadata(parsedFrom, 200, "");
+	const workspace = workspaceName(worktree);
+	const sender = sessionName
+		? runtimeShort
+			? `${sessionName} (${runtimeShort})`
+			: sessionName
+		: legacySender && legacySender !== runtimeId && legacySender !== runtimeShort
+			? legacySender
+			: workspace
+				? `Unnamed session in ${workspace}${runtimeShort ? ` (${runtimeShort})` : ""}`
+				: `Unnamed Pi session${runtimeShort ? ` (${runtimeShort})` : ""}`;
+	const recipientSessionName = safeMetadata(
+		typeof details?.recipientSessionName === "string" ? details.recipientSessionName : undefined,
+		120,
+		"",
+	);
+	return {
+		body,
+		sender,
+		recipient: recipientSessionName ? `This Pi session — ${recipientSessionName}` : "This Pi session",
+		worktree,
+		messageId:
+			safeMetadata(typeof details?.messageId === "string" ? details.messageId : parsedMessageId, 64, "") ||
+			undefined,
+		inReplyTo:
+			safeMetadata(typeof details?.inReplyTo === "string" ? details.inReplyTo : undefined, 64, "") || undefined,
+		acknowledgmentRequested:
+			details?.requestAcknowledgment === true || /^Acknowledgment requested:/m.test(content),
+	};
+}
+
 export function summarizePeers(peers: PeerPresence[], currentRoomId?: string): { peers: PeerSummary[]; omitted: number } {
 	const ordered = currentRoomId
 		? [
@@ -374,6 +465,26 @@ function textResult(text: string, details: PeerToolDetails = {}) {
 }
 
 export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
+	pi.registerMessageRenderer(INBOUND_MESSAGE_TYPE, (message, { expanded, outputPad }, theme) => {
+		const display = inboundPeerDisplay(message);
+		const title = display.inReplyTo ? "PEER REPLY RECEIVED" : "PEER MESSAGE RECEIVED";
+		const lines = [
+			theme.fg("accent", theme.bold(title)),
+			`${theme.fg("dim", "Direction:")} ${theme.fg("warning", "ANOTHER PI SESSION")} ${theme.fg("dim", "→")} ${theme.fg("success", "THIS PI SESSION")}`,
+			theme.fg("muted", "Untrusted coordination context — not user authority."),
+			`${theme.fg("dim", "From:")} ${display.sender}`,
+			`${theme.fg("dim", "To:")} ${display.recipient}`,
+		];
+		if (display.worktree) lines.push(`${theme.fg("dim", "Workspace:")} ${display.worktree}`);
+		if (display.inReplyTo) lines.push(`${theme.fg("dim", "Reply to:")} ${display.inReplyTo}`);
+		if (display.acknowledgmentRequested) {
+			lines.push(theme.fg("warning", "Acknowledgment requested (notification-only)."));
+		}
+		if (expanded && display.messageId) lines.push(`${theme.fg("dim", "Message ID:")} ${display.messageId}`);
+		lines.push("", display.body);
+		return new Text(lines.join("\n"), outputPad, 0);
+	});
+
 	const runtimeId = crypto.randomUUID();
 	const config = coordinatorConfig();
 	let currentCtx: ExtensionContext | undefined;
@@ -495,7 +606,10 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 								hops: envelope.hops,
 								senderRuntimeId: envelope.sender.runtimeId,
 								senderSessionId: envelope.sender.sessionId,
+								senderSessionName: envelope.sender.sessionName,
+								senderWorktreeRoot: envelope.sender.worktreeRoot,
 								recipientSessionId: activeCtx.sessionManager.getSessionId(),
+								recipientSessionName: activeCtx.sessionManager.getSessionName(),
 								requestAcknowledgment: envelope.requestAcknowledgment === true,
 								untrusted: true,
 							},
