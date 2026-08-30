@@ -513,6 +513,7 @@ def test_launcher_and_models_ids_agree(tmp_path):
     assert "pi-qwen36mlx()" in launchers
     assert "pi-opus48()" in launchers
     assert "pi-long()" not in launchers
+    assert "pi-qwen37fw()" not in launchers
     assert "PI_CACHE_RETENTION" not in launchers
     assert "pi-list()" in launchers
     assert "pi-restart()" in launchers
@@ -528,7 +529,7 @@ def test_launcher_and_models_ids_agree(tmp_path):
     assert not re.search(r'\bcodex-[A-Za-z0-9_]+\s*\(\)', launchers), "launcher defines codex-* functions"
 
 
-def test_launcher_removes_legacy_pi_long_function(tmp_path):
+def test_launcher_removes_retired_functions(tmp_path):
     if not shutil.which("zsh"):
         pytest.skip("zsh not available")
     aliases = {
@@ -545,7 +546,8 @@ def test_launcher_removes_legacy_pi_long_function(tmp_path):
         [
             "zsh", "-c",
             f"pi-omlx-repair() {{ return 0; }}; pi-long() {{ return 0; }}; "
-            f"source {launcher!s}; (( ! $+functions[pi-long] ))",
+            f"pi-qwen37fw() {{ return 0; }}; source {launcher!s}; "
+            f"(( ! $+functions[pi-long] && ! $+functions[pi-qwen37fw] ))",
         ],
         capture_output=True,
         text=True,

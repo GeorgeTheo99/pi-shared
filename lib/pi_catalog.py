@@ -567,9 +567,9 @@ def render_launchers(
         "# Source from ~/.zshrc. Regenerated from model-aliases.json (the",
         "# model-gateway public catalog contract). No claude-*/codex-* — pi-* only.",
         "",
-        "# Remove the retired long-retention helper from shells that source a",
-        "# newly generated file over an older version.",
-        "unfunction pi-long 2>/dev/null || true",
+        "# Remove retired helpers from shells that source a newly generated file",
+        "# over an older version. Keep tombstones for one release after retirement.",
+        "unfunction pi-long pi-qwen37fw 2>/dev/null || true",
         "",
     ]
     # Run the shared repair script once at source time so the profile used by
