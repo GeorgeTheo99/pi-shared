@@ -136,6 +136,15 @@ else
   echo "warning: Pi compaction file not found: $COMPACTION_JS" >&2
 fi
 
+# Keep recovered transport errors on abandoned session branches, remove them
+# from the retrying TUI, and avoid naming Anthropic when only its wire format is
+# in use. Fail closed when Pi's runtime layout changes so updates cannot silently
+# restore the misleading behavior.
+if ! python3 "$PI_SHARED_DIR/lib/patch_pi_retry_ux.py" "$PI_INSTALL_DIR"; then
+  echo "error: Pi recovered-stream retry UX patch did not apply (Pi version may have changed)" >&2
+  exit 1
+fi
+
 # pi-ai 0.80.0+ restructured dist: providers moved from dist/providers/ to
 # dist/api/. Resolve across both layouts so the DSML filter patch survives updates.
 OPENAI_COMPLETIONS_JS=""

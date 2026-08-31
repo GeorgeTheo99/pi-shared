@@ -93,7 +93,8 @@ Requirements and behavior:
 - writes `settings.json` so this `pi-shared` repo is loaded as a package
 - includes `~/.codex/skills` and a local extensions directory only if one exists
 - symlinks `~/.pi-omlx/agent/AGENTS.md` to this repo's `AGENTS.md`
-- patches the installed Pi compaction code to ignore all-zero provider usage and fall back to token estimation for context percentage
+- preserves the installed Pi zero-usage context fallback and the local DSML output filter across Pi updates
+- keeps superseded auto-retry failures out of restored model context and the visible transcript while preserving append-only audit/cost records, and uses protocol-neutral premature-stream wording
 
 Run manually if needed:
 
