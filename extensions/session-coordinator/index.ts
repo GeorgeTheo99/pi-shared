@@ -481,7 +481,7 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 			lines.push(theme.fg("warning", "Acknowledgment requested (notification-only)."));
 		}
 		if (expanded && display.messageId) lines.push(`${theme.fg("dim", "Message ID:")} ${display.messageId}`);
-		lines.push("", display.body);
+		lines.push("", theme.fg("accent", theme.bold("Message:")), display.body);
 		return new Text(lines.join("\n"), outputPad, 0);
 	});
 
@@ -629,12 +629,6 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 				await updateOutgoingMessageStatus(envelope.sender.sessionId, envelope.id, "surfaced").catch(
 					() => undefined,
 				);
-				if (!alreadyInserted && activeCtx.hasUI) {
-					activeCtx.ui.notify(
-						`Peer ${safeMetadata(envelope.sender.sessionName, 120, envelope.sender.runtimeId.slice(0, 8))} sent a message.`,
-						"info",
-					);
-				}
 				if (hasDurableSessionFile(activeCtx)) {
 					pendingMessages.delete(envelope.id);
 					await removeSessionReceipt(receipt);
@@ -934,10 +928,11 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 			const status = readOutgoingMessageStatuses(senderPresence.sessionId, envelope.id)[0];
 			const tracking =
 				target.protocolVersion === 2
-					? " Inspect it with peer_message_status; surfaced never means read."
-					: " The peer uses a legacy protocol, so later lifecycle status cannot be proven.";
+					? "Inspect it with peer_message_status; surfaced never means read."
+					: "The peer uses a legacy protocol, so later lifecycle status cannot be proven.";
+			const title = params.inReplyTo ? "PEER REPLY QUEUED" : "PEER MESSAGE QUEUED";
 			return textResult(
-				`Queued peer message ${envelope.id} for ${safeMetadata(target.sessionName, 120, target.runtimeId.slice(0, 8))}. Delivery is asynchronous and will not wake the peer agent.${tracking}`,
+				`${title}\nTo: ${safeMetadata(target.sessionName, 120, target.runtimeId.slice(0, 8))}\nMessage ID: ${envelope.id}\n\nMessage:\n${envelope.message}\n\nDelivery is asynchronous and will not wake the peer agent. ${tracking}`,
 				{ roomId: target.roomId, message: envelope, messageStatus: status ? messageStatusSummary(status) : undefined },
 			);
 		},

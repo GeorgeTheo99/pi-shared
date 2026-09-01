@@ -144,6 +144,10 @@ test("message envelopes are bounded, delivered, and expired messages are removed
 		},
 	};
 	const envelope = coordinator.createEnvelope({ ...base, message: "coordinate this change" });
+	assert.equal(
+		coordinator.createEnvelope({ ...base, message: "line one\r\nline two\u0085" }).message,
+		"line one\nline two",
+	);
 	await coordinator.enqueueMessage(envelope);
 	assert.deepEqual(coordinator.readInbox(roomId, targetRuntimeId).map((item) => item.envelope.id), [envelope.id]);
 

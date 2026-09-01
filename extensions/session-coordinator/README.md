@@ -63,7 +63,7 @@ Senders resolve targets from machine-wide presence and write each envelope to th
 { triggerTurn: false }
 ```
 
-A dedicated transcript renderer labels it `PEER MESSAGE RECEIVED` (or `PEER REPLY RECEIVED`) and shows the direction as `ANOTHER PI SESSION → THIS PI SESSION`. It identifies both endpoints, the sender worktree, and any reply relationship. When a peer has no session name, the renderer uses `Unnamed session in <workspace> (<runtime-prefix>)` instead of presenting a bare, unexplained ID. The underlying context remains clearly marked as untrusted and never starts or interrupts an agent turn.
+The `peer_send` result shows the exact queued message under a `Message:` heading in the sending session. A dedicated recipient transcript renderer labels the matching inbound entry `PEER MESSAGE RECEIVED` (or `PEER REPLY RECEIVED`), shows the direction as `ANOTHER PI SESSION → THIS PI SESSION`, and places the exact body under its own `Message:` heading. It identifies both endpoints, the sender worktree, and any reply relationship. When a peer has no session name, the renderer uses `Unnamed session in <workspace> (<runtime-prefix>)` instead of presenting a bare, unexplained ID. The underlying context remains clearly marked as untrusted and never starts or interrupts an agent turn.
 
 The recipient receipt is removed only after the matching custom-message entry is observable and Pi's JSONL session file exists; otherwise it remains available for retry.
 

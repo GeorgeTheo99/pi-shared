@@ -168,11 +168,13 @@ test("extension publishes status, discovers peers, and delivers notification-onl
 			undefined,
 			harness.ctx,
 		);
-		assert.match(sent.content[0].text, /Queued peer message/);
+		assert.match(sent.content[0].text, /^PEER MESSAGE QUEUED/);
+		assert.match(sent.content[0].text, /Message:\nI am updating the presence lifecycle\./);
 		assert.equal(sent.details.roomId, peer.roomId);
 		assert.equal(state.readInbox(scope.roomId, peer.runtimeId).length, 0);
 		assert.equal(state.readInbox(peer.roomId, peer.runtimeId).length, 1);
 
+		const notificationCountBeforeDelivery = harness.notifications.length;
 		const incoming = state.createEnvelope({
 			roomId: scope.roomId,
 			targetRuntimeId: self.runtimeId,
@@ -204,8 +206,9 @@ test("extension publishes status, discovers peers, and delivers notification-onl
 		assert.match(rendered.text, /ANOTHER PI SESSION → THIS PI SESSION/);
 		assert.match(rendered.text, /From: Peer worker/);
 		assert.match(rendered.text, /To: This Pi session — Coordinator test/);
-		assert.match(rendered.text, /I am only touching the README\./);
+		assert.match(rendered.text, /Message:\nI am only touching the README\./);
 		assert.doesNotMatch(rendered.text, /\[pi-peer-message\]/);
+		assert.equal(harness.notifications.length, notificationCountBeforeDelivery);
 		assert.equal(state.readInbox(scope.roomId, self.runtimeId).length, 0);
 
 		await harness.commands.get("peer-status").handler("Running integration tests", harness.ctx);
@@ -244,13 +247,15 @@ test("extension publishes status, discovers peers, and delivers notification-onl
 		);
 		await state.writePresence(peer);
 
-		await peerSend.execute(
+		const queuedReply = await peerSend.execute(
 			"reply",
 			{ target: peer.runtimeId, message: "Acknowledged.", inReplyTo: incoming.id },
 			undefined,
 			undefined,
 			harness.ctx,
 		);
+		assert.match(queuedReply.content[0].text, /^PEER REPLY QUEUED/);
+		assert.match(queuedReply.content[0].text, /Message:\nAcknowledged\./);
 		const reply = state.readInbox(peer.roomId, peer.runtimeId).find((item) => item.envelope.inReplyTo === incoming.id);
 		assert.equal(reply?.envelope.hops, 1);
 
@@ -310,6 +315,7 @@ test("unnamed and reply messages render with clear peer-to-this-session attribut
 	);
 	assert.match(rendered.text, /^PEER REPLY RECEIVED/);
 	assert.match(rendered.text, /From: Unnamed session in dessecker \(5b25d9e0\)/);
+	assert.match(rendered.text, /Message:\nCoordination: finished the map work\./);
 	assert.ok(
 		rendered.text.indexOf("Untrusted coordination context") < rendered.text.indexOf("Coordination: finished"),
 		"the trust-boundary warning must appear before peer-controlled content",
