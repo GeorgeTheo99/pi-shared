@@ -121,6 +121,8 @@ gateway analytics.
 
 When a catalog entry includes `thinking_levels`, it is the authoritative ordered subset of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. `pi-catalog` nulls every unsupported Pi level, sends supported levels canonically to the gateway (`off` becomes `none` only where Pi's API encoding requires it), preserves strict `thinking: always` and optional-Off behavior, and renders an empty list as `reasoning: false`. Provider-specific effort translation remains in `model-gateway`. An explicit `pi.thinkingLevelMap` is the machine override; catalogs that omit `thinking_levels` retain the legacy generated maps.
 
+Native image support remains authoritative through `vision: true`. A text-only route may explicitly declare `pi.image_input: gateway-assisted` when its gateway has a validated locality-scoped vision helper. `pi-catalog` then preserves image blocks for the gateway, labels the route `assisted vision`, and keeps it distinct from native vision. It never infers assisted vision from a model name or silently enables it for every text-only route.
+
 Install per-machine:
 
 ```bash

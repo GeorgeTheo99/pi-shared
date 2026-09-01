@@ -79,8 +79,8 @@ def _pi_hints(meta: dict) -> dict:
     """Optional Pi-specific passthrough hints from the gateway catalog.
 
     The gateway carries an opaque ``pi:`` block per model (id/name/reasoning/
-    thinkingLevelMap/compat) so machine-local config can shape the rendered Pi
-    artifacts without this module needing provider-specific knowledge.
+    thinkingLevelMap/compat/image_input) so machine-local config can shape the
+    rendered Pi artifacts without this module needing provider-specific knowledge.
     """
     hints = meta.get("pi")
     return hints if isinstance(hints, dict) else {}
@@ -414,24 +414,39 @@ def _model_id_for(key: str, meta: dict) -> str:
     return key  # local: alias key == omlx_id
 
 
-def _supports_images(key: str, meta: dict) -> bool:
-    """Return the catalog's truthful image-input capability.
+def _image_capability(key: str, meta: dict) -> str:
+    """Return ``native``, ``gateway-assisted``, or ``none`` for Pi image input.
 
-    Cloud entries fail closed when ``vision`` is absent: claiming image support
-    causes Pi to preserve image blocks and can poison a text-only session before
-    the gateway can reject it. Legacy local entries retain the narrow VL/Gemma
-    name heuristic, while an explicit flag is authoritative everywhere.
+    ``vision`` remains the authoritative native-model capability. A text-only
+    route may opt into Pi image transport only through the explicit
+    ``pi.image_input=gateway-assisted`` contract, which means model-gateway will
+    extract bounded observations before the selected text model answers.
     """
+    assisted = _pi_hints(meta).get("image_input")
+    if assisted not in {None, "gateway-assisted"}:
+        raise ValueError(
+            f"Pi image_input for {meta.get('alias') or key!r} must be 'gateway-assisted'"
+        )
     vision = meta.get("vision")
-    if vision is not None:
-        return vision is True
-    if _is_cloud_key(key):
-        return False
+    if vision is True:
+        if assisted is not None:
+            raise ValueError(
+                f"native vision model {meta.get('alias') or key!r} cannot also declare assisted image input"
+            )
+        return "native"
+    if assisted == "gateway-assisted":
+        return "gateway-assisted"
+    if vision is not None or _is_cloud_key(key):
+        return "none"
     haystack = " ".join(
         str(meta.get(field, ""))
         for field in ("alias", "name", "omlx_id", "provider_model_id", "desc")
     ).lower()
-    return "vl" in haystack or "gemma" in haystack
+    return "native" if "vl" in haystack or "gemma" in haystack else "none"
+
+
+def _supports_images(key: str, meta: dict) -> bool:
+    return _image_capability(key, meta) != "none"
 
 
 def render_models(
@@ -470,12 +485,15 @@ def render_models(
         api_type = _api_type_for(kind, key, meta)
         hints = _pi_hints(meta)
         desc = hints.get("name") or meta.get("desc") or key
+        image_capability = _image_capability(key, meta)
+        if image_capability == "gateway-assisted":
+            desc = f"{desc} · assisted vision"
         model: dict = {
             "id": _model_id_for(key, meta),
             "name": desc,
             "api": api_type,
             "reasoning": False,
-            "input": (["text", "image"] if _supports_images(key, meta) else ["text"]),
+            "input": (["text", "image"] if image_capability != "none" else ["text"]),
             "contextWindow": ctx,
             "maxTokens": max_out,
             "cost": _cost(),
@@ -544,14 +562,14 @@ def render_launchers(
     # Build the (alias, model_id, display, locality, image capability) rows from
     # the SAME eligibility rule as render_models, so launchers and models.json
     # can never disagree.
-    rows: list[tuple[str, str, str, bool, bool]] = []
+    rows: list[tuple[str, str, str, bool, str]] = []
     for key, meta in _eligible_entries(aliases):
         alias = str(meta["alias"])
         model_id = _model_id_for(key, meta)
         name = meta.get("name") or model_id
         launcher_aliases = [alias, *(_pi_hints(meta).get("aliases") or [])]
         rows.extend(
-            (launcher_alias, model_id, str(name), _is_cloud_key(key), _supports_images(key, meta))
+            (launcher_alias, model_id, str(name), _is_cloud_key(key), _image_capability(key, meta))
             for launcher_alias in launcher_aliases
         )
     rows.sort(key=lambda r: r[0])
@@ -600,7 +618,7 @@ def render_launchers(
         "}",
         "",
     ]
-    for alias, model_id, _name, _is_cloud, _supports_vision in rows:
+    for alias, model_id, _name, _is_cloud, _image_capability_value in rows:
         lines.append(
             f"pi-{alias}() {{ _pi_gw_launch {shlex.quote(provider_name)} "
             f"{shlex.quote(model_id)} {shlex.quote(alias)} \"$@\"; }}"
@@ -619,8 +637,12 @@ def render_launchers(
             '  echo ""',
             f"  print -r -- {shlex.quote(f'{title} (via {provider_name} → {gw_host}):')}",
         ]
-        for alias, model_id, name, _is_cloud, supports_images in section_rows:
-            capability = "vision" if supports_images else "text-only"
+        for alias, model_id, name, _is_cloud, image_capability in section_rows:
+            capability = {
+                "native": "vision",
+                "gateway-assisted": "assisted vision",
+                "none": "text-only",
+            }[image_capability]
             lines.append(
                 f'  printf "  %-{width}s %s\\n" {shlex.quote(f"pi-{alias}")} '
                 f'{shlex.quote(name + " (" + model_id + ") [" + capability + "]")}'

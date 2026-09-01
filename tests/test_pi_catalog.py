@@ -115,6 +115,53 @@ def test_cloud_vision_capability_is_explicit_and_fails_closed_when_absent(tmp_pa
     assert by_id["cloud-vision"]["input"] == ["text", "image"]
 
 
+def test_explicit_gateway_assisted_image_input_is_preserved_and_labeled(tmp_path):
+    aliases = {
+        "text-local": {
+            "name": "text-local", "alias": "textlocal", "provider": "local",
+            "omlx_id": "text-local", "vision": False,
+            "pi": {"image_input": "gateway-assisted"},
+        },
+        "cloud:text": {
+            "name": "cloud-text", "alias": "cloudtext", "provider": "fireworks",
+            "provider_model_id": "cloud-text", "vision": False,
+            "pi": {"image_input": "gateway-assisted"},
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run(
+        "--aliases", str(p),
+        "--models-out", str(tmp_path / "models.json"),
+        "--launchers-out", str(tmp_path / "launchers.zsh"),
+    )
+    assert r.returncode == 0, r.stderr
+    models = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"]
+    assert all(model["input"] == ["text", "image"] for model in models)
+    assert all(model["name"].endswith("· assisted vision") for model in models)
+    launchers = (tmp_path / "launchers.zsh").read_text()
+    assert "[assisted vision]" in launchers
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"vision": False, "pi": {"image_input": "implicit"}},
+        {"vision": True, "pi": {"image_input": "gateway-assisted"}},
+    ],
+)
+def test_invalid_assisted_image_contract_fails_closed(tmp_path, entry):
+    aliases = {
+        "model": {
+            "name": "model", "alias": "model", "provider": "local",
+            "omlx_id": "model", **entry,
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode != 0
+    assert "image" in r.stderr.lower()
+
+
 def test_local_glm_gets_graded_reasoning(tmp_path):
     aliases = {
         "glm-5.2-4.5bit": {
