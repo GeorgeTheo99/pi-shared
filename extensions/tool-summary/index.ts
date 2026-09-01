@@ -12,13 +12,17 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+	ageToolResultImages,
 	candidateForToolResult,
 	countLines,
 	deterministicReduce,
 	deterministicReductionCanPreserve,
 	exactLineRange,
 	exactLines,
+	IMAGE_RETENTION_DISABLED,
+	isValidImageRetention,
 	makeSummaryReplacement,
+	MAX_IMAGE_RETENTION,
 	MAX_RECALL_OUTPUT_CHARS,
 	reducerFlavor,
 	replacementIsWorthwhile,
@@ -134,9 +138,14 @@ function statusText(
 	activeSummaries: Iterable<CompletedSummaryRecord> = state.summaries.values(),
 ) {
 	const savings = estimatedContextSavings(activeSummaries);
+	const imageRetention =
+		state.config.imageRetention === IMAGE_RETENTION_DISABLED
+			? "off"
+			: `newest ${state.config.imageRetention}`;
 	return [
 		`tool-summary ${state.config.mode}`,
 		`thresholds: standard ${formatChars(state.config.standardThreshold)}, high-fidelity ${formatChars(state.config.highFidelityThreshold)}`,
+		`image retention: ${imageRetention}`,
 		`summaries: ${savings.count}; raw exposures: ${state.exposures.size}; retries cooling down: ${state.retries.size}; not worthwhile: ${state.skips.size}; in flight: ${inFlight}`,
 		`estimated active-branch savings: ${formatChars(savings.savedChars)}`,
 	].join("\n");
@@ -574,12 +583,17 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 
 	pi.on("context", async (event, ctx) => {
 		if (state.config.mode === "off") return;
+		let changed = false;
+		// Age older tool-result images before summary policy so a formerly
+		// image-bearing message never blocks text summarization forever.
+		if (state.config.mode === "on" && ageToolResultImages(event.messages, state.config.imageRetention) > 0) {
+			changed = true;
+		}
 		const deterministicPending: Array<{
 			message: ToolResultMessageLike;
 			candidate: SummaryCandidate;
 			promise: Promise<CompletedSummaryRecord | undefined>;
 		}> = [];
-		let changed = false;
 
 		for (const rawMessage of event.messages) {
 			if (!isToolResultMessage(rawMessage)) continue;
@@ -677,7 +691,7 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("tool-summary", {
-		description: "Control oversized tool-result summaries. Usage: /tool-summary on|pause|off|status|threshold|reset",
+		description: "Control oversized tool-result summaries. Usage: /tool-summary on|pause|off|status|threshold|images|reset",
 		handler: async (rawArgs, ctx) => {
 			const args = rawArgs.trim().split(/\s+/).filter(Boolean);
 			const action = (args.shift() ?? "status").toLowerCase();
@@ -760,7 +774,34 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 				notify(ctx, `Tool-summary thresholds updated: standard ${formatChars(standard)}, high-fidelity ${formatChars(highFidelity)}.`);
 				return;
 			}
-			notify(ctx, "Usage: /tool-summary on|pause|off|status|threshold ...|reset", "error");
+			if (action === "images") {
+				if (args.length === 0) {
+					const current =
+						state.config.imageRetention === IMAGE_RETENTION_DISABLED
+							? "off"
+							: `newest ${state.config.imageRetention}`;
+					notify(ctx, `Tool-result image retention: ${current}.`);
+					return;
+				}
+				let retention: number | undefined;
+				const argument = args[0]!.toLowerCase();
+				if (argument === "off") retention = IMAGE_RETENTION_DISABLED;
+				else if (argument === "reset") retention = defaultToolSummaryConfig().imageRetention;
+				else if (/^\d+$/.test(argument)) retention = Number(argument);
+				if (retention === undefined || !isValidImageRetention(retention)) {
+					notify(ctx, `Usage: /tool-summary images <0-${MAX_IMAGE_RETENTION}>|off|reset`, "error");
+					return;
+				}
+				persistConfig(ctx, updatedConfig(state.config, { imageRetention: retention }));
+				notify(
+					ctx,
+					retention === IMAGE_RETENTION_DISABLED
+						? "Tool-result image aging is off; all images stay in provider context."
+						: `Tool-result image retention set to the newest ${retention}; older images are replaced with placeholders in provider context.`,
+				);
+				return;
+			}
+			notify(ctx, "Usage: /tool-summary on|pause|off|status|threshold ...|images ...|reset", "error");
 		},
 	});
 

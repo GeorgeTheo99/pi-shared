@@ -67,7 +67,9 @@ test("repository identity groups linked worktrees while preserving worktree path
 		try {
 			git(root, ["worktree", "remove", "--force", linked]);
 		} catch {}
-		fs.rmSync(symlink, { force: true });
+		try {
+			fs.unlinkSync(symlink);
+		} catch {}
 		fs.rmSync(linked, { recursive: true, force: true });
 		fs.rmSync(root, { recursive: true, force: true });
 	}

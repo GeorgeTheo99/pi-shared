@@ -11,6 +11,7 @@
 5. Later provider calls receive a completed stored summary through Pi's ephemeral `context` hook.
 6. The original `toolResult` message is never patched, so its exact content remains in session JSONL and the TUI transcript.
 7. A replacement is used only when it is at least 40% smaller than the original. Summary bodies target 3,000 characters; the complete replacement is hard-capped at 4,000. A non-worthwhile result is persisted as a terminal marker so later calls remain raw without repeatedly summarizing it.
+8. Tool-result **images age out of provider context**: only the newest 4 image parts across the active branch are sent to the provider; older ones are replaced by a small deterministic text placeholder naming the tool, `toolCallId`, MIME type, and approximate size. Aging runs only in `on` mode, mutates provider copies only (stored entries and JSONL keep the exact images), and a formerly image-bearing result becomes eligible for normal text summarization once its images age out. Control it with `/tool-summary images <0-64>|off|reset`.
 
 Model summaries use the active session model (`ctx.model`) through `complete()` from `@earendil-works/pi-ai/compat`. Reasoning is requested at `low` only for APIs that support it. The extension never changes Pi's main-session thinking level. Failed model summaries leave the exact result raw and append a bounded retry cooldown: 30 seconds initially, doubling to a 30-minute cap. They never freeze a deterministic fallback as the permanent summary.
 
@@ -25,6 +26,8 @@ Summaries, retry cooldowns, raw-exposure markers, mode, thresholds, and reset ep
 | `bash`, logs, search/KB results, structured JSON, evaluate/API output | 16,000 characters | Deterministic reduction |
 | Unknown/custom text tools | 16,000 characters | Deterministic for JSON/log-like output; otherwise background active-model summary |
 | `memory_read`, mutation/control/status/navigation tools, images, screenshots, recall, and path-only artifact results | Exempt | Raw only |
+
+Image-bearing results are exempt from *summarization*, but their image parts are still subject to image aging (rule 8) — the newest 4 images stay raw, older ones become text placeholders in provider context only.
 
 Oversized error results always use deterministic reduction so exact exit codes, stderr, assertions, stack locations, paths, URLs, IDs, hashes, statuses, and important values are not paraphrased. Deterministic summaries reserve space for every recognized non-2xx HTTP status line and every `diff --git`, `---`, and `+++` file header. If those required exact lines cannot all fit, the result stays raw and a terminal overflow marker prevents lossy retries. Model failure, empty/incomplete output, or timeout leaves the result raw during its retry cooldown; lifecycle cancellation does not count as a failure.
 
@@ -43,6 +46,10 @@ Changes apply immediately; `/reload` is not required.
 /tool-summary threshold high 18k
 /tool-summary threshold 9k 18k
 /tool-summary threshold reset
+/tool-summary images
+/tool-summary images 8
+/tool-summary images off
+/tool-summary images reset
 /tool-summary reset
 ```
 
@@ -51,6 +58,7 @@ Changes apply immediately; `/reload` is not required.
 - `off`: restore raw provider context and warn about estimated active-branch growth.
 - `status`: show mode, thresholds, exposure/completion/retry counts, in-flight work, and estimated savings.
 - `threshold`: inspect or change the standard/high-fidelity character thresholds. The minimum is 4,001, and standard cannot exceed high-fidelity.
+- `images`: inspect or change tool-result image retention (default: newest 4; range 0–64; `off` disables aging; `reset` restores the default).
 - `reset`: advance the branch epoch, clearing active summaries and exposure markers without deleting append-only history. Mode and thresholds are retained.
 
 ## Exact recall

@@ -1,6 +1,8 @@
 import {
 	DEFAULT_HIGH_FIDELITY_THRESHOLD,
+	DEFAULT_IMAGE_RETENTION,
 	DEFAULT_STANDARD_THRESHOLD,
+	isValidImageRetention,
 	POLICY_VERSION,
 	SUMMARY_HARD_MAX_CHARS,
 	replacementIsWorthwhile,
@@ -22,6 +24,8 @@ export type ToolSummaryConfig = {
 	mode: ToolSummaryMode;
 	standardThreshold: number;
 	highFidelityThreshold: number;
+	/** Newest tool-result images kept in provider context; -1 disables aging. */
+	imageRetention: number;
 	epoch: string;
 	updatedAt: number;
 };
@@ -99,6 +103,7 @@ export function defaultToolSummaryConfig(timestamp = Date.now()): ToolSummaryCon
 		mode: "on",
 		standardThreshold: DEFAULT_STANDARD_THRESHOLD,
 		highFidelityThreshold: DEFAULT_HIGH_FIDELITY_THRESHOLD,
+		imageRetention: DEFAULT_IMAGE_RETENTION,
 		epoch: "initial",
 		updatedAt: timestamp,
 	};
@@ -117,6 +122,7 @@ export function isToolSummaryConfig(value: unknown): value is ToolSummaryConfig 
 		isPositiveInteger(config.standardThreshold) &&
 		isPositiveInteger(config.highFidelityThreshold) &&
 		config.standardThreshold <= config.highFidelityThreshold &&
+		(config.imageRetention === undefined || isValidImageRetention(config.imageRetention)) &&
 		typeof config.epoch === "string" &&
 		config.epoch.length > 0 &&
 		typeof config.updatedAt === "number" &&
@@ -211,7 +217,12 @@ export function restoreToolSummaryState(entries: readonly CustomEntryLike[]): Re
 			entry.customType === TOOL_SUMMARY_CONFIG_TYPE &&
 			isToolSummaryConfig(entry.data)
 		) {
-			config = { ...entry.data };
+			config = {
+				...entry.data,
+				imageRetention: isValidImageRetention(entry.data.imageRetention)
+					? entry.data.imageRetention
+					: DEFAULT_IMAGE_RETENTION,
+			};
 		}
 	}
 	if (
@@ -364,7 +375,7 @@ export function makeSkippedSummaryRecord(
 
 export function updatedConfig(
 	config: ToolSummaryConfig,
-	patch: Partial<Pick<ToolSummaryConfig, "mode" | "standardThreshold" | "highFidelityThreshold" | "epoch">>,
+	patch: Partial<Pick<ToolSummaryConfig, "mode" | "standardThreshold" | "highFidelityThreshold" | "imageRetention" | "epoch">>,
 	timestamp = Date.now(),
 ): ToolSummaryConfig {
 	return { ...config, ...patch, version: 1, updatedAt: timestamp };

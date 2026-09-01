@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+	ageToolResultImages,
 	candidateForToolResult,
+	DEFAULT_IMAGE_RETENTION,
 	deterministicReduce,
 	deterministicReductionCanPreserve,
 	exactLineRange,
+	IMAGE_RETENTION_DISABLED,
+	imagePlaceholderText,
+	isValidImageRetention,
 	MAX_RECALL_OUTPUT_CHARS,
 	makeSummaryReplacement,
 	replacementIsWorthwhile,
@@ -447,4 +452,91 @@ test("exact line helpers preserve requested substrings and literal search matche
 	);
 	assert.equal(searchExactLines(source, "VALUE", true).length, 0);
 	assert.equal(MAX_RECALL_OUTPUT_CHARS, 50_000);
+});
+
+function imagePart(label: string) {
+	return { type: "image" as const, data: `base64-${label}`, mimeType: "image/png" };
+}
+
+function imageToolResult(toolCallId: string, parts: Array<{ type: string }>) {
+	return {
+		role: "toolResult" as const,
+		toolCallId,
+		toolName: "read",
+		isError: false,
+		content: structuredClone(parts),
+	};
+}
+
+test("image aging keeps the newest retained images and placeholders the rest in order", () => {
+	const messages = [
+		imageToolResult("call-1", [imagePart("one"), { type: "text", text: "caption" }]),
+		imageToolResult("call-2", [imagePart("two")]),
+		imageToolResult("call-3", [imagePart("three"), imagePart("four")]),
+	];
+	const replaced = ageToolResultImages(messages, 2);
+	assert.equal(replaced, 2);
+	assert.equal(messages[0].content[0].type, "text");
+	assert.match(messages[0].content[0].text, /Aged-out image/);
+	assert.match(messages[0].content[0].text, /"call-1"/);
+	assert.equal(messages[0].content[1].text, "caption");
+	assert.equal(messages[1].content[0].type, "text");
+	assert.match(messages[1].content[0].text, /"call-2"/);
+	assert.deepEqual(messages[2].content, [imagePart("three"), imagePart("four")]);
+});
+
+test("image aging is a no-op within retention, when disabled, and for non-tool messages", () => {
+	const withinRetention = [imageToolResult("call-1", [imagePart("one")])];
+	assert.equal(ageToolResultImages(withinRetention, DEFAULT_IMAGE_RETENTION), 0);
+	assert.equal(withinRetention[0].content[0].type, "image");
+
+	const disabled = [
+		imageToolResult("call-1", [imagePart("one")]),
+		imageToolResult("call-2", [imagePart("two")]),
+	];
+	assert.equal(ageToolResultImages(disabled, IMAGE_RETENTION_DISABLED), 0);
+	assert.equal(disabled[0].content[0].type, "image");
+
+	const userMessage = { role: "user", content: [imagePart("user-image")] };
+	assert.equal(ageToolResultImages([userMessage], 0), 0);
+	assert.equal(userMessage.content[0].type, "image");
+});
+
+test("zero retention placeholders every tool-result image", () => {
+	const messages = [imageToolResult("call-1", [imagePart("one"), imagePart("two")])];
+	assert.equal(ageToolResultImages(messages, 0), 2);
+	assert.ok(messages[0].content.every((part) => part.type === "text"));
+});
+
+test("aging a formerly image-bearing result makes it eligible for text summarization", () => {
+	const bulk = "detail line\n".repeat(3_000);
+	const message = {
+		role: "toolResult" as const,
+		toolCallId: "call-mixed",
+		toolName: "read",
+		isError: false,
+		content: [imagePart("shot"), { type: "text" as const, text: bulk }],
+	};
+	assert.equal(
+		candidateForToolResult(message, { standard: 4_001, highFidelity: 4_001 }),
+		undefined,
+		"image content must stay exempt before aging",
+	);
+	ageToolResultImages([message], 0);
+	const candidate = candidateForToolResult(message, { standard: 4_001, highFidelity: 4_001 });
+	assert.ok(candidate, "aged message must become summarizable text");
+	assert.match(candidate.rawText, /Aged-out image/);
+});
+
+test("image retention validation and placeholder text stay bounded", () => {
+	assert.equal(isValidImageRetention(DEFAULT_IMAGE_RETENTION), true);
+	assert.equal(isValidImageRetention(IMAGE_RETENTION_DISABLED), true);
+	assert.equal(isValidImageRetention(64), true);
+	assert.equal(isValidImageRetention(65), false);
+	assert.equal(isValidImageRetention(-2), false);
+	assert.equal(isValidImageRetention(1.5), false);
+	const placeholder = imagePlaceholderText("app_screenshot", "call-x", "image/png", 400_000);
+	assert.match(placeholder, /~293 KB/);
+	assert.match(placeholder, /session history/);
+	assert.ok(placeholder.length < 400);
 });

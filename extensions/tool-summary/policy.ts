@@ -7,6 +7,9 @@ export const SUMMARY_TARGET_CHARS = 3_000;
 export const SUMMARY_HARD_MAX_CHARS = 4_000;
 export const MINIMUM_SAVINGS_RATIO = 0.4;
 export const MAX_RECALL_OUTPUT_CHARS = 50_000;
+export const DEFAULT_IMAGE_RETENTION = 4;
+export const IMAGE_RETENTION_DISABLED = -1;
+export const MAX_IMAGE_RETENTION = 64;
 
 export type SummaryMethod = "llm" | "deterministic";
 export type PolicyClass = "high-fidelity" | "standard" | "exempt";
@@ -131,6 +134,88 @@ export function textFromToolContent(content: readonly ToolContentLike[]) {
 		.filter((part): part is TextContentLike => part.type === "text")
 		.map((part) => part.text)
 		.join("");
+}
+
+export function isValidImageRetention(value: unknown): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isInteger(value) &&
+		value >= IMAGE_RETENTION_DISABLED &&
+		value <= MAX_IMAGE_RETENTION
+	);
+}
+
+export function imagePlaceholderText(
+	toolName: string,
+	toolCallId: string,
+	mimeType: string,
+	base64Length: number,
+) {
+	const approxKb = Math.max(1, Math.round((base64Length * 0.75) / 1024));
+	return (
+		`[Aged-out image: an older ${mimeType} (~${approxKb} KB) from tool ${toolName} ` +
+		`toolCallId ${JSON.stringify(toolCallId)} was replaced in provider context by tool-summary. ` +
+		"The exact image remains in session history; re-run the originating tool if it is needed again.]"
+	);
+}
+
+type AgeableMessageLike = {
+	role?: unknown;
+	toolCallId?: unknown;
+	toolName?: unknown;
+	content?: unknown;
+};
+
+/**
+ * Replace all but the newest `retention` tool-result image parts with
+ * deterministic text placeholders. Mutates only the provided message copies
+ * (Pi context messages), never stored session entries. Returns the number of
+ * replaced image parts. A negative retention disables aging.
+ */
+export function ageToolResultImages(
+	messages: readonly AgeableMessageLike[],
+	retention: number,
+) {
+	if (!Number.isInteger(retention) || retention < 0) return 0;
+	const imageRefs: Array<{
+		content: ToolContentLike[];
+		index: number;
+		toolName: string;
+		toolCallId: string;
+	}> = [];
+	for (const message of messages) {
+		if (!message || message.role !== "toolResult") continue;
+		if (typeof message.toolCallId !== "string" || typeof message.toolName !== "string") continue;
+		if (!Array.isArray(message.content)) continue;
+		const content = message.content as ToolContentLike[];
+		for (let index = 0; index < content.length; index += 1) {
+			const part = content[index];
+			if (
+				part &&
+				typeof part === "object" &&
+				part.type === "image" &&
+				typeof part.data === "string" &&
+				typeof part.mimeType === "string"
+			) {
+				imageRefs.push({
+					content,
+					index,
+					toolName: message.toolName,
+					toolCallId: message.toolCallId,
+				});
+			}
+		}
+	}
+	const excess = imageRefs.length - retention;
+	if (excess <= 0) return 0;
+	for (const ref of imageRefs.slice(0, excess)) {
+		const part = ref.content[ref.index] as ImageContentLike;
+		ref.content[ref.index] = {
+			type: "text",
+			text: imagePlaceholderText(ref.toolName, ref.toolCallId, part.mimeType, part.data.length),
+		};
+	}
+	return excess;
 }
 
 export function toolContentHash(content: readonly ToolContentLike[]) {

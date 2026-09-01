@@ -818,3 +818,112 @@ test("recall refuses an exact slice that exceeds its output guard", async () => 
   assert.equal(result.details.exact, false);
   assert.ok(result.content[0].text.length < 1_000);
 });
+
+function imageToolEntry(toolCallId: string, toolName: string, images: number, text = "screenshot captured") {
+  return {
+    type: "message",
+    id: `entry-${toolCallId}`,
+    parentId: null,
+    message: {
+      role: "toolResult",
+      toolCallId,
+      toolName,
+      content: [
+        ...Array.from({ length: images }, (_, index) => ({
+          type: "image",
+          data: `base64-${toolCallId}-${index}`,
+          mimeType: "image/png",
+        })),
+        { type: "text", text },
+      ],
+      isError: false,
+      timestamp: Date.now(),
+    },
+  };
+}
+
+test("older tool-result images age out of provider context without mutating stored entries", async () => {
+  __resetCompleteStub();
+  const sources = [
+    imageToolEntry("call-shot-1", "app_screenshot", 1),
+    imageToolEntry("call-shot-2", "app_screenshot", 2),
+    imageToolEntry("call-shot-3", "browser_screenshot", 2),
+  ];
+  const harness = makeHarness(structuredClone(sources));
+  await start(harness, "image-aging");
+  const context = harness.handlers.get("context")!;
+
+  const messages = contextMessages(harness);
+  const result = await context({ type: "context", messages }, harness.ctx);
+  assert.ok(result, "aging must report changed messages");
+
+  const imageParts = messages.flatMap((message) => message.content.filter((part) => part.type === "image"));
+  assert.equal(imageParts.length, 4, "default retention keeps the newest 4 images");
+  assert.equal(messages[0].content[0].type, "text");
+  assert.match(messages[0].content[0].text, /Aged-out image/);
+  assert.match(messages[0].content[0].text, /"call-shot-1"/);
+  assert.equal(messages[0].content[1].text, "screenshot captured");
+  assert.deepEqual(
+    messages[1].content.map((part) => part.type),
+    ["image", "image", "text"],
+  );
+
+  for (const [index, source] of sources.entries()) {
+    assert.deepEqual(
+      harness.getBranch()[index].message.content,
+      source.message.content,
+      "stored session entries must remain exact",
+    );
+  }
+});
+
+test("image aging respects pause and the images command persists retention", async () => {
+  __resetCompleteStub();
+  const harness = makeHarness([
+    imageToolEntry("call-old", "app_screenshot", 3),
+    imageToolEntry("call-new", "app_screenshot", 3),
+  ]);
+  await start(harness, "image-command");
+  const context = harness.handlers.get("context")!;
+  const command = harness.commands.get("tool-summary")!.handler;
+
+  await command("pause", harness.ctx);
+  const paused = contextMessages(harness);
+  await context({ type: "context", messages: paused }, harness.ctx);
+  assert.equal(
+    paused.flatMap((message) => message.content.filter((part) => part.type === "image")).length,
+    6,
+    "pause must not age images",
+  );
+
+  await command("on", harness.ctx);
+  await command("images 1", harness.ctx);
+  const latestConfig = harness.getBranch().findLast((entry) => entry.customType === CONFIG_TYPE).data;
+  assert.equal(latestConfig.imageRetention, 1);
+
+  const aged = contextMessages(harness);
+  await context({ type: "context", messages: aged }, harness.ctx);
+  assert.equal(
+    aged.flatMap((message) => message.content.filter((part) => part.type === "image")).length,
+    1,
+  );
+
+  await command("images off", harness.ctx);
+  const disabled = contextMessages(harness);
+  await context({ type: "context", messages: disabled }, harness.ctx);
+  assert.equal(
+    disabled.flatMap((message) => message.content.filter((part) => part.type === "image")).length,
+    6,
+  );
+
+  await command("images reset", harness.ctx);
+  assert.equal(
+    harness.getBranch().findLast((entry) => entry.customType === CONFIG_TYPE).data.imageRetention,
+    4,
+  );
+  await command("status", harness.ctx);
+  assert.ok(harness.notifications.at(-1)?.message.includes("image retention: newest 4"));
+
+  await command("images 999", harness.ctx);
+  assert.equal(harness.notifications.at(-1)?.level, "error");
+});
