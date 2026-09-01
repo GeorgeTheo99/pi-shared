@@ -127,6 +127,11 @@ def test_explicit_gateway_assisted_image_input_is_preserved_and_labeled(tmp_path
             "provider_model_id": "cloud-text", "vision": False,
             "pi": {"image_input": "gateway-assisted"},
         },
+        "disabled-local": {
+            "name": "disabled-local", "alias": "disabledlocal", "provider": "local",
+            "omlx_id": "disabled-local", "vision": False,
+            "pi": {"image_input": "disabled"},
+        },
     }
     p = _load_aliases(tmp_path, aliases)
     r = _run(
@@ -136,10 +141,16 @@ def test_explicit_gateway_assisted_image_input_is_preserved_and_labeled(tmp_path
     )
     assert r.returncode == 0, r.stderr
     models = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"]
-    assert all(model["input"] == ["text", "image"] for model in models)
-    assert all(model["name"].endswith("· assisted vision") for model in models)
+    by_id = {model["id"]: model for model in models}
+    assert by_id["text-local"]["input"] == ["text", "image"]
+    assert by_id["cloud-text"]["input"] == ["text", "image"]
+    assert by_id["disabled-local"]["input"] == ["text"]
+    assert by_id["text-local"]["name"].endswith("· assisted vision")
+    assert by_id["cloud-text"]["name"].endswith("· assisted vision")
+    assert not by_id["disabled-local"]["name"].endswith("· assisted vision")
     launchers = (tmp_path / "launchers.zsh").read_text()
     assert "[assisted vision]" in launchers
+    assert "disabled-local (disabled-local) [text-only]" in launchers
 
 
 @pytest.mark.parametrize(

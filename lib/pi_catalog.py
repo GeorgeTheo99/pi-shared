@@ -423,9 +423,10 @@ def _image_capability(key: str, meta: dict) -> str:
     extract bounded observations before the selected text model answers.
     """
     assisted = _pi_hints(meta).get("image_input")
-    if assisted not in {None, "gateway-assisted"}:
+    if assisted not in {None, "gateway-assisted", "disabled"}:
         raise ValueError(
-            f"Pi image_input for {meta.get('alias') or key!r} must be 'gateway-assisted'"
+            f"Pi image_input for {meta.get('alias') or key!r} must be "
+            "'gateway-assisted' or 'disabled'"
         )
     vision = meta.get("vision")
     if vision is True:
@@ -436,6 +437,8 @@ def _image_capability(key: str, meta: dict) -> str:
         return "native"
     if assisted == "gateway-assisted":
         return "gateway-assisted"
+    if assisted == "disabled":
+        return "none"
     if vision is not None or _is_cloud_key(key):
         return "none"
     haystack = " ".join(
