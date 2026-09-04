@@ -155,7 +155,7 @@ install_extension_deps() {
     [ -n "$d" ] || continue
     log "Installing locked dependencies in ${d#"$ROOT_DIR"/}"
     (cd "$d" && "$NPM_BIN" ci --ignore-scripts --no-audit --no-fund --loglevel=error) \
-      || die "npm ci failed in $d. Fix the error above, then re-run: (cd $d && npm ci --ignore-scripts)"
+      || die "npm ci failed in $d (registry: $("$NPM_BIN" config get registry 2>/dev/null || echo unknown)). If the registry returned 5xx, retry in a minute or point ~/.npmrc at a reachable mirror; then re-run: (cd $d && npm ci --ignore-scripts)"
   done <<< "$dirs"
   "$ROOT_DIR/bin/pi-shared-check-deps" >/dev/null \
     || die "extension dependencies still do not resolve after npm ci; run $ROOT_DIR/bin/pi-shared-check-deps for details"
