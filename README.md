@@ -360,7 +360,7 @@ Project-local setups can instead use `./pi-shared` from `~/local_code/.pi/settin
 1. Clone or pull this repo to the same workspace location, or adjust the path in `.pi/settings.json`.
 2. Point that machine's Pi `AGENTS.md` at this repo.
 3. Ensure project settings include `./pi-shared` as a package.
-4. Install package dependencies once.
+4. Run `./install.sh` — it wires settings, renders catalogs, and runs a locked `npm ci --ignore-scripts` in every extension that has a `package-lock.json` (fails loudly if `npm` is missing or an install fails; `bin/pi-shared-check-deps` re-verifies that each dependency resolves). Browser binaries are **not** downloaded here — see below.
 5. For `web_search` / `deep_research`, run/configure the local-search MCP broker on that machine. Recommended endpoint: `http://127.0.0.1:8889/mcp`; the broker owns loopback/self-hosted SearXNG and explicit Tavily disabled/fallback/supplement policy. Override with `PI_WEBSEARCH_MCP_URL`, `SEARCH_MCP_URL`, `WEBSEARCH_MCP_URL`, or `~/.pi/research/config.json`.
 6. For `app_*`, set `BROWSER_MCP_APP_BASE_URL` when the target app is not `http://127.0.0.1:8100`; optionally add `BROWSER_MCP_APP_ALLOWED_HOSTS` for additional private hosts.
 7. Install the optional `pi-vanilla` recovery launcher if desired.
@@ -379,8 +379,8 @@ cat > ~/local_code/.pi/settings.json <<'JSON'
   "packages": ["./pi-shared"]
 }
 JSON
-cd ~/local_code/pi-shared/extensions/pi-browser-capture && npm install
-cd ~/local_code/pi-shared/extensions/integration-bundles && npm install
+~/local_code/pi-shared/install.sh      # settings + catalogs + locked extension deps
+~/local_code/pi-shared/bin/pi-shared-check-deps   # verify: yaml, patchright, playwright resolve
 
 # Optional recovery launcher that bypasses shared/local Pi resources
 mkdir -p ~/.local/bin
@@ -433,13 +433,12 @@ pi-regen
 source ~/.pi/generated/pi-launchers.zsh
 ```
 
-If `package.json` dependencies changed for an extension, reinstall in that extension directory, then run `/reload` in Pi.
+If `package.json` dependencies changed for an extension, re-run `./install.sh` (or `npm ci --ignore-scripts` in that extension directory), then run `/reload` in Pi.
 
-For the browser extension specifically:
+The browser extension's JavaScript packages are installed by `./install.sh`; the Chromium binary is a separate, explicit step (hundreds of MB) only needed for browser-capture features:
 
 ```bash
 cd ~/local_code/pi-shared/extensions/pi-browser-capture
-npm install
 npx playwright install chromium
 ```
 

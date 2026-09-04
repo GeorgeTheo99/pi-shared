@@ -7,10 +7,16 @@
 # to source generated launchers.
 #
 # Usage:
-#   pi-shared-install [--force] [--no-catalog] [--aliases PATH]
+#   pi-shared-install [--force] [--no-catalog] [--no-deps] [--aliases PATH]
 #                     [--models-out PATH] [--launchers-out PATH]
 #                     [--pi-agent-dir PATH|''] [--provider-name NAME]
 #                     [--ls99-extras]
+#
+# Extension runtime dependencies: every directory under extensions/ that has
+# both package.json and package-lock.json with non-empty dependencies gets a
+# locked `npm ci --ignore-scripts`. Pi imports extension sources at startup, so
+# a missing dependency breaks every session; the installer therefore FAILS if
+# npm is missing or npm ci fails. Browser binaries are never downloaded here.
 #
 # --pi-agent-dir '' (empty) renders launchers for Pi's DEFAULT profile
 # (no PI_CODING_AGENT_DIR override) — use this on machines whose models.json
@@ -43,6 +49,8 @@ CATALOG_PI_AGENT_DIR="${PI_SHARED_CATALOG_PI_AGENT_DIR-$PI_OMLX_AGENT_DIR}"
 PROVIDER_NAME="${PI_SHARED_PROVIDER_NAME:-}"
 FORCE=0
 GENERATE_CATALOG=1
+INSTALL_DEPS=1
+NPM_BIN="${PI_SHARED_NPM:-npm}"
 LS99_EXTRAS="${PI_SHARED_LS99_EXTRAS:-0}"
 
 if [ -t 1 ]; then
@@ -74,6 +82,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --force) FORCE=1 ;;
     --no-catalog) GENERATE_CATALOG=0 ;;
+    --no-deps) INSTALL_DEPS=0 ;;
     --aliases) shift; [ $# -gt 0 ] || die "--aliases requires a path"; ALIASES_PATH="$(expand_path "$1")" ;;
     --models-out) shift; [ $# -gt 0 ] || die "--models-out requires a path"; MODELS_OUT="$(expand_path "$1")" ;;
     --launchers-out) shift; [ $# -gt 0 ] || die "--launchers-out requires a path"; LAUNCHERS_OUT="$(expand_path "$1")" ;;
@@ -109,6 +118,48 @@ install_symlink() {
   fi
   ln -sfn "$src" "$dest"
   ok "Installed $dest → $src"
+}
+
+# Extension directories that need a locked dependency install (have
+# package.json + package-lock.json and at least one runtime dependency).
+locked_extension_dirs() {
+  python3 - "$ROOT_DIR/extensions" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+for pkg in sorted(root.glob("*/package.json")):
+    d = pkg.parent
+    if not (d / "package-lock.json").is_file():
+        continue
+    try:
+        deps = json.loads(pkg.read_text()).get("dependencies") or {}
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON in {pkg}: {exc}")
+    if deps:
+        print(d)
+PY
+}
+
+install_extension_deps() {
+  if [ "$INSTALL_DEPS" -eq 0 ]; then
+    warn "Skipping extension dependency install (--no-deps)"
+    return 0
+  fi
+  local dirs
+  dirs="$(locked_extension_dirs)"
+  [ -n "$dirs" ] || return 0
+  command -v "$NPM_BIN" >/dev/null 2>&1 \
+    || die "npm is required to install extension dependencies ($(printf '%s' "$dirs" | tr '\n' ' ')). Install Node.js (e.g. brew install node) and re-run."
+  local d
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    log "Installing locked dependencies in ${d#"$ROOT_DIR"/}"
+    (cd "$d" && "$NPM_BIN" ci --ignore-scripts --no-audit --no-fund --loglevel=error) \
+      || die "npm ci failed in $d. Fix the error above, then re-run: (cd $d && npm ci --ignore-scripts)"
+  done <<< "$dirs"
+  "$ROOT_DIR/bin/pi-shared-check-deps" >/dev/null \
+    || die "extension dependencies still do not resolve after npm ci; run $ROOT_DIR/bin/pi-shared-check-deps for details"
+  ok "Extension dependencies installed and resolvable"
 }
 
 wire_settings() {
@@ -241,12 +292,15 @@ main() {
   install_symlink pi-catalog
   install_symlink pi-omlx-repair
   install_symlink pi-vanilla
+  install_extension_deps
   wire_settings
   wire_agents_md
   generate_catalog
   migrate_legacy_launcher_path
-  printf '\nNext step: source generated launchers from your shell, e.g. add this to ~/.zshrc if you generated them:\n'
-  printf '  [ -f %q ] && source %q\n' "$LAUNCHERS_OUT" "$LAUNCHERS_OUT"
+  if [ -s "$LAUNCHERS_OUT" ] && ! grep -qsF 'pi-launchers.zsh' "$HOME/.zshrc"; then
+    printf '\nNext step: source the generated launchers so pi-list is available (pi-setup/install.sh does this for you):\n'
+    printf '  [ -f %q ] && source %q\n' "$LAUNCHERS_OUT" "$LAUNCHERS_OUT"
+  fi
   ok "pi-shared installed"
 }
 
