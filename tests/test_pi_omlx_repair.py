@@ -253,6 +253,32 @@ if (exhausted.includes(firstError) || !exhausted.includes(secondError) || !exhau
     assert all(runtime_file.read_text() == text for runtime_file, text in first_patched.items())
 
 
+def test_repairs_pi_085_session_projection_without_dropping_cost_notices(tmp_path: Path):
+    install = fake_install(tmp_path, CURRENT_OPENAI_COMPLETIONS_FIXTURE)
+    interactive_mode = install / "dist/modes/interactive/interactive-mode.js"
+    old_projection = """            return sessionEntryToContextMessages(entry);
+        });
+"""
+    current_projection = """            const messages = sessionEntryToContextMessages(entry);
+            if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage && messages.length > 0) {
+                return [...messages, { type: "compaction_cost", kind: entry.type, usage: entry.usage }];
+            }
+            return messages;
+        });
+"""
+    source = interactive_mode.read_text()
+    assert source.count(old_projection) == 1
+    interactive_mode.write_text(source.replace(old_projection, current_projection, 1))
+
+    result = run_repair(tmp_path, install)
+
+    assert result.returncode == 0, result.stderr
+    patched = interactive_mode.read_text()
+    assert patched.count("omitSupersededRetryErrors(entries.flatMap") == 1
+    assert patched.count("type: \"compaction_cost\"") == 1
+    assert patched.count("kind: entry.type, usage: entry.usage") == 1
+
+
 def test_fails_closed_when_retry_layout_is_unknown(tmp_path: Path):
     install = fake_install(tmp_path, CURRENT_OPENAI_COMPLETIONS_FIXTURE)
     session_manager = install / "dist/core/session-manager.js"

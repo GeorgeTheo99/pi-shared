@@ -129,14 +129,8 @@ def _patch_interactive_mode(text: str, path: Path) -> str:
                 this.retryErrorComponents = [];
                 this.ui.requestRender();
 """,
-        """        const items = omitSupersededRetryErrors(entries.flatMap((entry) => {
-            if (entry.type === "custom") {
-                return [entry];
-            }
-            return sessionEntryToContextMessages(entry);
-        }));
-        this.renderSessionItems(items, options);
-""",
+        "        const items = omitSupersededRetryErrors(entries.flatMap((entry) => {\n",
+        "        }));\n        this.renderSessionItems(items, options);\n",
     ]
 
     def validate_fully_patched(candidate: str) -> None:
@@ -194,12 +188,15 @@ def _patch_interactive_mode(text: str, path: Path) -> str:
             raise SystemExit(f"Expected auto-retry end block not found exactly once in {path}")
         text = text.replace(old_end, new_end, 1)
 
-    old_render = """        const items = entries.flatMap((entry) => {\n            if (entry.type === \"custom\") {\n                return [entry];\n            }\n            return sessionEntryToContextMessages(entry);\n        });\n        this.renderSessionItems(items, options);\n"""
-    new_render = """        const items = omitSupersededRetryErrors(entries.flatMap((entry) => {\n            if (entry.type === \"custom\") {\n                return [entry];\n            }\n            return sessionEntryToContextMessages(entry);\n        }));\n        this.renderSessionItems(items, options);\n"""
-    if new_render not in text:
-        if text.count(old_render) != 1:
+    old_render_start = "        const items = entries.flatMap((entry) => {\n"
+    old_render_end = "        });\n        this.renderSessionItems(items, options);\n"
+    new_render_start = "        const items = omitSupersededRetryErrors(entries.flatMap((entry) => {\n"
+    new_render_end = "        }));\n        this.renderSessionItems(items, options);\n"
+    if new_render_start not in text:
+        if text.count(old_render_start) != 1 or text.count(old_render_end) != 1:
             raise SystemExit(f"Expected session rendering projection not found exactly once in {path}")
-        text = text.replace(old_render, new_render, 1)
+        text = text.replace(old_render_start, new_render_start, 1)
+        text = text.replace(old_render_end, new_render_end, 1)
 
     validate_fully_patched(text)
     return text
