@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# pi-shared-check-deps — verify that every locked Pi extension package can
+# actually resolve its declared runtime dependencies from its own directory.
+#
+# Usage:
+#   pi-shared-check-deps [EXTENSIONS_DIR ...]
+#
+# With no arguments, checks pi-shared's own extensions/. Pass one or more
+# extension parent directories (e.g. ~/local_code/pi-databricks/extensions) to
+# check other Pi packages with the same rule. A directory is checked when it
+# has package.json + package-lock.json with non-empty dependencies. Merely
+# having a node_modules/ folder is not sufficient: each dependency is resolved
+# with Node's `require.resolve`, which is what Pi does at startup.
+#
+# Exit 0 when everything resolves; 1 with one line per missing dependency and
+# the exact repair command.
+set -uo pipefail
+
+_self="${BASH_SOURCE[0]:-$0}"
+while [ -L "$_self" ]; do
+  _dir="$(cd "$(dirname "$_self")" && pwd)"
+  _self="$(readlink "$_self")"
+  case "$_self" in /*) ;; *) _self="$_dir/$_self" ;; esac
+done
+ROOT_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
+
+if [ $# -eq 0 ]; then
+  set -- "$ROOT_DIR/extensions"
+fi
+
+command -v node >/dev/null 2>&1 || { echo "FAIL  node is not on PATH (required by Pi extensions)" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "FAIL  python3 is not on PATH" >&2; exit 1; }
+
+FAIL=0
+for parent in "$@"; do
+  [ -d "$parent" ] || continue
+  while IFS=$'\t' read -r dir dep; do
+    [ -n "$dir" ] || continue
+    if node -e "require.resolve(process.argv[1], { paths: [process.argv[2]] })" "$dep" "$dir" >/dev/null 2>&1; then
+      printf 'ok    %s -> %s\n' "${dir##*/}" "$dep"
+    else
+      printf 'FAIL  %s cannot resolve %s (repair: cd %s && npm ci --ignore-scripts)\n' "${dir##*/}" "$dep" "$dir" >&2
+      FAIL=1
+    fi
+  done < <(python3 - "$parent" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+for pkg in sorted(root.glob("*/package.json")):
+    d = pkg.parent
+    if not (d / "package-lock.json").is_file():
+        continue
+    try:
+        deps = json.loads(pkg.read_text()).get("dependencies") or {}
+    except json.JSONDecodeError:
+        print(f"{d}\t<invalid package.json>")
+        continue
+    for name in sorted(deps):
+        print(f"{d}\t{name}")
+PY
+  )
+done
+exit "$FAIL"
