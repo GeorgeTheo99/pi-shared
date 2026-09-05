@@ -1187,7 +1187,7 @@ def test_installer_renders_from_default_pi_alias_catalog(tmp_path):
         "PI_SHARED_OMLX_AGENT_DIR": str(home / ".pi-omlx" / "agent"),
     })
     r = subprocess.run(
-        [str(SHARED_ROOT / "bin" / "pi-shared-install"), "--pi-agent-dir", ""],
+        [str(SHARED_ROOT / "bin" / "pi-shared-install"), "--no-deps", "--pi-agent-dir", ""],
         capture_output=True,
         text=True,
         env=env,
@@ -1221,6 +1221,7 @@ def test_installer_migrates_recognized_legacy_launcher(tmp_path):
     r = subprocess.run(
         [
             str(SHARED_ROOT / "bin" / "pi-shared-install"),
+            "--no-deps",
             "--aliases", str(aliases),
             "--pi-agent-dir", "",
         ],
