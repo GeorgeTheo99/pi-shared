@@ -196,6 +196,11 @@ def _reasoning_kind(key: str, meta: dict, status: dict) -> str:
 
 
 def _api_type_for(kind: str, key: str, meta: dict) -> str:
+    # Gateway responses-native models (api_style: open_responses, e.g.
+    # gpt-6-astra): their upstream only accepts function tools via the Open
+    # Responses API, so Pi must speak openai-responses to the gateway.
+    if str(meta.get("api_style") or "").strip().lower() == "open_responses":
+        return "openai-responses"
     if _is_anthropic_shape(key, meta) or kind == "fireworks-messages":
         return "anthropic-messages"
     if kind == "openai-responses":

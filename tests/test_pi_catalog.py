@@ -383,6 +383,32 @@ def test_cloud_gpt_uses_responses_api(tmp_path):
     assert "baseUrl" not in m  # openai-shaped uses provider /v1 base
 
 
+def test_api_style_open_responses_renders_responses_api(tmp_path):
+    """Gateway api_style: open_responses (e.g. gpt-6-astra) forces Pi onto
+    the openai-responses protocol regardless of provider."""
+    aliases = {
+        "cloud:databricks-gpt-6-astra": {
+            "name": "gpt-6-astra", "alias": "astra", "desc": "GPT-6 Astra",
+            "provider": "databricks-e2", "provider_model_id": "databricks-gpt-6-astra",
+            "api_style": "open_responses",
+            "thinking": "always",
+            "thinking_levels": ["minimal", "low", "medium", "high", "xhigh", "max"],
+            "context": 1050000, "max_output_tokens": 128000, "pi": {"name": "GPT-6 Astra via Databricks"},
+        },
+    }
+    p = _load_aliases(tmp_path, aliases)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
+    assert r.returncode == 0, r.stderr
+    m = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"][0]
+    assert m["api"] == "openai-responses"
+    assert m["name"] == "GPT-6 Astra via Databricks"
+    assert m["reasoning"] is True
+    # thinking_levels is authoritative: always-reasons model has no off level.
+    assert m["thinkingLevelMap"]["off"] is None
+    assert m["thinkingLevelMap"]["max"] == "max"
+    assert "baseUrl" not in m  # responses client appends /responses to /v1 base
+
+
 def test_cloud_fireworks_kimi_k3_keeps_native_deferred_tools_and_logical_id(tmp_path):
     aliases = {
         "cloud:kimi-k3": {
