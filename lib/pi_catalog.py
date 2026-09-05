@@ -929,13 +929,15 @@ def _render_pi_openai() -> str:
     # provider (ChatGPT Plus/Pro /login OAuth), with any API-key env unset so
     # the subscription auth path is used. The model is pinned because Pi only
     # applies --provider when resolving --model; without a pinned model Pi
-    # falls through to its built-in default (google/gemini). Last flag wins,
-    # so a user-supplied --model still overrides this default.
+    # falls through to its built-in default (google/gemini). --models scopes
+    # the Ctrl+P + /model picker to codex routes only (the default profile's
+    # models.json is the gateway catalog symlink). Last flag wins, so
+    # user-supplied --model/--models still override both.
     return (
         "pi-openai() {\n"
         '  echo "Pi → OpenAI subscription (ChatGPT Plus/Pro via /login OAuth)"\n'
         "  env -u PI_CODING_AGENT_DIR -u OPENAI_API_KEY -u OPENAI_BASE_URL \\\n"
-        '    pi --provider openai-codex --model gpt-5.5 "$@"\n'
+        '    pi --provider openai-codex --model gpt-5.5 --models "openai-codex/*" "$@"\n'
         "}"
     )
 
