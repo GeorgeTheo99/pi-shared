@@ -38,7 +38,13 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<v
 }
 
 function createHarness(
-	options: { entries?: any[]; sessionId?: string; idle?: boolean; sessionFile?: string } = {},
+	options: {
+		entries?: any[];
+		sessionId?: string;
+		idle?: boolean;
+		sessionFile?: string;
+		persistMessage?: (entry: any) => void;
+	} = {},
 ) {
 	const handlers = new Map<string, Array<(event: any, ctx: any) => Promise<void> | void>>();
 	const tools = new Map<string, any>();
@@ -46,6 +52,7 @@ function createHarness(
 	const messageRenderers = new Map<string, any>();
 	const sentMessages: Array<{ message: any; options: any }> = [];
 	const notifications: Array<{ message: string; level: string }> = [];
+	const sessionWriteErrors: unknown[] = [];
 	const entries: any[] = options.entries ?? [];
 	const sessionId = options.sessionId ?? crypto.randomUUID();
 	let idle = options.idle ?? true;
@@ -66,6 +73,7 @@ function createHarness(
 			},
 		},
 	};
+	const { sessionFile, persistMessage } = options;
 	const pi = {
 		on(event: string, handler: (event: any, ctx: any) => Promise<void> | void) {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
@@ -84,7 +92,16 @@ function createHarness(
 		},
 		sendMessage(message: any, options?: any) {
 			sentMessages.push({ message, options });
-			entries.push({ type: "custom_message", customType: message.customType, details: message.details });
+			const entry = { type: "custom_message", customType: message.customType, content: message.content, details: message.details };
+			entries.push(entry);
+			// The SDK mutates memory before persisting, and ExtensionAPI.sendMessage
+			// reports an asynchronous append failure without throwing to the caller.
+			try {
+				if (persistMessage) persistMessage(entry);
+				else if (sessionFile && fs.existsSync(sessionFile)) fs.appendFileSync(sessionFile, `${JSON.stringify(entry)}\n`);
+			} catch (error) {
+				sessionWriteErrors.push(error);
+			}
 		},
 	};
 	sessionCoordinator(pi as any);
@@ -95,6 +112,7 @@ function createHarness(
 		messageRenderers,
 		sentMessages,
 		notifications,
+		sessionWriteErrors,
 		entries,
 		ctx,
 		setIdle(value: boolean) {
@@ -231,7 +249,7 @@ test("extension publishes status, discovers peers, and delivers notification-onl
 				undefined,
 				harness.ctx,
 			),
-			/must target the session that sent/,
+			/must target the exact Pi session that sent/,
 		);
 
 		await state.writePresence({ ...peer, sessionId: "sender-runtime-switched-session" });
@@ -243,7 +261,7 @@ test("extension publishes status, discovers peers, and delivers notification-onl
 				undefined,
 				harness.ctx,
 			),
-			/changed Pi sessions/,
+			/must target the exact Pi session that sent/,
 		);
 		await state.writePresence(peer);
 
@@ -434,6 +452,142 @@ test("sender-visible lifecycle reaches surfaced, acknowledged, and replied witho
 	}
 });
 
+test("correlated replies survive sender reload but still reject a different sender session", async () => {
+	const senderId = "reply-reload-sender";
+	const sender = createHarness({ sessionId: senderId });
+	const recipient = createHarness({ sessionId: "reply-reload-recipient" });
+	const successor = createHarness({ sessionId: senderId, entries: sender.entries });
+	const fork = createHarness({ sessionId: "reply-reload-fork" });
+	await emit(sender, "session_start");
+	await emit(recipient, "session_start");
+	try {
+		const target = state.listAllActivePeers().find((peer) => peer.sessionId === "reply-reload-recipient")!;
+		const originalRuntime = state.listAllActivePeers().find((peer) => peer.sessionId === senderId)!.runtimeId;
+		const sent = await sender.tools.get("peer_send").execute(
+			"send", { target: target.runtimeId, message: "Reply after I reload." }, undefined, undefined, sender.ctx,
+		);
+		const messageId = sent.details.message.id;
+		await waitUntil(() => recipient.sentMessages.some((item) => item.message.details.messageId === messageId));
+		await emit(sender, "session_shutdown");
+		await emit(successor, "session_start");
+		await emit(fork, "session_start");
+		const reloaded = state.listAllActivePeers().find((peer) => peer.sessionId === senderId)!;
+		assert.notEqual(reloaded.runtimeId, originalRuntime);
+		const forkPresence = state.listAllActivePeers().find((peer) => peer.sessionId === "reply-reload-fork")!;
+		await assert.rejects(
+			recipient.tools.get("peer_send").execute(
+				"wrong-reply", { target: forkPresence.runtimeId, message: "Wrong session", inReplyTo: messageId },
+				undefined, undefined, recipient.ctx,
+			), /exact Pi session/,
+		);
+		const reply = await recipient.tools.get("peer_send").execute(
+			"reply", { target: reloaded.runtimeId, message: "Reply to resumed sender", inReplyTo: messageId },
+			undefined, undefined, recipient.ctx,
+		);
+		assert.equal(reply.details.message.hops, 1);
+		assert.equal(reply.details.message.targetSessionId, senderId);
+		assert.equal(state.readOutgoingMessageStatuses(senderId, messageId)[0].effectiveStatus, "replied");
+		await waitUntil(() => successor.sentMessages.some((item) => item.message.details.messageId === reply.details.message.id));
+		await assert.rejects(
+			successor.tools.get("peer_send").execute(
+				"loop", { target: target.runtimeId, message: "Must not loop", inReplyTo: reply.details.message.id },
+				undefined, undefined, successor.ctx,
+			), /hop limit/,
+		);
+	} finally {
+		for (const harness of [sender, recipient, successor, fork]) await emit(harness, "session_shutdown");
+	}
+});
+
+test("failed session append retains the receipt until a complete matching JSONL entry is saved", async () => {
+	const sessionId = "failed-append-recipient";
+	const sessionFile = path.join(workspace, `${sessionId}.jsonl`);
+	const header = `${JSON.stringify({ type: "session", id: sessionId })}\n`;
+	fs.writeFileSync(sessionFile, header);
+	const failure = Object.assign(new Error("No space left on device"), { code: "ENOSPC" });
+	const recipient = createHarness({ sessionId, sessionFile, idle: false, persistMessage: () => { throw failure; } });
+	const sender = createHarness({ sessionId: "failed-append-sender" });
+	await emit(sender, "session_start");
+	await emit(recipient, "session_start");
+	let successor: ReturnType<typeof createHarness> | undefined;
+	try {
+		const target = state.listAllActivePeers().find((peer) => peer.sessionId === sessionId)!;
+		const sent = await sender.tools.get("peer_send").execute(
+			"send", { target: target.runtimeId, message: "Must survive a failed disk write." }, undefined, undefined, sender.ctx,
+		);
+		const messageId = sent.details.message.id;
+		await waitUntil(() => state.readSessionReceipts(sessionId).some((item) => item.envelope.id === messageId));
+		recipient.setIdle(true);
+		await emit(recipient, "agent_settled");
+		assert.deepEqual(recipient.sessionWriteErrors, [failure]);
+		assert.equal(fs.readFileSync(sessionFile, "utf8"), header);
+		assert.ok(state.readSessionReceipts(sessionId).some((item) => item.envelope.id === messageId));
+		assert.equal(state.readOutgoingMessageStatuses("failed-append-sender", messageId)[0].effectiveStatus, "surfaced");
+		const entry = recipient.entries.find((entry) => entry.details?.messageId === messageId);
+		const otherSessionEntry = { ...entry, details: { ...entry.details, recipientSessionId: "a-fork" } };
+		fs.writeFileSync(sessionFile, header + JSON.stringify(otherSessionEntry) + "\n");
+		await emit(recipient, "agent_settled");
+		assert.equal(state.readSessionReceipts(sessionId).length, 1, "another session's entry is not proof of persistence");
+		fs.writeFileSync(sessionFile, header + JSON.stringify(entry));
+		await emit(recipient, "agent_settled");
+		assert.equal(state.readSessionReceipts(sessionId).length, 1, "an unterminated record is not committed");
+		await emit(recipient, "session_shutdown");
+		// Reload only persisted history after the failed/partial append is repaired.
+		fs.writeFileSync(sessionFile, header);
+		successor = createHarness({ sessionId, sessionFile });
+		await emit(successor, "session_start");
+		await waitUntil(() => state.readSessionReceipts(sessionId).length === 0);
+		assert.equal(successor.sentMessages.filter((item) => item.message.details.messageId === messageId).length, 1);
+		const persisted = fs.readFileSync(sessionFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		assert.ok(persisted.some((entry) => entry.details?.messageId === messageId));
+	} finally {
+		await emit(recipient, "session_shutdown");
+		if (successor) await emit(successor, "session_shutdown");
+		await emit(sender, "session_shutdown");
+		fs.rmSync(sessionFile, { force: true });
+	}
+});
+
+test("receipt verification streams large image records once for a pending batch", async (t) => {
+	const sessionId = "large-record-recipient";
+	const sessionFile = path.join(workspace, `${sessionId}.jsonl`);
+	fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: sessionId })}\n`);
+	fs.appendFileSync(sessionFile, `${JSON.stringify({
+		type: "message",
+		message: { role: "user", content: [{ type: "image", mimeType: "image/png", data: "A".repeat(32 * 1024 * 1024) }] },
+	})}\n`);
+	const recipient = createHarness({ sessionId, sessionFile, idle: false });
+	const sender = createHarness({ sessionId: "large-record-sender" });
+	await emit(sender, "session_start");
+	await emit(recipient, "session_start");
+	try {
+		const target = state.listAllActivePeers().find((peer) => peer.sessionId === sessionId)!;
+		const messageIds: string[] = [];
+		for (const message of ["First batch item", "Second batch item"]) {
+			const sent = await sender.tools.get("peer_send").execute(
+				"send", { target: target.runtimeId, message }, undefined, undefined, sender.ctx,
+			);
+			messageIds.push(sent.details.message.id);
+		}
+		await waitUntil(() => state.readSessionReceipts(sessionId).length === 2);
+		let scans = 0;
+		const createReadStream = fs.createReadStream;
+		t.mock.method(fs, "createReadStream", (...args: Parameters<typeof createReadStream>) => {
+			if (args[0] === sessionFile) scans++;
+			return createReadStream(...args);
+		});
+		recipient.setIdle(true);
+		await emit(recipient, "agent_settled");
+		assert.equal(state.readSessionReceipts(sessionId).length, 0);
+		assert.equal(scans, 1, "both pending messages must use the same streamed file scan");
+		for (const id of messageIds) assert.ok(recipient.sentMessages.some((item) => item.message.details.messageId === id));
+	} finally {
+		await emit(recipient, "session_shutdown");
+		await emit(sender, "session_shutdown");
+		fs.rmSync(sessionFile, { force: true });
+	}
+});
+
 test("busy-session receipts survive shutdown and are delivered after reload without waking the agent", async () => {
 	const entries: any[] = [];
 	const sessionId = "custom.session-reload-1";
@@ -486,7 +640,7 @@ test("busy-session receipts survive shutdown and are delivered after reload with
 		assert.equal(state.readOutgoingMessageStatuses(peer.sessionId, incoming.id)[0].effectiveStatus, "delivered");
 		await emit(first, "session_shutdown");
 		assert.equal(state.readSessionReceipts(sessionId).some((item) => item.envelope.id === incoming.id), true);
-		fs.writeFileSync(sessionFile, "persisted session\n");
+		fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: sessionId })}\n`);
 
 		const second = createHarness({ entries: [], sessionId, idle: true, sessionFile });
 		await emit(second, "session_start");
@@ -498,7 +652,7 @@ test("busy-session receipts survive shutdown and are delivered after reload with
 				second.sentMessages.filter((item) => item.message.details?.messageId === incoming.id).length,
 				1,
 			);
-			assert.equal(state.readSessionReceipts(sessionId).some((item) => item.envelope.id === incoming.id), false);
+			await waitUntil(() => !state.readSessionReceipts(sessionId).some((item) => item.envelope.id === incoming.id));
 			assert.equal(state.readOutgoingMessageStatuses(peer.sessionId, incoming.id)[0].effectiveStatus, "surfaced");
 		} finally {
 			await emit(second, "session_shutdown");

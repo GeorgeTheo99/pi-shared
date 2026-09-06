@@ -408,6 +408,42 @@ test("outgoing lifecycle records are private, monotonic, and expose truthful ter
 	);
 });
 
+test("missed heartbeats do not report termination of live exact-session targets or successors", async () => {
+	const now = Date.now();
+	const target = presence({ roomId: `cwd-${"9".repeat(32)}`, leaseExpiresAt: now + 1_000 });
+	const senderSessionId = "heartbeat-status-sender";
+	await coordinator.writePresence(target);
+	const envelope = coordinator.createEnvelope({
+		roomId: target.roomId,
+		targetRuntimeId: target.runtimeId,
+		targetSessionId: target.sessionId,
+		sender: { runtimeId: crypto.randomUUID(), sessionId: senderSessionId, worktreeRoot: process.cwd() },
+		message: "A slow event loop is not an ended session.", now,
+	});
+	await coordinator.persistOutgoingMessageStatus({ envelope, trackingSupported: true });
+	await coordinator.enqueueMessage(envelope);
+	await coordinator.updateOutgoingMessageStatus(senderSessionId, envelope.id, "queued", now);
+	const afterLease = now + 2_000;
+	assert.equal(coordinator.listActivePeers(target.roomId, undefined, afterLease).length, 0, "discovery still requires a fresh heartbeat");
+	assert.equal(coordinator.isProcessAlive(target.pid), true);
+	assert.equal(coordinator.readOutgoingMessageStatuses(senderSessionId, envelope.id, afterLease)[0].effectiveStatus, "queued");
+	assert.equal(coordinator.readInbox(target.roomId, target.runtimeId).length, 1);
+	const successor = { ...target, runtimeId: crypto.randomUUID() };
+	await coordinator.writePresence(successor);
+	await coordinator.removeRuntimeState(target.roomId, target.runtimeId);
+	assert.equal(coordinator.readOutgoingMessageStatuses(senderSessionId, envelope.id, afterLease)[0].effectiveStatus, "queued", "a live successor with an expired lease still owns the exact session");
+	await coordinator.writePresence({ ...successor, sessionId: "different-session" });
+	assert.equal(coordinator.readOutgoingMessageStatuses(senderSessionId, envelope.id, afterLease)[0].effectiveStatus, "unread_session_ended");
+	// A definitely exited process must not count as a live successor.
+	const exitedPid = Number(execFileSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }));
+	assert.equal(coordinator.isProcessAlive(exitedPid), false);
+	await coordinator.writePresence({ ...successor, pid: exitedPid });
+	assert.equal(coordinator.readOutgoingMessageStatuses(senderSessionId, envelope.id, afterLease)[0].effectiveStatus, "unread_session_ended");
+	await coordinator.writePresence(successor);
+	assert.equal(coordinator.readOutgoingMessageStatuses(senderSessionId, envelope.id, envelope.expiresAt + 1)[0].effectiveStatus, "expired", "liveness must not defeat message TTL");
+	await coordinator.removeRuntimeState(target.roomId, successor.runtimeId);
+});
+
 test("outgoing lifecycle storage is capped and pruned after retention", async () => {
 	const senderSessionId = "bounded-status-sender";
 	const sender = { runtimeId: crypto.randomUUID(), sessionId: senderSessionId, worktreeRoot: process.cwd() };

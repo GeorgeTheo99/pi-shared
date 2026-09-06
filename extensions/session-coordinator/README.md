@@ -15,7 +15,7 @@ The extension lets independent Pi processes sharing the same machine-local coord
 | `peer_message_status` | Inspect recent sender-visible lifecycle receipts for this Pi session, optionally by exact message ID. It never contacts or wakes the peer. |
 | `peer_acknowledge` | Record one acknowledgment for a received message that explicitly requested it. This updates the sender's receipt without sending a message or triggering a turn. |
 
-`peer_send` optionally accepts `inReplyTo` for one correlated reply hop. A reply to a reply is rejected to prevent automatic message loops. A correlated reply advances the original sender's receipt to `replied` when that receipt is available.
+`peer_send` optionally accepts `inReplyTo` for one correlated reply hop. A reply to a reply is rejected to prevent automatic message loops. Correlation follows the original sender's exact Pi session ID, so a reloaded sender can receive a reply at its newly discovered runtime ID; a different or forked session cannot. A correlated reply advances the original sender's receipt to `replied` when that receipt is available.
 
 ### Commands
 
@@ -65,7 +65,7 @@ Senders resolve targets from machine-wide presence and write each envelope to th
 
 The `peer_send` result shows the exact queued message under a `Message:` heading in the sending session. A dedicated recipient transcript renderer labels the matching inbound entry `PEER MESSAGE RECEIVED` (or `PEER REPLY RECEIVED`), shows the direction as `ANOTHER PI SESSION → THIS PI SESSION`, and places the exact body under its own `Message:` heading. It identifies both endpoints, the sender worktree, and any reply relationship. When a peer has no session name, the renderer uses `Unnamed session in <workspace> (<runtime-prefix>)` instead of presenting a bare, unexplained ID. The underlying context remains clearly marked as untrusted and never starts or interrupts an agent turn.
 
-The recipient receipt is removed only after the matching custom-message entry is observable and Pi's JSONL session file exists; otherwise it remains available for retry.
+The recipient receipt is removed only after the matching custom-message entry is observable and a complete matching JSONL record is readable from the exact recipient's session file. The file is streamed once per pending batch; a missing file, failed append, or partial record leaves the receipt available for retry, including after reload. In-memory visibility and file existence alone do not prove persistence.
 
 A clean shutdown drains unread runtime inbox messages into the same recipient-session receipt store. After an unclean runtime exit, a same-room successor may adopt an unread inbox only when the envelope's exact target Pi session ID matches and the predecessor PID is no longer alive. Different/forked sessions, legacy envelopes without a target session ID, and ambiguous live predecessors fail closed rather than receiving another session's message.
 
@@ -81,7 +81,7 @@ New runtimes advertise protocol v2 in an optional presence field while retaining
 | `surfaced` | The matching custom-message entry became observable in recipient context. This does **not** mean read by a human or agent. |
 | `acknowledged` | The recipient explicitly called `peer_acknowledge` for a message that requested acknowledgment. |
 | `replied` | The recipient successfully queued one correlated reply. |
-| `unread_session_ended` | The targeted runtime ended before any stronger checkpoint was recorded and no live same-session successor is visible. A matching successor may still adopt and advance the status later. |
+| `unread_session_ended` | The targeted runtime ended before any stronger checkpoint was recorded and no live same-session successor is visible. A missed heartbeat alone is not evidence of termination while the matching process remains alive. A matching successor may still adopt and advance the status later. |
 | `expired` | The message TTL elapsed before it was surfaced, acknowledged, or replied to. |
 
 Lifecycle writes are monotonic, so late concurrent writes cannot regress a stronger status. Status records are keyed by sender Pi session ID and therefore remain inspectable after that session reloads under a new runtime ID. `peer_message_status` is an explicit inspection surface; the coordinator does not generate noisy automatic status messages or poll peers.
@@ -89,6 +89,12 @@ Lifecycle writes are monotonic, so late concurrent writes cannot regress a stron
 Acknowledgments are bounded state updates, not peer messages. They do not wake a peer, trigger a turn, authorize the message content, or permit another acknowledgment hop. Acknowledgment and correlated-reply authority is bound to the exact recipient Pi session ID recorded when the message was surfaced, so a forked session fails closed. Regular replies retain the existing one-reply-hop guard.
 
 Messages and recipient receipts expire after 24 hours. Recipient-session receipts and outgoing lifecycle records are each transactionally capped at 100 records per session; full recipient storage leaves messages in the bounded runtime inbox for backpressured retry. Outgoing records are pruned after their retention window. Messages are limited to 8 KiB, runtime inboxes are transactionally capped at 100 messages, and a runtime may send at most five messages per minute.
+
+## Locking upgrade
+
+Before activating the generation-safe locking update, drain and stop all older Pi/worker processes sharing coordinator, subagent, or workflow state, then start fresh runtimes. Do not hot-reload just one session while older writers remain active: their legacy lock-reclamation code can remove a newer live lock. The new implementation safely recovers abandoned legacy locks after the old writers have stopped. No live state needs to be deleted manually.
+
+Locks use unique PID/token owner markers, pinned directory identity, and atomic empty-directory removal. Concurrent stale reclaimers cannot remove a replacement owner's live marker. This is a host-local filesystem protocol; it is not intended for network/shared-host filesystems.
 
 ## Configuration
 

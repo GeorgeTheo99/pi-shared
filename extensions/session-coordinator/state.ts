@@ -473,7 +473,7 @@ export async function removeRuntimeState(
 	);
 }
 
-export function listActivePeers(room: string, selfRuntimeId?: string, now = Date.now()): PeerPresence[] {
+function readRoomPeers(room: string): PeerPresence[] {
 	let names: string[];
 	try {
 		names = fs.readdirSync(presenceDir(room));
@@ -484,7 +484,12 @@ export function listActivePeers(room: string, selfRuntimeId?: string, now = Date
 		.filter((name) => name.endsWith(".json"))
 		.map((name) => normalizePresence(readJsonFile<unknown>(path.join(presenceDir(room), name), undefined)))
 		.filter((peer): peer is PeerPresence => Boolean(peer))
-		.filter((peer) => peer.roomId === room && peer.runtimeId !== selfRuntimeId && isPresenceActive(peer, now))
+		.filter((peer) => peer.roomId === room);
+}
+
+export function listActivePeers(room: string, selfRuntimeId?: string, now = Date.now()): PeerPresence[] {
+	return readRoomPeers(room)
+		.filter((peer) => peer.runtimeId !== selfRuntimeId && isPresenceActive(peer, now))
 		.sort((left, right) => left.startedAt - right.startedAt || left.runtimeId.localeCompare(right.runtimeId));
 }
 
@@ -572,20 +577,15 @@ function readOutgoingStatusRecords(sessionId: string): PeerMessageStatusRecord[]
 		.sort((left, right) => right.createdAt - left.createdAt || left.messageId.localeCompare(right.messageId));
 }
 
-function targetOrSuccessorActive(record: PeerMessageStatusRecord, now: number): boolean {
-	const target = normalizePresence(
-		readJsonFile<unknown>(presencePath(record.targetRoomId, record.targetRuntimeId), undefined),
-	);
-	if (
-		target &&
-		isPresenceActive(target, now) &&
-		(!record.targetSessionId || target.sessionId === record.targetSessionId)
-	) {
-		return true;
-	}
-	return Boolean(
-		record.targetSessionId &&
-			listActivePeers(record.targetRoomId, undefined, now).some((peer) => peer.sessionId === record.targetSessionId),
+function targetOrSuccessorAlive(record: PeerMessageStatusRecord): boolean {
+	// Heartbeat freshness controls discovery, not proof of termination. A busy or
+	// suspended process can miss its lease while still owning this exact session.
+	return readRoomPeers(record.targetRoomId).some(
+		(peer) =>
+			isProcessAlive(peer.pid) &&
+			(record.targetSessionId
+				? peer.sessionId === record.targetSessionId
+				: peer.runtimeId === record.targetRuntimeId),
 	);
 }
 
@@ -594,7 +594,7 @@ function statusView(record: PeerMessageStatusRecord, now: number): PeerMessageSt
 	if (!record.trackingSupported) return { ...record, effectiveStatus };
 	if (MESSAGE_STATUS_RANK[record.status] < MESSAGE_STATUS_RANK.surfaced && record.expiresAt <= now) {
 		effectiveStatus = "expired";
-	} else if (record.status === "queued" && !targetOrSuccessorActive(record, now)) {
+	} else if (record.status === "queued" && !targetOrSuccessorAlive(record)) {
 		effectiveStatus = "unread_session_ended";
 	}
 	return { ...record, effectiveStatus };

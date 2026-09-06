@@ -51,6 +51,22 @@ function isProcessAlive(pid: number): boolean {
 	}
 }
 
+// Every acquisition publishes a unique filename, with the PID readable even if
+// the process crashes partway through writing its JSON. Never recursively remove
+// or rename a lock directory: a stale observer could thereby remove a new owner.
+const ownerNamePattern = /^owner-(\d+)-[0-9a-f-]+\.json$/;
+
+async function removeEmptyLock(lockPath: string): Promise<boolean> {
+	try {
+		await fs.promises.rmdir(lockPath);
+		return true;
+	} catch (error: any) {
+		if (error?.code === "ENOENT") return true;
+		if (error?.code === "ENOTEMPTY" || error?.code === "EEXIST") return false;
+		throw error;
+	}
+}
+
 async function breakStaleLock(lockPath: string, staleMs: number): Promise<boolean> {
 	let stat: fs.Stats;
 	try {
@@ -62,31 +78,86 @@ async function breakStaleLock(lockPath: string, staleMs: number): Promise<boolea
 	if (Date.now() - stat.mtimeMs <= staleMs) return false;
 
 	try {
-		const owner = JSON.parse(await fs.promises.readFile(path.join(lockPath, "owner.json"), "utf8")) as Partial<LockOwner>;
-		if (typeof owner.pid === "number" && isProcessAlive(owner.pid)) return false;
-	} catch {
-		// A stale lock without readable ownership metadata is safe to reclaim.
-	}
-
-	const stalePath = `${lockPath}.stale-${process.pid}-${crypto.randomUUID()}`;
-	try {
-		await fs.promises.rename(lockPath, stalePath);
-		await fs.promises.rm(stalePath, { recursive: true, force: true });
-		return true;
+		for (const name of await fs.promises.readdir(lockPath)) {
+			const match = ownerNamePattern.exec(name);
+			if (match) {
+				if (isProcessAlive(Number(match[1]))) continue;
+			} else if (name === "owner.json") {
+				// Migrate abandoned legacy locks. Old writers MUST be drained before
+				// upgrade: their fixed filenames and blind renames are incompatible
+				// with safe concurrent reclamation, regardless of our protocol.
+				try {
+					const owner = JSON.parse(await fs.promises.readFile(path.join(lockPath, name), "utf8")) as Partial<LockOwner>;
+					if (typeof owner.pid === "number" && isProcessAlive(owner.pid)) continue;
+				} catch (error: any) {
+					if (!(error instanceof SyntaxError) && error?.code !== "ENOENT") return false;
+				}
+			} else {
+				continue; // Unknown files fail closed; never delete arbitrary contents.
+			}
+			await fs.promises.unlink(path.join(lockPath, name)).catch((error) => {
+				if (error?.code !== "ENOENT") throw error;
+			});
+		}
+		// A concurrent reclaimer may have installed a new generation. Its live
+		// marker has a different name, so unlink above cannot touch it, and this
+		// atomic rmdir can only remove an EMPTY directory.
+		return await removeEmptyLock(lockPath);
 	} catch (error: any) {
 		if (error?.code === "ENOENT") return true;
 		return false;
 	}
 }
 
-async function releaseLock(lockPath: string, token: string): Promise<void> {
+async function releaseLock(lockPath: string, ownerName: string): Promise<void> {
+	await fs.promises.unlink(path.join(lockPath, ownerName)).catch((error) => {
+		if (error?.code !== "ENOENT") throw error;
+	});
+	await removeEmptyLock(lockPath);
+}
+
+async function tryAcquireLock(lockPath: string, ownerName: string, owner: LockOwner): Promise<boolean> {
 	try {
-		const owner = JSON.parse(await fs.promises.readFile(path.join(lockPath, "owner.json"), "utf8")) as Partial<LockOwner>;
-		if (owner.token !== token) return;
-	} catch {
-		return;
+		await fs.promises.mkdir(lockPath, { mode: 0o700 });
+	} catch (error: any) {
+		if (error?.code === "EEXIST") return false;
+		throw error;
 	}
-	await fs.promises.rm(lockPath, { recursive: true, force: true });
+
+	let directory: fs.promises.FileHandle | undefined;
+	let acquired = false;
+	try {
+		// Pin the inode while publishing: empty directories can be reclaimed
+		// before publication, and keeping the handle open prevents inode reuse.
+		directory = await fs.promises.open(lockPath, "r");
+		const before = await directory.stat({ bigint: true });
+		await fs.promises.writeFile(path.join(lockPath, ownerName), `${JSON.stringify(owner)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+			flag: "wx",
+		});
+		const after = await fs.promises.stat(lockPath, { bigint: true });
+		const names = await fs.promises.readdir(lockPath);
+		// mkdir may have succeeded on a now-removed directory, or open may have
+		// reached a replacement. Require the pinned generation AND sole ownership.
+		// Once published, our live marker prevents rmdir until release. A late
+		// publisher sees our marker and cannot enter alongside us.
+		acquired = before.dev === after.dev && before.ino === after.ino
+			&& names.length === 1 && names[0] === ownerName;
+		return acquired;
+	} catch (error: any) {
+		if (error?.code === "ENOENT") return false;
+		// macOS/APFS can report EINVAL (rather than ENOENT) when open(O_CREAT)
+		// races rmdir of its parent. This is another lost publication attempt.
+		if (error?.code === "EINVAL" && error?.syscall === "open" && error?.path === path.join(lockPath, ownerName)) return false;
+		throw error;
+	} finally {
+		try {
+			await directory?.close();
+		} finally {
+			if (!acquired) await releaseLock(lockPath, ownerName);
+		}
+	}
 }
 
 export async function withInterprocessLock<T>(
@@ -98,39 +169,27 @@ export async function withInterprocessLock<T>(
 	const staleMs = options.staleMs ?? 30_000;
 	const retryMs = options.retryMs ?? 25;
 	const startedAt = Date.now();
-	const token = crypto.randomUUID();
-	const owner: LockOwner = { token, pid: process.pid, createdAt: new Date().toISOString() };
+	let ownerName: string;
 
 	await fs.promises.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
 	while (true) {
 		if (options.signal?.aborted) throw abortError();
-		let created = false;
-		try {
-			await fs.promises.mkdir(lockPath, { mode: 0o700 });
-			created = true;
-			await fs.promises.writeFile(path.join(lockPath, "owner.json"), `${JSON.stringify(owner)}\n`, {
-				encoding: "utf8",
-				mode: 0o600,
-			});
-			break;
-		} catch (error: any) {
-			if (error?.code !== "EEXIST") {
-				if (created) await fs.promises.rm(lockPath, { recursive: true, force: true });
-				else await releaseLock(lockPath, token);
-				throw error;
-			}
-			if (await breakStaleLock(lockPath, staleMs)) continue;
-			if (Date.now() - startedAt >= timeoutMs) {
-				throw new Error(`Timed out acquiring interprocess lock: ${lockPath}`);
-			}
-			await delay(retryMs, options.signal);
+		const token = crypto.randomUUID();
+		ownerName = `owner-${process.pid}-${token}.json`;
+		const owner: LockOwner = { token, pid: process.pid, createdAt: new Date().toISOString() };
+		if (await tryAcquireLock(lockPath, ownerName, owner)) break;
+		await breakStaleLock(lockPath, staleMs);
+		if (Date.now() - startedAt >= timeoutMs) {
+			throw new Error(`Timed out acquiring interprocess lock: ${lockPath}`);
 		}
+		await delay(retryMs, options.signal);
 	}
 
 	try {
+		if (options.signal?.aborted) throw abortError();
 		return await fn();
 	} finally {
-		await releaseLock(lockPath, token);
+		await releaseLock(lockPath, ownerName);
 	}
 }
 

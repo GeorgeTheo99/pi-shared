@@ -118,11 +118,9 @@ type ReceivedMessage = {
 };
 
 function restoreMessageState(ctx: ExtensionContext, receipts: InboxItem[]): {
-	seen: Set<string>;
 	pending: Map<string, InboxItem>;
 	received: Map<string, ReceivedMessage>;
 } {
-	const seen = new Set<string>();
 	const recipientSessionId = ctx.sessionManager.getSessionId();
 	const pending = new Map(
 		receipts
@@ -139,7 +137,6 @@ function restoreMessageState(ctx: ExtensionContext, receipts: InboxItem[]): {
 		const recipientSessionId =
 			typeof details?.recipientSessionId === "string" ? details.recipientSessionId : undefined;
 		if (!messageId) continue;
-		seen.add(messageId);
 		if ((details?.hops === 0 || details?.hops === 1) && senderRuntimeId) {
 			received.set(messageId, {
 				hops: details.hops,
@@ -150,7 +147,60 @@ function restoreMessageState(ctx: ExtensionContext, receipts: InboxItem[]): {
 			});
 		}
 	}
-	return { seen, pending, received };
+	return { pending, received };
+}
+
+async function durableSessionMessageIds(
+	ctx: ExtensionContext,
+	messageIds: Set<string>,
+): Promise<Set<string>> {
+	const found = new Set<string>();
+	const sessionFile = ctx.sessionManager.getSessionFile();
+	if (!sessionFile || messageIds.size === 0) return found;
+	const sessionId = ctx.sessionManager.getSessionId();
+	const input = fs.createReadStream(sessionFile, { encoding: "utf8" });
+	let fragments: string[] = [];
+	let hasHeader = false;
+	try {
+		// Check the actual committed JSONL records, once per batch. In-memory
+		// entries and an existing path survive failed SDK appends and prove nothing.
+		for await (const chunk of input) {
+			let start = 0;
+			let newline: number;
+			// Search only new data and join each completed line once. Session lines
+			// containing images can be tens of MiB; rescanning their growing prefix
+			// on every chunk makes retry scans quadratic.
+			while ((newline = chunk.indexOf("\n", start)) !== -1) {
+				const part = chunk.slice(start, newline);
+				const line = fragments.length > 0 ? [...fragments, part].join("") : part;
+				fragments = [];
+				start = newline + 1;
+				let entry: Record<string, unknown> | undefined;
+				try {
+					entry = asRecord(JSON.parse(line));
+				} catch {
+					continue;
+				}
+				if (!hasHeader) {
+					if (entry?.type !== "session" || entry.id !== sessionId) return new Set();
+					hasHeader = true;
+					continue;
+				}
+				if (entry?.type !== "custom_message" || entry.customType !== INBOUND_MESSAGE_TYPE) continue;
+				const details = asRecord(entry.details);
+				if (details?.recipientSessionId !== sessionId || typeof details.messageId !== "string") continue;
+				if (messageIds.has(details.messageId)) found.add(details.messageId);
+				if (found.size === messageIds.size) return found;
+			}
+			if (start < chunk.length) fragments.push(chunk.slice(start));
+		}
+		return found;
+	} catch {
+		// Missing/unreadable files or failed writes must retain the durable receipts.
+		return new Set();
+	} finally {
+		input.destroy();
+	}
 }
 
 function deriveStatus(ctx: ExtensionContext, explicitStatus: string | undefined, activity: PeerPresence["activity"]): string {
@@ -497,7 +547,6 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 	let stopped = true;
 	let inboxWork: Promise<void> | undefined;
 	let writeTail: Promise<void> = Promise.resolve();
-	let seenMessages = new Set<string>();
 	let pendingMessages = new Map<string, InboxItem>();
 	let receivedMessages = new Map<string, ReceivedMessage>();
 	const recentSends: number[] = [];
@@ -543,17 +592,12 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 		});
 	}
 
-	function hasDurableSessionFile(ctx: ExtensionContext): boolean {
-		const sessionFile = ctx.sessionManager.getSessionFile();
-		return typeof sessionFile === "string" && fs.existsSync(sessionFile);
-	}
-
 	async function persistReceipt(ctx: ExtensionContext, envelope: PeerMessageEnvelope): Promise<void> {
 		const recipientSessionId = ctx.sessionManager.getSessionId();
 		if (envelope.targetSessionId && envelope.targetSessionId !== recipientSessionId) {
 			throw new Error("Peer message targets a different Pi session; refusing cross-session delivery.");
 		}
-		if (!pendingMessages.has(envelope.id) && !(seenMessages.has(envelope.id) && hasDurableSessionFile(ctx))) {
+		if (!pendingMessages.has(envelope.id)) {
 			const receipt = await persistSessionReceipt(ctx.sessionManager.getSessionId(), envelope);
 			pendingMessages.set(envelope.id, receipt);
 		}
@@ -618,7 +662,6 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 					);
 				}
 				if (!hasSessionMessage(activeCtx, envelope.id)) continue;
-				seenMessages.add(envelope.id);
 				receivedMessages.set(envelope.id, {
 					hops: envelope.hops,
 					senderRuntimeId: envelope.sender.runtimeId,
@@ -629,10 +672,13 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 				await updateOutgoingMessageStatus(envelope.sender.sessionId, envelope.id, "surfaced").catch(
 					() => undefined,
 				);
-				if (hasDurableSessionFile(activeCtx)) {
-					pendingMessages.delete(envelope.id);
-					await removeSessionReceipt(receipt);
-				}
+			}
+			const durableIds = await durableSessionMessageIds(activeCtx, new Set(pendingMessages.keys()));
+			for (const id of durableIds) {
+				const receipt = pendingMessages.get(id);
+				if (!receipt) continue;
+				await removeSessionReceipt(receipt);
+				pendingMessages.delete(id);
 			}
 		})().finally(() => {
 			inboxWork = undefined;
@@ -656,7 +702,7 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 		startedAt = Date.now();
 		stopped = false;
 		await pruneSessionReceipts().catch(() => undefined);
-		({ seen: seenMessages, pending: pendingMessages, received: receivedMessages } = restoreMessageState(
+		({ pending: pendingMessages, received: receivedMessages } = restoreMessageState(
 			ctx,
 			readSessionReceipts(ctx.sessionManager.getSessionId()),
 		));
@@ -879,11 +925,10 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 				if (!parent || parent.recipientSessionId !== ctx.sessionManager.getSessionId()) {
 					throw new Error("inReplyTo must reference a peer message received by this exact Pi session.");
 				}
-				if (parent.senderRuntimeId !== target.runtimeId) {
-					throw new Error("A peer reply must target the session that sent the original message.");
-				}
+				// Runtime IDs change on reload. Correlation follows the exact sender
+				// Pi session, never a reused runtime, display name, or fork.
 				if (!parent.senderSessionId || parent.senderSessionId !== target.sessionId) {
-					throw new Error("The original sender runtime changed Pi sessions; refresh peers before replying.");
+					throw new Error("A peer reply must target the exact Pi session that sent the original message.");
 				}
 				if (parent.hops >= 1) throw new Error("Peer reply hop limit reached; start a user-directed message instead of an automatic loop.");
 				hops = 1;
