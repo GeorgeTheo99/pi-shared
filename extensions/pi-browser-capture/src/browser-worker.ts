@@ -6,6 +6,11 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 function resolveEndpoint(raw: string): string {
+  // Keep in sync with bin/pi-browser-check. Reject URL-parser normalization,
+  // credentials, redirects, and non-loopback hosts before reading the token.
+  if (raw !== raw.trim() || !/^http:\/\/(?:127\.0\.0\.1|\[::1\]):[1-9][0-9]{0,4}\/mcp$/.test(raw)) {
+    throw new Error("BROWSER_WORKER_MCP_URL must be an uncredentialed loopback HTTP URL ending in /mcp with an explicit port");
+  }
   let url: URL;
   try {
     url = new URL(raw);
@@ -28,19 +33,61 @@ function resolveEndpoint(raw: string): string {
   return url.href;
 }
 
-const endpoint = resolveEndpoint(process.env.BROWSER_WORKER_MCP_URL ?? "http://127.0.0.1:8890/mcp");
-const tokenFile =
-  process.env.BROWSER_WORKER_MCP_TOKEN_FILE ??
-  join(homedir(), "srv", "browser-worker", "shared", "tokens", "pi-production");
+function endpoint(): string {
+  return resolveEndpoint(process.env.BROWSER_WORKER_MCP_URL ?? "http://127.0.0.1:8890/mcp");
+}
 
 function token(): string {
-  const value = readFileSync(tokenFile, "utf8").trim();
+  const tokenFile = process.env.BROWSER_WORKER_MCP_TOKEN_FILE ??
+    join(homedir(), "srv", "browser-worker", "shared", "tokens", "pi-production");
+  let value: string;
+  try {
+    value = readFileSync(tokenFile, "utf8").trim();
+  } catch {
+    throw new Error("browser-worker token file is missing or unreadable (BROWSER_WORKER_MCP_TOKEN_FILE)");
+  }
   if (!value) throw new Error("browser-worker token file is empty");
+  if (!/^[\x21-\x7e]+$/.test(value)) throw new Error("browser-worker token file must contain a single printable ASCII token");
   return value;
 }
 
+async function probe(): Promise<void> {
+  const url = endpoint();
+  const bearer = token();
+  const id = `pi-check-${randomUUID()}`;
+  let payload: {
+    jsonrpc?: string;
+    id?: string;
+    result?: { tools?: Array<{ name?: string } | null>; nextCursor?: unknown };
+    error?: unknown;
+  } | null;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json", authorization: `Bearer ${bearer}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/list", params: {} }),
+      redirect: "error",
+      signal: AbortSignal.timeout(3000),
+    });
+    if (response.status !== 200) throw new Error(`HTTP ${response.status}`);
+    const body = await response.text();
+    if (Buffer.byteLength(body, "utf8") > 1024 * 1024) throw new Error("oversized response");
+    payload = JSON.parse(body);
+  } catch {
+    // Do not echo service responses or fetch errors which may contain secrets.
+    throw new Error("browser-worker tools/list failed (unavailable, timeout, HTTP/auth failure, redirect, invalid JSON, or oversized response)");
+  }
+  const tools = payload?.result?.tools;
+  const names = Array.isArray(tools) ? tools.map((tool) => tool?.name) : [];
+  if (payload?.jsonrpc !== "2.0" || payload.id !== id || "error" in payload ||
+      names.length !== 2 || !names.includes("browser_fetch") || !names.includes("browser_inspect") ||
+      payload.result?.nextCursor != null) {
+    throw new Error("MCP service is not the expected browser-worker (requires exactly browser_fetch and browser_inspect; websearch-shim is separate)");
+  }
+}
+
 async function call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
-  const response = await fetch(endpoint, {
+  const response = await fetch(endpoint(), {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -148,7 +195,25 @@ const browserInspect = defineTool({
   },
 });
 
-export default function register(pi: ExtensionAPI) {
+export default async function register(pi: ExtensionAPI) {
+  // Async factory initialization is awaited by Pi before tools are exposed.
+  // Importing this module alone performs no network or token-file access.
+  try {
+    await probe();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "readiness check failed";
+    const message = `Optional public browser tools disabled: ${reason}. ` +
+      "Run pi-shared/bin/pi-browser-check; configure BROWSER_WORKER_MCP_URL " +
+      "(default http://127.0.0.1:8890/mcp) and BROWSER_WORKER_MCP_TOKEN_FILE " +
+      "(default ~/srv/browser-worker/shared/tokens/pi-production) for a separately managed browser-worker. " +
+      "Obtain its token from that service's operator; no worker or token is provisioned by Pi. " +
+      "See pi-shared/extensions/pi-browser-capture/README.md, then restart Pi or /reload. app_* tools are unaffected.";
+    pi.on("session_start", (_event, ctx) => {
+      if (ctx.hasUI) ctx.ui.notify(message, "warning");
+      else console.error(`WARN: ${message}`);
+    });
+    return;
+  }
   pi.registerTool(browserFetch);
   pi.registerTool(browserInspect);
 }

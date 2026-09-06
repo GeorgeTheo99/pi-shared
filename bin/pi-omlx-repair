@@ -22,7 +22,7 @@ _DEFAULT_PI_SHARED_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
 
 PI_OMLX_AGENT_DIR="${PI_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
 PI_SHARED_DIR="${PI_SHARED_DIR:-$_DEFAULT_PI_SHARED_DIR}"
-PI_DATABRICKS_DIR="${PI_DATABRICKS_DIR:-$HOME/local_code/pi-databricks}"
+PI_DATABRICKS_DIR="${PI_DATABRICKS_DIR:-$(dirname "$PI_SHARED_DIR")/pi-databricks}"
 if [[ -z "${PI_INSTALL_DIR:-}" ]]; then
   for _pi_install_candidate in \
     "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent" \
@@ -65,9 +65,19 @@ def rel_from_settings(target: Path) -> str:
 # pi-databricks is loaded as a full package (extensions + skills + skills-das),
 # so no separate top-level "extensions"/"skills" entries are needed. Re-adding
 # them (e.g. "~/.codex/skills") causes duplicate-name skill/extension collisions.
-packages = [rel_from_settings(pi_shared_dir)]
-if pi_databricks_arg.exists():
-    packages.append(rel_from_settings(pi_databricks_arg.resolve()))
+packages = settings.get("packages", [])
+if not isinstance(packages, list):
+    raise SystemExit(f"Expected packages array in {path}")
+
+def package_path(entry):
+    source = (entry.get("source") or entry.get("path")) if isinstance(entry, dict) else entry
+    if not isinstance(source, str) or source.startswith(("npm:", "git:", "https:", "ssh:")):
+        return None
+    return (settings_dir / Path(source).expanduser()).resolve()
+
+for required in [pi_shared_dir, *([pi_databricks_arg.resolve()] if pi_databricks_arg.exists() else [])]:
+    if required not in [package_path(entry) for entry in packages]:
+        packages.append(rel_from_settings(required))
 settings["packages"] = packages
 if settings.get("extensions") == ["../../local_code/pi-databricks/extensions"]:
     settings.pop("extensions", None)

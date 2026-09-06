@@ -23,6 +23,18 @@ SHARED_ROOT = Path(__file__).resolve().parents[1]
 MODULE = SHARED_ROOT / "lib" / "pi_catalog.py"
 
 
+@pytest.fixture(autouse=True)
+def isolate_operator_profile(tmp_path, monkeypatch):
+    # Some tests execute generated launchers. Never let their repair helper
+    # write the real HOME or patch the operator's installed Pi runtime.
+    home = tmp_path / "operator-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PI_INSTALL_DIR", str(tmp_path / "pi-install"))
+    for name in ("PI_OMLX_AGENT_DIR", "PI_SHARED_AGENT_DIR", "PI_SHARED_OMLX_AGENT_DIR", "PI_SHARED_BIN_DIR"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _run(*extra, env: dict | None = None) -> subprocess.CompletedProcess:
     e = dict(os.environ)
     e["PYTHONPATH"] = str(SHARED_ROOT / "lib") + (os.pathsep + e.get("PYTHONPATH", ""))
@@ -1074,9 +1086,15 @@ def test_launcher_shell_quotes_all_catalog_and_cli_values(tmp_path):
     }
     p = _load_aliases(tmp_path, aliases)
     launcher = tmp_path / "quoted.zsh"
+    shared = tmp_path / "shared"
+    (shared / "bin").mkdir(parents=True)
+    repair = shared / "bin/pi-omlx-repair"
+    repair.write_text("#!/bin/sh\nexit 0\n")
+    repair.chmod(0o755)
     r = _run(
         "--aliases", str(p), "--launchers-out", str(launcher),
         "--provider-name", provider_name, "--gateway-url", gateway_url,
+        "--shared-dir", str(shared),
     )
     assert r.returncode == 0, r.stderr
     syntax = subprocess.run(["zsh", "-n", str(launcher)], capture_output=True, text=True)

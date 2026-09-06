@@ -31,6 +31,7 @@ def _make_repo(tmp_path: Path, extensions: dict[str, dict | None]) -> Path:
     """
     repo = tmp_path / "repo"
     (repo / "bin").mkdir(parents=True)
+    (repo / "package.json").write_text(json.dumps({"name": "pi-shared", "pi": {"extensions": ["./extensions"]}}))
     shutil.copy(SHARED_ROOT / "bin" / "pi-shared-install", repo / "bin" / "pi-shared-install")
     shutil.copy(SHARED_ROOT / "bin" / "pi-shared-check-deps", repo / "bin" / "pi-shared-check-deps")
     for name in ("pi-catalog", "pi-omlx-repair", "pi-vanilla"):

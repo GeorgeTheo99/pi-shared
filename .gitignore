@@ -34,6 +34,8 @@ bin/*
 !bin/pi-catalog
 !bin/pi-shared-install
 !bin/pi-shared-check-deps
+!bin/pi-profile-check
+!bin/pi-browser-check
 
 # Per-project Pi config (e.g. .pi/enterprise-tools.json) is local-only;
 # pi-shared travels by git and should not carry per-machine activation state.

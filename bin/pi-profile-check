@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Verify an installed Pi profile via its real SDK resource loader.
+
+Does not start sessions, call models, source shell rc files, or run repair.
+Extension registration code itself executes, just as at Pi startup. All probe
+exit failures/timeouts are errors, never evidence of success.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def sdk_path() -> Path:
+    # Support npm installations and local build symlinks without assuming the
+    # package scope or global npm prefix. Wrappers can set PI_INSTALL_DIR.
+    override = os.environ.get("PI_INSTALL_DIR")
+    executable = shutil.which("pi")
+    if not override and not executable:
+        raise RuntimeError("Pi is not on PATH; install Pi, then rerun this check")
+    candidates = [Path(override).expanduser()] if override else list(Path(executable).resolve().parents)[:5]
+    for candidate in candidates:
+        manifest = candidate / "package.json"
+        if not manifest.is_file():
+            continue
+        package = json.loads(manifest.read_text())
+        if package.get("name") not in ("@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"):
+            continue
+        module = (candidate / package.get("main", "dist/index.js")).resolve()
+        if module.is_file():
+            return module
+    raise RuntimeError("Cannot locate the installed Pi SDK; set PI_INSTALL_DIR to its package directory")
+
+
+def bounded_run(argv: list[str], *, env: dict, cwd: Path, seconds: float):
+    process = subprocess.Popen(argv, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        out, err = process.communicate(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        raise RuntimeError(f"Pi profile probe timed out after {seconds:g}s; no successful load was verified")
+    return process.returncode, out, err
+
+
+def check(agent_dir: Path, expected: list[Path], require_models: bool, seconds: float) -> None:
+    if not (agent_dir / "settings.json").is_file():
+        raise RuntimeError(f"Missing profile settings: {agent_dir / 'settings.json'}")
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    if not isinstance(settings, dict):
+        raise RuntimeError("Profile settings must be a JSON object")
+    if require_models:
+        model_file = agent_dir / "models.json"
+        if not model_file.is_file():
+            raise RuntimeError(f"Missing model catalog: {model_file}")
+        catalog = json.loads(model_file.read_text())
+        providers = catalog.get("providers", {})
+        if not isinstance(providers, dict) or not any(isinstance(p, dict) and p.get("models") for p in providers.values()):
+            raise RuntimeError(f"Empty generated model catalog: {model_file}")
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("Node.js is not on PATH; install Node.js before checking Pi")
+    sdk = sdk_path()
+    with tempfile.TemporaryDirectory(prefix="pi-profile-check-") as td:
+        cwd = Path(td)
+        report_path = cwd / "result.json"
+        env = {**os.environ, "PI_CODING_AGENT_DIR": str(agent_dir), "PI_OFFLINE": "1",
+               "PI_SKIP_VERSION_CHECK": "1"}
+        rc, _out, _err = bounded_run([node, str(ROOT / "lib/probe_extensions.mjs"), str(sdk),
+                                      str(agent_dir), str(cwd), str(report_path), *map(str, expected)],
+                                     env=env, cwd=cwd, seconds=seconds)
+        if not report_path.is_file():
+            raise RuntimeError(f"Pi probe exited {rc} without a verification report; check Pi/Node compatibility")
+        report = json.loads(report_path.read_text())
+        if rc != 0 or report.get("ok") is not True:
+            details = report.get("errors") or [f"probe exit {rc}"]
+            raise RuntimeError("; ".join(map(str, details)))
+        print(f"OK  {agent_dir}: {len(report['extensions'])} extensions imported without errors")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--agent-dir", type=Path, required=True)
+    parser.add_argument("--expect-package", type=Path, action="append", default=[])
+    parser.add_argument("--require-models", action="store_true")
+    parser.add_argument("--timeout", type=float, default=60)
+    args = parser.parse_args()
+    try:
+        if args.timeout <= 0:
+            raise RuntimeError("--timeout must be positive")
+        check(args.agent_dir.expanduser().resolve(), [p.expanduser().resolve() for p in args.expect_package],
+              args.require_models, args.timeout)
+    except (RuntimeError, OSError, ValueError, TypeError, KeyError) as exc:
+        print(f"FAIL  {exc}", file=sys.stderr)
+        print(f"Repair profile/dependencies with {shlex.quote(str(ROOT / 'bin/pi-shared-install'))}; "
+              "then rerun this check. Do not treat a failed probe as a usable profile.", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

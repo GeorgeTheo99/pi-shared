@@ -355,6 +355,27 @@ This repo is loaded by Pi through the `packages` setting. On this machine it is 
 
 Project-local setups can instead use `./pi-shared` from `~/local_code/.pi/settings.json`. After editing shared Pi resources in the repo, run `/reload` in Pi.
 
+## Installation verification
+
+`bin/pi-shared-install --aliases PATH --overlay /path/to/overlay` wires the
+shared and overlay packages into both the default profile and the generated
+model profile. This does not depend on `~/.local/bin` being in a later shell's
+`PATH`. Generated launchers call the repair helper by absolute path only when
+launching Pi; sourcing the launcher no longer runs repair or patches Pi.
+
+```bash
+bin/pi-profile-check --agent-dir ~/.pi-omlx/agent --require-models \
+  --expect-package "$PWD"
+python3 bin/pi-browser-check
+```
+
+The profile check loads extensions through the installed Pi SDK, inspects its
+error list, and fails on process errors, missing reports, or timeouts. It does
+not call a model or source shell startup files. Optional browser readiness has
+separate `READY`/`WARN` results; see the browser extension README. Successful
+local checks are not proof that remote credentials, model calls, or browser
+execution work.
+
 ## Setup on another machine
 
 1. Clone or pull this repo to the same workspace location, or adjust the path in `.pi/settings.json`.

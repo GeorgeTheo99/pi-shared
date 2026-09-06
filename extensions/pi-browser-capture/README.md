@@ -19,6 +19,21 @@ BROWSER_WORKER_MCP_TOKEN_FILE=~/srv/browser-worker/shared/tokens/pi-production
 ```
 
 The token value is read from the owner-only file for each call and is never stored in Pi settings.
+The worker and token are **not provisioned by pi-setup**. Obtain an endpoint/token
+from the browser-worker service operator. At startup an authenticated, read-only
+`tools/list` check must identify exactly these two browser tools; otherwise they
+remain disabled and Pi reports an actionable warning. `app_*` is unaffected.
+After configuring the worker, check it and restart Pi or run `/reload`:
+
+```bash
+python3 ~/local_code/pi-shared/bin/pi-browser-check
+```
+
+Exit `0` means authenticated inventory is ready (not a browser-execution test).
+Exit `2` means the optional capability is unavailable. URLs must be canonical,
+uncredentialed loopback HTTP `/mcp` endpoints with an explicit port; proxies and
+redirects are not used. The Databricks websearch-shim uses port `8891` and is **not**
+a substitute browser backend.
 
 ## App testing tools
 
@@ -65,7 +80,7 @@ Browser-worker authenticates every MCP call, binds sessions/artifacts to the cal
 
 ```bash
 cd ~/local_code/pi-shared/extensions/pi-browser-capture
-npm install
+npm ci --ignore-scripts
 npx playwright install chromium
 ```
 

@@ -10,7 +10,7 @@
 #   pi-shared-install [--force] [--no-catalog] [--no-deps] [--aliases PATH]
 #                     [--models-out PATH] [--launchers-out PATH]
 #                     [--pi-agent-dir PATH|''] [--provider-name NAME]
-#                     [--ls99-extras]
+#                     [--ls99-extras] [--overlay PACKAGE_DIR ...]
 #
 # Extension runtime dependencies: every directory under extensions/ that has
 # both package.json and package-lock.json with non-empty dependencies gets a
@@ -52,6 +52,7 @@ GENERATE_CATALOG=1
 INSTALL_DEPS=1
 NPM_BIN="${PI_SHARED_NPM:-npm}"
 LS99_EXTRAS="${PI_SHARED_LS99_EXTRAS:-0}"
+declare -a OVERLAY_DIRS=()
 
 if [ -t 1 ]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'
@@ -89,6 +90,7 @@ while [ $# -gt 0 ]; do
     --pi-agent-dir) shift; [ $# -gt 0 ] || die "--pi-agent-dir requires a path (or '' for the default Pi profile)"; CATALOG_PI_AGENT_DIR="$([ -n "$1" ] && expand_path "$1" || true)" ;;
     --provider-name) shift; [ $# -gt 0 ] || die "--provider-name requires a name"; PROVIDER_NAME="$1" ;;
     --ls99-extras) LS99_EXTRAS=1 ;;
+    --overlay) shift; [ $# -gt 0 ] || die "--overlay requires a package directory"; OVERLAY_DIRS+=("$(expand_path "$1")") ;;
     -h|--help|help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -163,8 +165,10 @@ install_extension_deps() {
 }
 
 wire_settings() {
-  mkdir -p "$PI_AGENT_DIR"
-  python3 - "$PI_AGENT_DIR/settings.json" "$ROOT_DIR" <<'PY'
+  local target="${1:-$PI_AGENT_DIR}" repo="${2:-$ROOT_DIR}"
+  [ -f "$repo/package.json" ] || die "Pi package is missing: $repo/package.json"
+  mkdir -p "$target"
+  python3 - "$target/settings.json" "$repo" <<'PY'
 import json
 import os
 import sys
@@ -226,11 +230,12 @@ tmp.write_text(json.dumps(settings, indent=2) + "\n")
 tmp.replace(settings_path)
 print(settings_path)
 PY
-  ok "Wired $ROOT_DIR into $PI_AGENT_DIR/settings.json packages"
+  ok "Wired $repo into $target/settings.json packages"
 }
 
 wire_agents_md() {
-  local dest="$PI_AGENT_DIR/AGENTS.md" src="$ROOT_DIR/AGENTS.md"
+  local target="${1:-$PI_AGENT_DIR}"
+  local dest="$target/AGENTS.md" src="$ROOT_DIR/AGENTS.md"
   [ -f "$src" ] || return 0
   if [ -e "$dest" ] && [ ! -L "$dest" ]; then
     if [ "$FORCE" -eq 1 ]; then
@@ -294,8 +299,21 @@ main() {
   install_symlink pi-vanilla
   install_extension_deps
   wire_settings
+  local overlay
+  for overlay in "${OVERLAY_DIRS[@]:-}"; do
+    [ -z "$overlay" ] || wire_settings "$PI_AGENT_DIR" "$overlay"
+  done
   wire_agents_md
   generate_catalog
+  # Wire the actual model profile now, without depending on ~/.local/bin being
+  # in a future shell's PATH or executing the runtime-patching repair script.
+  if [ "$GENERATE_CATALOG" -eq 1 ] && [ -s "$MODELS_OUT" ] && [ -n "$CATALOG_PI_AGENT_DIR" ]; then
+    wire_settings "$CATALOG_PI_AGENT_DIR"
+    for overlay in "${OVERLAY_DIRS[@]:-}"; do
+      [ -z "$overlay" ] || wire_settings "$CATALOG_PI_AGENT_DIR" "$overlay"
+    done
+    wire_agents_md "$CATALOG_PI_AGENT_DIR"
+  fi
   migrate_legacy_launcher_path
   if [ -s "$LAUNCHERS_OUT" ] && ! grep -qsF 'pi-launchers.zsh' "$HOME/.zshrc"; then
     printf '\nNext step: source the generated launchers so pi-list is available (pi-setup/install.sh does this for you):\n'

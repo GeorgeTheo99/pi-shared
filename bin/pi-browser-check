@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Read-only optional browser-worker readiness check (Python standard library).
+
+Exit 0 + READY: authenticated tools/list advertises exactly browser_fetch and
+browser_inspect. Exit 2 + WARN: missing/invalid configuration, token, or backend.
+No browser tools are executed, no public pages fetched, and no state is written.
+Configuration matches extensions/pi-browser-capture/src/browser-worker.ts:
+BROWSER_WORKER_MCP_URL, BROWSER_WORKER_MCP_TOKEN_FILE. No proxies or redirects.
+"""
+
+import argparse
+import http.client
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import urllib.parse
+import uuid
+
+
+GUIDANCE = (
+    "Configure BROWSER_WORKER_MCP_URL (default http://127.0.0.1:8890/mcp) and "
+    "BROWSER_WORKER_MCP_TOKEN_FILE (default ~/srv/browser-worker/shared/tokens/pi-production) "
+    "for a separately managed browser-worker; obtain its token from the service operator. "
+    "Pi does not provision a worker or token. See pi-shared/extensions/pi-browser-capture/README.md; "
+    "restart Pi or /reload after setup. app_* and web_search/web_fetch are independent."
+)
+
+
+def check(timeout=3.0):
+    raw = os.environ.get("BROWSER_WORKER_MCP_URL", "http://127.0.0.1:8890/mcp")
+    # Deliberately canonical, matching the TS client: no parser normalization,
+    # userinfo, localhost DNS, query, fragment, or implicit/default HTTP port.
+    match = re.fullmatch(r"http://(127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})/mcp", raw)
+    if not match or not 1 <= int(match[2]) <= 65535 or int(match[2]) == 80:
+        raise ValueError("BROWSER_WORKER_MCP_URL must be an uncredentialed loopback HTTP /mcp URL with an explicit non-default port")
+    url = urllib.parse.urlsplit(raw)
+    token_path = Path(os.environ.get("BROWSER_WORKER_MCP_TOKEN_FILE", str(
+        Path.home() / "srv/browser-worker/shared/tokens/pi-production"
+    )))
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        raise ValueError("browser-worker token file is missing, unreadable, or not UTF-8 (BROWSER_WORKER_MCP_TOKEN_FILE)") from None
+    if not token:
+        raise ValueError("browser-worker token file is empty")
+    if not re.fullmatch(r"[\x21-\x7e]+", token):
+        raise ValueError("browser-worker token file must contain a single printable ASCII token")
+    request_id = "pi-check-" + str(uuid.uuid4())
+    connection = http.client.HTTPConnection(url.hostname, url.port, timeout=timeout)
+    try:
+        connection.request("POST", "/mcp", body=json.dumps({
+            "jsonrpc": "2.0", "id": request_id, "method": "tools/list", "params": {},
+        }), headers={
+            "Content-Type": "application/json", "Accept": "application/json",
+            "Authorization": "Bearer " + token,
+        })
+        response = connection.getresponse()
+        if response.status != 200:
+            raise ValueError(f"browser-worker tools/list returned HTTP {response.status} (check service/auth; redirects are refused)")
+        body = response.read(1024 * 1024 + 1)
+        if len(body) > 1024 * 1024:
+            raise ValueError("browser-worker tools/list response exceeds 1 MiB")
+        try:
+            payload = json.loads(body)
+        except (ValueError, UnicodeError):
+            raise ValueError("browser-worker tools/list returned invalid JSON") from None
+    except (OSError, http.client.HTTPException):
+        raise ValueError("browser-worker tools/list unavailable or timed out; start/check the separately managed service") from None
+    finally:
+        connection.close()
+    result = payload.get("result") if isinstance(payload, dict) else None
+    tools = result.get("tools") if isinstance(result, dict) else None
+    names = [t.get("name") for t in tools if isinstance(t, dict)] if isinstance(tools, list) else []
+    if (not isinstance(payload, dict) or payload.get("jsonrpc") != "2.0" or
+            payload.get("id") != request_id or "error" in payload or
+            not isinstance(tools, list) or len(tools) != 2 or
+            names.count("browser_fetch") != 1 or names.count("browser_inspect") != 1 or
+            result.get("nextCursor") is not None):
+        raise ValueError("MCP service is not the expected browser-worker (requires exactly browser_fetch and browser_inspect; websearch-shim is separate)")
+    return raw
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args()
+    try:
+        url = check()
+    except ValueError as error:
+        print(f"WARN: optional browser-worker unavailable: {error}. {GUIDANCE}")
+        return 2
+    print(f"READY: optional browser-worker at {url}; authenticated tools/list verified browser_fetch and browser_inspect (browser execution not tested).")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

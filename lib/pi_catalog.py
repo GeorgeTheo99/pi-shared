@@ -603,21 +603,19 @@ def render_launchers(
         "unfunction pi-qwen35 pi-heretic pi-qwen35dense pi-qwen35tiny pi-qwen35tinyvl 2>/dev/null || true",
         "",
     ]
-    # Run the shared repair script once at source time so the profile used by
-    # generated pi-* launchers stays wired after Pi updates. This also applies
-    # Pi's zero-usage context fallback to the installed runtime; use ~/.pi/agent
-    # when no dedicated profile was requested because that is what the launcher
-    # will use.
+    # Installation wires profiles up front. Repair runs only on an actual
+    # launch (not while sourcing .zshrc / running a doctor), through a baked
+    # absolute path, and failures are visible instead of silently ignored.
     repair_agent_dir_expr = shlex.quote(pi_agent_dir) if pi_agent_dir else '"$HOME/.pi/agent"'
-    lines += [
-        f'if command -v pi-omlx-repair >/dev/null 2>&1; then',
-        f'  PI_OMLX_AGENT_DIR={repair_agent_dir_expr} pi-omlx-repair >/dev/null 2>&1 || true',
-        f'fi',
-        "",
-    ]
+    repair_root = Path(shared_dir).resolve() if shared_dir else Path(__file__).resolve().parents[1]
+    repair_bin = shlex.quote(str(repair_root / "bin/pi-omlx-repair"))
     lines += [
         "_pi_gw_launch() {",
         "  local pi_provider=\"$1\" model=\"$2\" alias_name=\"$3\"; shift 3",
+        f'  if ! PI_OMLX_AGENT_DIR={repair_agent_dir_expr} {repair_bin} >/dev/null; then',
+        '    print -ru2 -- "ERROR: Pi profile repair failed; see the error above. Pi was not started."',
+        '    return 1',
+        '  fi',
         f'  if ! curl -sf --max-time 2 {shlex.quote(gateway_url.rstrip("/") + "/health")} >/dev/null 2>&1; then',
         f'    print -r -- {shlex.quote(f"WARNING: model-gateway not healthy on {gw_host} — try: pi-restart model-gw")}',
         "  fi",
