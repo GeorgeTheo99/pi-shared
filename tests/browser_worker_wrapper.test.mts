@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 const moduleUrl = new URL("../extensions/pi-browser-capture/src/browser-worker.ts", import.meta.url);
+const originalHome = process.env.HOME;
 const originalEndpoint = process.env.BROWSER_WORKER_MCP_URL;
 const originalTokenFile = process.env.BROWSER_WORKER_MCP_TOKEN_FILE;
 const originalFetch = globalThis.fetch;
@@ -14,6 +15,7 @@ const marker = "SENSITIVE_TEST_MARKER";
 
 test.beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "pi-browser-wrapper-"));
+  process.env.HOME = root;
   tokenFile = join(root, "token");
   writeFileSync(tokenFile, `${marker}\n`, { mode: 0o600 });
   process.env.BROWSER_WORKER_MCP_URL = "http://127.0.0.1:18890/mcp";
@@ -22,6 +24,8 @@ test.beforeEach(() => {
 });
 
 test.afterEach(() => {
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
   if (originalEndpoint === undefined) delete process.env.BROWSER_WORKER_MCP_URL;
   else process.env.BROWSER_WORKER_MCP_URL = originalEndpoint;
   if (originalTokenFile === undefined) delete process.env.BROWSER_WORKER_MCP_TOKEN_FILE;
@@ -72,6 +76,39 @@ async function assertDisabled(reason: RegExp) {
   assert.equal(h.notices[0].includes(marker), false);
   return h;
 }
+
+function selectWorker(value: unknown) {
+  const configDir = join(root, ".pi", "research");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, "config.json"), JSON.stringify({
+    websearchMcpUrl: "http://127.0.0.1:8891/mcp", browserWorkerEnabled: value,
+  }));
+}
+
+test("explicitly unselected worker has no tools, token access, network, or startup warning", async () => {
+  selectWorker(false);
+  rmSync(tokenFile);
+  process.env.BROWSER_WORKER_MCP_URL = "invalid";
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; throw new Error("must not probe"); };
+  const h = harness();
+  await (await importFresh()).default(h.api);
+  h.start();
+  assert.deepEqual(h.tools, []);
+  assert.deepEqual(h.notices, []);
+  assert.equal(h.handlers.has("session_start"), false);
+  assert.equal(calls, 0);
+});
+
+test("worker selection is a boolean, and explicit true still checks prerequisites", async () => {
+  for (const value of ["false", null, 0, {}]) {
+    selectWorker(value);
+    await assertDisabled(/browserWorkerEnabled/);
+  }
+  selectWorker(true);
+  rmSync(tokenFile);
+  await assertDisabled(/token file/);
+});
 
 test("import performs no network or token access, including invalid configuration", async () => {
   process.env.BROWSER_WORKER_MCP_URL = "not a URL";

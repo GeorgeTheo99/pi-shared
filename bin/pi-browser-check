@@ -2,7 +2,9 @@
 """Read-only optional browser-worker readiness check (Python standard library).
 
 Exit 0 + READY: authenticated tools/list advertises exactly browser_fetch and
-browser_inspect. Exit 2 + WARN: missing/invalid configuration, token, or backend.
+browser_inspect. Exit 0 + DISABLED: browserWorkerEnabled=false explicitly opts
+out of this separate capability. Exit 2 + WARN: invalid configuration or a
+selected worker whose token/backend is unavailable.
 No browser tools are executed, no public pages fetched, and no state is written.
 Configuration matches extensions/pi-browser-capture/src/browser-worker.ts:
 BROWSER_WORKER_MCP_URL, BROWSER_WORKER_MCP_TOKEN_FILE. No proxies or redirects.
@@ -26,6 +28,22 @@ GUIDANCE = (
     "Pi does not provision a worker or token. See pi-shared/extensions/pi-browser-capture/README.md; "
     "restart Pi or /reload after setup. app_* and web_search/web_fetch are independent."
 )
+
+
+def worker_enabled():
+    path = Path.home() / ".pi/research/config.json"
+    try:
+        config = json.loads(path.read_text())
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        raise ValueError("Cannot read browser-worker selection from ~/.pi/research/config.json; fix the research configuration") from None
+    if not isinstance(config, dict):
+        raise ValueError("Research configuration must be an object")
+    enabled = config.get("browserWorkerEnabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("browserWorkerEnabled in research configuration must be true or false")
+    return enabled
 
 
 def check(timeout=3.0):
@@ -86,6 +104,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args()
     try:
+        if not worker_enabled():
+            print("DISABLED: standalone browser-worker is not selected (browserWorkerEnabled=false); web_search/web_fetch and app_* are separate capabilities.")
+            return 0
         url = check()
     except ValueError as error:
         print(f"WARN: optional browser-worker unavailable: {error}. {GUIDANCE}")

@@ -29,8 +29,16 @@ After configuring the worker, check it and restart Pi or run `/reload`:
 python3 ~/local_code/pi-shared/bin/pi-browser-check
 ```
 
-Exit `0` means authenticated inventory is ready (not a browser-execution test).
-Exit `2` means the optional capability is unavailable. URLs must be canonical,
+Exit `0` with `READY:` means authenticated inventory is ready (not a browser-execution test).
+Exit `2` with `WARN:` means a selected optional capability is unavailable.
+
+Distributions that select a separate web-research backend can explicitly set
+`"browserWorkerEnabled": false` in `~/.pi/research/config.json`. Then these two
+standalone browser tools are not loaded or probed, there is no unconfigured-worker
+startup warning, and the checker reports `DISABLED:` (exit `0`), not `READY:`.
+This does not disable `web_search`/`web_fetch` or `app_*`, and does not imply that
+the alternative backend supports screenshots or interactive browser sessions.
+Omitting the setting, or setting it to `true`, preserves the generic default. URLs must be canonical,
 uncredentialed loopback HTTP `/mcp` endpoints with an explicit port; proxies and
 redirects are not used. The Databricks websearch-shim uses port `8891` and is **not**
 a substitute browser backend.
@@ -68,7 +76,7 @@ export BROWSER_MCP_APP_ALLOWED_HOSTS='127.0.0.1,localhost,dev.internal'
 ## Intended use
 
 - Use `browser_fetch` / `browser_inspect` for actual interaction with public web pages.
-- Use `web_search` / `web_fetch` for informational research and current-facts lookup; they remain independently owned by `local_web_search`.
+- Use `web_search` / `web_fetch` for informational research and current-facts lookup. Their configured backend is independent: generic Pi defaults to `local_web_search`; the Databricks overlay selects its own shim.
 - Use `app_*` for local/private app UI and API testing.
 - Use the privileged `browser_inspect` actions only when the authenticated caller has the matching server-side capability.
 

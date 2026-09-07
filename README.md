@@ -372,7 +372,8 @@ python3 bin/pi-browser-check
 The profile check loads extensions through the installed Pi SDK, inspects its
 error list, and fails on process errors, missing reports, or timeouts. It does
 not call a model or source shell startup files. Optional browser readiness has
-separate `READY`/`WARN` results; see the browser extension README. Successful
+separate `READY`/`WARN` results, or `DISABLED` when a distribution explicitly
+sets `browserWorkerEnabled=false`; see the browser extension README. Successful
 local checks are not proof that remote credentials, model calls, or browser
 execution work.
 

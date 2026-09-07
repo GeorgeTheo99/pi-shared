@@ -37,6 +37,25 @@ function endpoint(): string {
   return resolveEndpoint(process.env.BROWSER_WORKER_MCP_URL ?? "http://127.0.0.1:8890/mcp");
 }
 
+function workerEnabled(): boolean {
+  const configPath = join(homedir(), ".pi", "research", "config.json");
+  let config: unknown;
+  try {
+    config = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw new Error("Cannot read browser-worker selection from ~/.pi/research/config.json; fix the research configuration");
+  }
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("Research configuration must be an object");
+  }
+  const enabled = (config as Record<string, unknown>).browserWorkerEnabled;
+  if (enabled !== undefined && typeof enabled !== "boolean") {
+    throw new Error("browserWorkerEnabled in research configuration must be true or false");
+  }
+  return enabled !== false;
+}
+
 function token(): string {
   const tokenFile = process.env.BROWSER_WORKER_MCP_TOKEN_FILE ??
     join(homedir(), "srv", "browser-worker", "shared", "tokens", "pi-production");
@@ -199,6 +218,9 @@ export default async function register(pi: ExtensionAPI) {
   // Async factory initialization is awaited by Pi before tools are exposed.
   // Importing this module alone performs no network or token-file access.
   try {
+    // A distribution may explicitly select a different web backend. Do not
+    // probe or warn about an unselected standalone browser capability.
+    if (!workerEnabled()) return;
     await probe();
   } catch (error) {
     const reason = error instanceof Error ? error.message : "readiness check failed";

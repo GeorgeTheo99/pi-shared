@@ -77,6 +77,29 @@ class BrowserCheckTests(unittest.TestCase):
         self.assertNotIn("READY:", result.stdout)
         self.assertNotIn(TOKEN, result.stdout + result.stderr)
 
+    def test_explicitly_unselected_worker_is_not_an_unconfigured_warning(self):
+        config = self.root / ".pi/research/config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"browserWorkerEnabled": False, "websearchMcpUrl": "http://127.0.0.1:8891/mcp"}))
+        self.token.unlink()
+        with server() as (url, requests):
+            result = self.run_check(BROWSER_WORKER_MCP_URL=url)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.startswith("DISABLED:"))
+        self.assertNotIn("WARN:", result.stdout)
+        self.assertNotIn("READY:", result.stdout)
+        self.assertEqual(requests, [])
+
+    def test_selection_must_be_boolean_and_true_checks_token(self):
+        config = self.root / ".pi/research/config.json"
+        config.parent.mkdir(parents=True)
+        for value in ["false", None, 0, {}]:
+            config.write_text(json.dumps({"browserWorkerEnabled": value}))
+            self.assert_warn(self.run_check(), "browserWorkerEnabled")
+        config.write_text(json.dumps({"browserWorkerEnabled": True}))
+        self.token.unlink()
+        self.assert_warn(self.run_check(), "token file")
+
     def test_missing_default_token_is_optional_and_no_files_created(self):
         del self.env["BROWSER_WORKER_MCP_TOKEN_FILE"]
         del self.env["BROWSER_WORKER_MCP_URL"]
