@@ -57,17 +57,19 @@ Each extension runtime publishes a PID/UUID heartbeat in its workspace room and 
 
 Files and directories use `0600`/`0700` permissions where supported. Presence expires after missed heartbeats and is removed on clean shutdown. A best-effort background scan prunes crashed-session state and expired receipts without delaying startup. Message bodies are never copied into sender lifecycle records.
 
-Senders resolve targets from machine-wide presence and write each envelope to the target's room/runtime inbox. Inbound envelopes are first persisted under the exact recipient Pi session ID, then removed from the runtime inbox. Busy recipients retain that durable receipt until idle. Idle recipients receive a custom message with:
+Senders resolve targets from machine-wide presence and write each envelope to the target's room/runtime inbox. Inbound envelopes are first persisted under the exact recipient Pi session ID, then removed from the runtime inbox. Busy recipients retain that durable receipt until idle. Delivery rechecks idle state before each new context insertion, including between messages in a batch. Idle recipients receive a custom message with:
 
 ```ts
 { triggerTurn: false }
 ```
 
-The `peer_send` result shows the exact queued message under a `Message:` heading in the sending session. A dedicated recipient transcript renderer labels the matching inbound entry `PEER MESSAGE RECEIVED` (or `PEER REPLY RECEIVED`), shows the direction as `ANOTHER PI SESSION → THIS PI SESSION`, and places the exact body under its own `Message:` heading. It identifies both endpoints, the sender worktree, and any reply relationship. When a peer has no session name, the renderer uses `Unnamed session in <workspace> (<runtime-prefix>)` instead of presenting a bare, unexplained ID. The underlying context remains clearly marked as untrusted and never starts or interrupts an agent turn.
+A successful `peer_send` now creates a dedicated `PEER MESSAGE SENT` (or `PEER REPLY SENT`) transcript card in the sending session, with direction `THIS PI SESSION → ANOTHER PI SESSION`, both endpoints, and the exact body under `Message:`. The card explicitly says the message was queued, not read. It is persisted as a UI-only custom entry: it survives transcript reload without duplicating model context or starting a turn. The tool result also retains the exact queued body for model/API clients and as a fallback if saving the card fails. Failed sends never create sent cards. Historical sends made before this renderer was installed retain their original tool results; new sends get cards.
+
+A dedicated recipient transcript renderer labels the matching inbound entry `PEER MESSAGE RECEIVED` (or `PEER REPLY RECEIVED`), shows the direction as `ANOTHER PI SESSION → THIS PI SESSION`, and places the exact body under its own `Message:` heading. It identifies both endpoints, the sender worktree, and any reply relationship. When a peer has no session name, the renderer uses `Unnamed session in <workspace> (<runtime-prefix>)` instead of presenting a bare, unexplained ID. The underlying context remains clearly marked as untrusted and never starts or interrupts an agent turn. Display metadata comes from structured message details, or from the legacy header only; quoted acknowledgment-request text in the body cannot create a request badge.
 
 The recipient receipt is removed only after the matching custom-message entry is observable and a complete matching JSONL record is readable from the exact recipient's session file. The file is streamed once per pending batch; a missing file, failed append, or partial record leaves the receipt available for retry, including after reload. In-memory visibility and file existence alone do not prove persistence.
 
-A clean shutdown drains unread runtime inbox messages into the same recipient-session receipt store. After an unclean runtime exit, a same-room successor may adopt an unread inbox only when the envelope's exact target Pi session ID matches and the predecessor PID is no longer alive. Different/forked sessions, legacy envelopes without a target session ID, and ambiguous live predecessors fail closed rather than receiving another session's message.
+A clean shutdown withdraws presence under the inbox lock, then drains unread runtime inbox messages into the same recipient-session receipt store. If storage is full or a drain fails, successfully persisted inbox items are removed and the unread remainder is preserved for an exact-session successor—even when replacement reuses the still-live process. After an unclean runtime exit, a same-room successor may adopt an unread inbox only when the envelope's exact target Pi session ID matches and the predecessor PID is no longer alive. Different/forked sessions, legacy envelopes without a target session ID, and ambiguous live predecessors fail closed rather than receiving another session's message.
 
 ## Lifecycle semantics
 
@@ -81,8 +83,10 @@ New runtimes advertise protocol v2 in an optional presence field while retaining
 | `surfaced` | The matching custom-message entry became observable in recipient context. This does **not** mean read by a human or agent. |
 | `acknowledged` | The recipient explicitly called `peer_acknowledge` for a message that requested acknowledgment. |
 | `replied` | The recipient successfully queued one correlated reply. |
-| `unread_session_ended` | The targeted runtime ended before any stronger checkpoint was recorded and no live same-session successor is visible. A missed heartbeat alone is not evidence of termination while the matching process remains alive. A matching successor may still adopt and advance the status later. |
+| `unread_session_ended` | Publication was confirmed (`queued`), but no live target or same-session successor is currently visible and no stronger checkpoint was recorded. A missed heartbeat alone is not evidence of termination while the matching process remains alive. This is an advisory inference, not proof that the message was read. A matching successor may still adopt and advance the status later. |
 | `expired` | The message TTL elapsed before it was surfaced, acknowledged, or replied to. |
+
+The status tool retains these protocol names and adds a plain-English explanation to each row. Its age is labeled `last recorded update`: inferred expiry or absent-presence states do not have a separately recorded transition time.
 
 Lifecycle writes are monotonic, so late concurrent writes cannot regress a stronger status. Status records are keyed by sender Pi session ID and therefore remain inspectable after that session reloads under a new runtime ID. `peer_message_status` is an explicit inspection surface; the coordinator does not generate noisy automatic status messages or poll peers.
 
@@ -90,11 +94,13 @@ Acknowledgments are bounded state updates, not peer messages. They do not wake a
 
 Messages and recipient receipts expire after 24 hours. Recipient-session receipts and outgoing lifecycle records are each transactionally capped at 100 records per session; full recipient storage leaves messages in the bounded runtime inbox for backpressured retry. Outgoing records are pruned after their retention window. Messages are limited to 8 KiB, runtime inboxes are transactionally capped at 100 messages, and a runtime may send at most five messages per minute.
 
-## Locking upgrade
+## Locking and upgrades
 
-Before activating the generation-safe locking update, drain and stop all older Pi/worker processes sharing coordinator, subagent, or workflow state, then start fresh runtimes. Do not hot-reload just one session while older writers remain active: their legacy lock-reclamation code can remove a newer live lock. The new implementation safely recovers abandoned legacy locks after the old writers have stopped. No live state needs to be deleted manually.
+**Before activating the generation-safe locking update, drain and stop all older Pi/worker processes sharing coordinator, subagent, or workflow state, then start fresh runtimes.** Do not hot-reload just one session while older writers remain active: their legacy lock-reclamation code can remove a newer live lock. The new implementation safely recovers abandoned legacy locks after the old writers have stopped. No live state needs to be deleted manually.
 
-Locks use unique PID/token owner markers, pinned directory identity, and atomic empty-directory removal. Concurrent stale reclaimers cannot remove a replacement owner's live marker. This is a host-local filesystem protocol; it is not intended for network/shared-host filesystems.
+The shared helper acquires with exclusive `mkdir`, uses unique PID/token owner markers and pinned directory identity, and verifies sole ownership before entering the critical section. If empty-directory cleanup displaces an initializer, it retries rather than sharing the lock. Recovery and release unlink only the inspected owner's file and use non-recursive empty-directory removal; they never rename or recursively delete the shared lock path. Live owner PIDs remain protected regardless of lock age, and abandoned or partially written legacy `owner.json` locks can be recovered after the stale threshold.
+
+This is a host-local filesystem protocol, not a network/shared-host lock. Locks and atomic writes provide process-crash recovery, not an `fsync`-backed power-loss durability guarantee.
 
 ## Configuration
 

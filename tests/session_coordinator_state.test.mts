@@ -254,6 +254,47 @@ test("runtime cleanup drains racing messages and rejects delivery after presence
 	);
 });
 
+test("shutdown with full receipt storage preserves unread messages for a same-process successor", async () => {
+	const target = presence({ roomId: `cwd-${"f".repeat(32)}` });
+	await coordinator.writePresence(target);
+	const makeMessage = (message: string) => coordinator.createEnvelope({
+		roomId: target.roomId,
+		targetRuntimeId: target.runtimeId,
+		targetSessionId: target.sessionId,
+		sender: { runtimeId: crypto.randomUUID(), sessionId: crypto.randomUUID(), worktreeRoot: process.cwd() },
+		message,
+	});
+	for (let index = 0; index < coordinator.MAX_SESSION_RECEIPTS - 1; index++) {
+		await coordinator.persistSessionReceipt(target.sessionId, makeMessage(`existing-${index}`));
+	}
+	const first = makeMessage("last available receipt slot");
+	const unread = makeMessage("must survive failed shutdown drain");
+	// Preserve deterministic drain order even when both envelopes share a millisecond.
+	unread.createdAt = first.createdAt + 1;
+	await coordinator.enqueueMessage(first);
+	await coordinator.enqueueMessage(unread);
+	await assert.rejects(
+		coordinator.removeRuntimeState(target.roomId, target.runtimeId, async (envelope) => {
+			await coordinator.persistSessionReceipt(target.sessionId, envelope);
+		}),
+		/receipt inbox is full/,
+	);
+	assert.equal(coordinator.listActivePeers(target.roomId).some((peer) => peer.runtimeId === target.runtimeId), false,
+		"an ended runtime must withdraw presence even if its inbox cannot be drained");
+	assert.deepEqual(coordinator.readInbox(target.roomId, target.runtimeId).map((item) => item.envelope.id), [unread.id],
+		"successful drain items must not be redelivered, and failed items must remain");
+	await assert.rejects(coordinator.enqueueMessage(makeMessage("too late")), /no longer live/);
+	const successor = presence({ roomId: target.roomId, sessionId: target.sessionId });
+	await coordinator.writePresence(successor);
+	assert.equal(coordinator.isProcessAlive(target.pid), true, "replacement shares the still-live process");
+	await coordinator.removeSessionReceipt(coordinator.readSessionReceipts(target.sessionId)[0]);
+	const adopted = await coordinator.adoptSessionInboxMessages(target.roomId, successor.runtimeId, target.sessionId,
+		async (envelope) => { await coordinator.persistSessionReceipt(target.sessionId, envelope); });
+	assert.equal(adopted, 1);
+	assert.ok(coordinator.readSessionReceipts(target.sessionId).some((item) => item.envelope.id === unread.id));
+	assert.equal(coordinator.readInbox(target.roomId, target.runtimeId).length, 0);
+});
+
 test("coordinator-wide pruning removes stale dead presence across rooms", async () => {
 	const roomId = `git-${"8".repeat(32)}`;
 	const stale = presence({ roomId, pid: 99_999_999, leaseExpiresAt: 0 });

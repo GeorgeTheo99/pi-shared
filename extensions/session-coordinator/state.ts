@@ -463,10 +463,15 @@ export async function removeRuntimeState(
 	await withInterprocessLock(
 		inboxLockPath(room, runtimeId),
 		async () => {
-			if (onMessage) {
-				for (const item of readInbox(room, runtimeId)) await onMessage(item.envelope);
-			}
+			// Stop publication even if receipt backpressure prevents a complete drain.
+			// With no presence, an exact-session successor can adopt the unread remainder.
 			await fs.promises.rm(presencePath(room, runtimeId), { force: true });
+			if (onMessage) {
+				for (const item of readInbox(room, runtimeId)) {
+					await onMessage(item.envelope);
+					await removeInboxItem(item);
+				}
+			}
 			await fs.promises.rm(inboxDir(room, runtimeId), { recursive: true, force: true });
 		},
 		{ timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 },

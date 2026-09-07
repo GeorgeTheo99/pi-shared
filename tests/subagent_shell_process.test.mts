@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
 import test from "node:test";
 
 import { runShellProcess } from "../extensions/_shared/shell-process.ts";
@@ -31,16 +33,29 @@ test("shell process preserves stdout exactly and accepts long lines", async () =
 	assert.equal(result.stdout.endsWith("\n"), false);
 });
 
-test("aborting a shell process terminates its process group", { skip: process.platform === "win32" }, async () => {
+test("aborting a shell process terminates its process group", { skip: process.platform === "win32" }, async (t) => {
 	const controller = new AbortController();
-	let childPid: number | undefined;
-	const command = `${JSON.stringify(process.execPath)} -e 'const {spawn}=require("node:child_process"); const c=spawn(process.execPath,["-e","process.on(\\"SIGTERM\\",()=>{});setInterval(()=>{},1000)"],{stdio:["ignore","ignore","ignore"]}); console.log(c.pid); setInterval(()=>{},1000)'`;
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-shell-ready-"));
+	const readyFile = path.join(dir, "ready");
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const script = `const {spawn}=require("node:child_process"); const c=spawn(process.execPath,["-e","process.on(\\"SIGTERM\\",()=>{});setInterval(()=>{},1000)"],{stdio:["ignore","ignore","ignore"]}); console.log(c.pid); require("node:fs").writeFileSync(${JSON.stringify(readyFile)},String(c.pid)); setInterval(()=>{},1000)`;
+	const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
 	const run = runShellProcess(command, cwd, 5000, controller.signal);
-	await new Promise((resolve) => setTimeout(resolve, 100));
-	controller.abort();
-	const result = await run;
-	childPid = Number(result.stdout.trim());
-	assert.equal(result.aborted, true);
-	assert.ok(Number.isInteger(childPid));
-	assert.equal(await waitUntilDead(childPid!), true, `shell descendant ${childPid} survived abort`);
+	try {
+		const deadline = Date.now() + 4000;
+		let childPid = 0;
+		while (Date.now() < deadline && childPid <= 0) {
+			try { childPid = Number(fs.readFileSync(readyFile, "utf8")); } catch {}
+			if (!(childPid > 0)) await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.ok(Number.isInteger(childPid) && childPid > 0, "shell descendant must be ready before abort");
+		controller.abort();
+		const result = await run;
+		assert.equal(result.aborted, true);
+		assert.equal(Number(result.stdout.trim()), childPid);
+		assert.equal(await waitUntilDead(childPid), true, `shell descendant ${childPid} survived abort`);
+	} finally {
+		controller.abort();
+		await run;
+	}
 });

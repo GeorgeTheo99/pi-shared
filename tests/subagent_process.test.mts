@@ -54,13 +54,16 @@ test("managed processes provide ordered bounded JSONL stdin and graceful EOF", a
 });
 
 test("managed stdin EPIPE rejects writes without crashing the parent process", async () => {
+	let markReady!: () => void;
+	const ready = new Promise<void>((resolve) => { markReady = resolve; });
 	const handle = startManagedProcess({
 		...baseOptions,
 		command: process.execPath,
-		args: ["-e", "require('node:fs').closeSync(0); setTimeout(()=>{},1000)"],
+		args: ["-e", "require('node:fs').closeSync(0); console.log('stdin-closed'); setTimeout(()=>{},1000)"],
 		stdin: "pipe",
+		onStdoutLine: (line) => { if (line === "stdin-closed") markReady(); },
 	});
-	await new Promise((resolve) => setTimeout(resolve, 75));
+	await Promise.race([ready, handle.completion.then(() => { throw new Error("Child exited before closing stdin"); })]);
 	await assert.rejects(handle.writeStdin("x".repeat(64 * 1024)), /EPIPE|stdin/i);
 	const result = await handle.completion;
 	assert.notEqual(result.exitCode, 0);
