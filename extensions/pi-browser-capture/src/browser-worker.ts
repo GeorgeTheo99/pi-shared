@@ -33,17 +33,18 @@ function resolveEndpoint(raw: string): string {
   return url.href;
 }
 
-function endpoint(): string {
-  return resolveEndpoint(process.env.BROWSER_WORKER_MCP_URL ?? "http://127.0.0.1:8890/mcp");
+function endpoint(config: Record<string, unknown>): string {
+  return resolveEndpoint(process.env.BROWSER_WORKER_MCP_URL ??
+    (config.browserWorkerMcpUrl as string | undefined) ?? "http://127.0.0.1:8890/mcp");
 }
 
-function workerEnabled(): boolean {
+function workerConfig(): Record<string, unknown> {
   const configPath = join(homedir(), ".pi", "research", "config.json");
   let config: unknown;
   try {
     config = JSON.parse(readFileSync(configPath, "utf8"));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
     throw new Error("Cannot read browser-worker selection from ~/.pi/research/config.json; fix the research configuration");
   }
   if (!config || typeof config !== "object" || Array.isArray(config)) {
@@ -53,11 +54,18 @@ function workerEnabled(): boolean {
   if (enabled !== undefined && typeof enabled !== "boolean") {
     throw new Error("browserWorkerEnabled in research configuration must be true or false");
   }
-  return enabled !== false;
+  const values = config as Record<string, unknown>;
+  for (const key of ["browserWorkerMcpUrl", "browserWorkerTokenFile"]) {
+    if (values[key] !== undefined && (typeof values[key] !== "string" || !(values[key] as string).trim())) {
+      throw new Error(`${key} in research configuration must be a non-empty string`);
+    }
+  }
+  return values;
 }
 
-function token(): string {
+function token(config: Record<string, unknown>): string {
   const tokenFile = process.env.BROWSER_WORKER_MCP_TOKEN_FILE ??
+    (config.browserWorkerTokenFile as string | undefined) ??
     join(homedir(), "srv", "browser-worker", "shared", "tokens", "pi-production");
   let value: string;
   try {
@@ -70,9 +78,9 @@ function token(): string {
   return value;
 }
 
-async function probe(): Promise<void> {
-  const url = endpoint();
-  const bearer = token();
+async function probe(config: Record<string, unknown>): Promise<void> {
+  const url = endpoint(config);
+  const bearer = token(config);
   const id = `pi-check-${randomUUID()}`;
   let payload: {
     jsonrpc?: string;
@@ -106,12 +114,14 @@ async function probe(): Promise<void> {
 }
 
 async function call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
-  const response = await fetch(endpoint(), {
+  const config = workerConfig();
+  if (config.browserWorkerEnabled === false) throw new Error("Browser-worker was deselected; reload Pi to refresh its tools");
+  const response = await fetch(endpoint(config), {
     method: "POST",
     headers: {
       accept: "application/json",
       "content-type": "application/json",
-      authorization: `Bearer ${token()}`,
+      authorization: `Bearer ${token(config)}`,
     },
     body: JSON.stringify({
       jsonrpc: "2.0",
@@ -220,15 +230,16 @@ export default async function register(pi: ExtensionAPI) {
   try {
     // A distribution may explicitly select a different web backend. Do not
     // probe or warn about an unselected standalone browser capability.
-    if (!workerEnabled()) return;
-    await probe();
+    const config = workerConfig();
+    if (config.browserWorkerEnabled === false) return;
+    await probe(config);
   } catch (error) {
     const reason = error instanceof Error ? error.message : "readiness check failed";
     const message = `Optional public browser tools disabled: ${reason}. ` +
       "Run pi-shared/bin/pi-browser-check; configure BROWSER_WORKER_MCP_URL " +
       "(default http://127.0.0.1:8890/mcp) and BROWSER_WORKER_MCP_TOKEN_FILE " +
       "(default ~/srv/browser-worker/shared/tokens/pi-production) for a separately managed browser-worker. " +
-      "Obtain its token from that service's operator; no worker or token is provisioned by Pi. " +
+      "Install/repair the browser-worker dependency with pi-setup (or browser-worker/install.sh); its local production token is created automatically. " +
       "See pi-shared/extensions/pi-browser-capture/README.md, then restart Pi or /reload. app_* tools are unaffected.";
     pi.on("session_start", (_event, ctx) => {
       if (ctx.hasUI) ctx.ui.notify(message, "warning");

@@ -100,6 +100,31 @@ class BrowserCheckTests(unittest.TestCase):
         self.token.unlink()
         self.assert_warn(self.run_check(), "token file")
 
+    def test_installer_persisted_url_and_token_path_are_used_without_env(self):
+        config = self.root / ".pi/research/config.json"
+        config.parent.mkdir(parents=True)
+        self.env.pop("BROWSER_WORKER_MCP_URL")
+        self.env.pop("BROWSER_WORKER_MCP_TOKEN_FILE")
+        with server() as (url, requests):
+            config.write_text(json.dumps({"browserWorkerEnabled": True, "browserWorkerMcpUrl": url,
+                                          "browserWorkerTokenFile": str(self.token)}))
+            result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.startswith("READY:"))
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0][1]["Authorization"], "Bearer " + TOKEN)
+        self.assertNotIn(TOKEN, result.stdout + result.stderr)
+
+    def test_env_overrides_persisted_client_configuration(self):
+        config = self.root / ".pi/research/config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"browserWorkerMcpUrl": "http://127.0.0.1:1/mcp",
+                                      "browserWorkerTokenFile": str(self.root / "missing")}))
+        with server() as (url, requests):
+            result = self.run_check(BROWSER_WORKER_MCP_URL=url)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(requests), 1)
+
     def test_missing_default_token_is_optional_and_no_files_created(self):
         del self.env["BROWSER_WORKER_MCP_TOKEN_FILE"]
         del self.env["BROWSER_WORKER_MCP_URL"]
