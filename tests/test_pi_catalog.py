@@ -1,7 +1,7 @@
 """Tests for pi-shared/lib/pi_catalog.py — Pi artifact renderer.
 
 Covers: models.json reasoning/thinkingFormat/api_type/vision/baseUrl logic,
-launcher id<->models.json id agreement, ls99 extras (pi-default/pi-openai),
+launcher id<->models.json id agreement, legacy launcher flag compatibility,
 --check drift, symlink-safe writes, empty-catalog refusal.
 
 Run:  cd ~/local_code/pi-shared && python3 -m pytest tests/ -q
@@ -41,7 +41,9 @@ def _run(*extra, env: dict | None = None) -> subprocess.CompletedProcess:
     if env:
         e.update(env)
     return subprocess.run(
-        [sys.executable, str(MODULE), *extra],
+        # Pin the legacy provider for these existing schema/compatibility tests.
+        # test_pi_launcher_options.py covers the new portable defaults/migration.
+        [sys.executable, str(MODULE), "--provider-name", "ls99-models", *extra],
         capture_output=True, text=True, env=e,
     )
 

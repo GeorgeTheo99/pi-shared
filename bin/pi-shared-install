@@ -10,7 +10,12 @@
 #   pi-shared-install [--force] [--no-catalog] [--no-deps] [--aliases PATH]
 #                     [--models-out PATH] [--launchers-out PATH]
 #                     [--pi-agent-dir PATH|''] [--provider-name NAME]
-#                     [--ls99-extras] [--overlay PACKAGE_DIR ...]
+#                     [--direct-launchers|--no-direct-launchers] [--overlay PACKAGE_DIR ...]
+#
+# --ls99-extras remains a deprecated alias for --direct-launchers.
+# PI_SHARED_DIRECT_LAUNCHERS=1/0 enables/disables them; when unset, preserve
+# existing generated output (off on a fresh install). The legacy environment
+# variable PI_SHARED_LS99_EXTRAS is accepted when the canonical one is unset.
 #
 # Extension runtime dependencies: every directory under extensions/ that has
 # both package.json and package-lock.json with non-empty dependencies gets a
@@ -51,7 +56,7 @@ FORCE=0
 GENERATE_CATALOG=1
 INSTALL_DEPS=1
 NPM_BIN="${PI_SHARED_NPM:-npm}"
-LS99_EXTRAS="${PI_SHARED_LS99_EXTRAS:-0}"
+DIRECT_LAUNCHERS="${PI_SHARED_DIRECT_LAUNCHERS-${PI_SHARED_LS99_EXTRAS-}}"
 declare -a OVERLAY_DIRS=()
 
 if [ -t 1 ]; then
@@ -89,13 +94,19 @@ while [ $# -gt 0 ]; do
     --launchers-out) shift; [ $# -gt 0 ] || die "--launchers-out requires a path"; LAUNCHERS_OUT="$(expand_path "$1")" ;;
     --pi-agent-dir) shift; [ $# -gt 0 ] || die "--pi-agent-dir requires a path (or '' for the default Pi profile)"; CATALOG_PI_AGENT_DIR="$([ -n "$1" ] && expand_path "$1" || true)" ;;
     --provider-name) shift; [ $# -gt 0 ] || die "--provider-name requires a name"; PROVIDER_NAME="$1" ;;
-    --ls99-extras) LS99_EXTRAS=1 ;;
+    --direct-launchers|--ls99-extras) DIRECT_LAUNCHERS=1 ;;
+    --no-direct-launchers) DIRECT_LAUNCHERS=0 ;;
     --overlay) shift; [ $# -gt 0 ] || die "--overlay requires a package directory"; OVERLAY_DIRS+=("$(expand_path "$1")") ;;
     -h|--help|help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
   shift
 done
+
+case "$DIRECT_LAUNCHERS" in
+  ""|0|1) ;;
+  *) die "PI_SHARED_DIRECT_LAUNCHERS (or legacy PI_SHARED_LS99_EXTRAS) must be 0 or 1" ;;
+esac
 
 MODELS_OUT="$(expand_path "$MODELS_OUT")"
 LAUNCHERS_OUT="$(expand_path "$LAUNCHERS_OUT")"
@@ -258,6 +269,21 @@ generate_catalog() {
     warn "No alias catalog at $ALIASES_PATH; configure its producer or pass --aliases PATH. Skipping initial pi-catalog generation."
     return 0
   fi
+  # The legacy path is migrated after generation. Inherit its opt-in first
+  # only when no canonical output or explicit CLI/environment choice exists.
+  local legacy="$HOME/.pi/model-gateway/pi-launchers.zsh"
+  if [ -z "$DIRECT_LAUNCHERS" ] && [ "$LAUNCHERS_OUT" = "$HOME/.pi/generated/pi-launchers.zsh" ] \
+      && [ ! -e "$LAUNCHERS_OUT" ] && [ -f "$legacy" ]; then
+    DIRECT_LAUNCHERS="$(python3 -B - "$ROOT_DIR/lib/pi_catalog.py" "$legacy" <<'PY'
+import runpy
+import sys
+from pathlib import Path
+
+catalog = runpy.run_path(sys.argv[1])
+print(int(catalog["_existing_direct_launchers"](Path(sys.argv[2]))))
+PY
+)" || die "Cannot inspect legacy launcher preferences: $legacy"
+  fi
   mkdir -p "$(dirname "$MODELS_OUT")" "$(dirname "$LAUNCHERS_OUT")"
   local cmd=("$ROOT_DIR/bin/pi-catalog" --aliases "$ALIASES_PATH" --models-out "$MODELS_OUT" --launchers-out "$LAUNCHERS_OUT")
   if [ -n "$CATALOG_PI_AGENT_DIR" ]; then
@@ -266,9 +292,10 @@ generate_catalog() {
   if [ -n "$PROVIDER_NAME" ]; then
     cmd+=(--provider-name "$PROVIDER_NAME")
   fi
-  if [ "$LS99_EXTRAS" = "1" ]; then
-    cmd+=(--ls99-extras)
-  fi
+  case "$DIRECT_LAUNCHERS" in
+    1) cmd+=(--direct-launchers) ;;
+    0) cmd+=(--no-direct-launchers) ;;
+  esac
   log "Rendering Pi catalog artifacts"
   "${cmd[@]}"
   ok "Rendered $MODELS_OUT and $LAUNCHERS_OUT"

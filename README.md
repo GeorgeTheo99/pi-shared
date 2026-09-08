@@ -111,7 +111,7 @@ Current generated `pi-*` shell launchers call this automatically before writing 
 It reads the alias file and emits:
 
 - `models.json` — a Pi provider/models config with capability-aware reasoning controls, protocol/tool/replay compatibility, api_type selection, vision heuristics, and anthropic baseUrl overrides.
-- `pi-launchers.zsh` — `pi-<alias>()` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai` via `--ls99-extras`). `pi-list` groups catalog launchers into local and cloud sections from the catalog's canonical `cloud:` key namespace, with direct Pi and management commands shown separately. No `claude-*`/`codex-*` — standardize on `pi`.
+- `pi-launchers.zsh` — `pi-<alias>()` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai` via `--direct-launchers`). `pi-list` groups catalog launchers into local and cloud sections from the catalog's canonical `cloud:` key namespace, with direct Pi and management commands shown separately. No `claude-*`/`codex-*` — standardize on `pi`.
 
 The model id in the launcher always matches the id in `models.json` (local = alias key / omlx_id, cloud = provider_model_id), so the two can never drift.
 
@@ -130,14 +130,41 @@ mkdir -p ~/.local/bin
 ln -sfn ~/local_code/pi-shared/bin/pi-catalog ~/.local/bin/pi-catalog
 ```
 
-Generate for the oMLX profile (ls99):
+Generate for a dedicated gateway profile on any machine:
 
 ```bash
 pi-catalog --aliases ~/.pi/model-aliases.json \
   --models-out ~/.pi-omlx/agent/models.json \
   --launchers-out ~/.pi/generated/pi-launchers.zsh \
-  --pi-agent-dir ~/.pi-omlx/agent --ls99-extras
+  --pi-agent-dir ~/.pi-omlx/agent --direct-launchers
 ```
+
+`--direct-launchers` adds `pi-default` and `pi-openai` independently of the
+machine name or gateway catalog. `pi-openai` uses the **current machine's**
+default Pi profile and ChatGPT subscription login (`/login` → OpenAI Codex),
+not the gateway or an OpenAI API key. It does not sign in or copy credentials.
+
+- Enable on an existing installation: `pi-regen --direct-launchers`, then
+  `source ~/.pi/generated/pi-launchers.zsh` (or open a new shell).
+- Disable: `pi-regen --no-direct-launchers`, then source the launcher again.
+- Both flags work with `pi-catalog` and `./install.sh`. When neither is given,
+  generation preserves the selection in the existing recognized launcher;
+  a fresh installation defaults to off. The installer also accepts
+  `PI_SHARED_DIRECT_LAUNCHERS=1` or `0`; explicit CLI flags take precedence.
+- `--ls99-extras` and `PI_SHARED_LS99_EXTRAS` remain deprecated compatibility
+  aliases. The canonical environment variable takes precedence over the old
+  one. Regenerated `pi-regen` commands always use the portable spelling.
+- New model configs use the provider label `model-gateway`. Existing single-provider
+  model outputs keep their label (including `ls99-models`) unless
+  `--provider-name` explicitly overrides it. Multi-provider outputs require an
+  explicit provider name. Launcher-only generation without `--models-out`
+  cannot infer an existing model provider; pass `--provider-name` in that case.
+
+Keep each machine's alias input, gateway URL, profile/output paths, and login
+local. Generate independently on each host; do not copy generated launchers or
+credentials between machines. Provider labels are just Pi identifiers, not
+hostnames: a legacy `ls99-models` label can still point at this machine's local
+gateway. There is no automatic renaming of saved Pi sessions or settings.
 
 The generated launcher bakes in a `pi-regen()` function (the same invocation) so it can refresh itself + `models.json` after a catalog change. It also provides `pi-shared-update`, which safely fast-forwards the generating `pi-shared` checkout, regenerates the machine-specific artifacts, validates the launcher, and sources it into the current shell. `pi-restart model-gw` auto-calls `pi-regen` — it delegates to the portable `model-gateway restart` command when available, falls back to `server-ci restart --model-gw` on ls99/dev-server installs, then refreshes the Pi artifacts. No Git or launchd watcher is needed.
 

@@ -19,19 +19,21 @@ Inputs:
   --aliases      path to model-aliases.json (required)
   --models-out   write Pi models.json here (optional)
   --launchers-out write pi-launchers.zsh here (optional)
-  --provider-name Pi provider name in models.json (default: ls99-models)
+  --provider-name Pi provider name (preserve existing; new configs: model-gateway)
   --gateway-url  endpoint Pi providers point at (default: http://localhost:9111)
   --gateway-api-key  apiKey for the Pi provider (default: cloud)
   --pi-agent-dir  PI_CODING_AGENT_DIR the launcher sets (default: none = default profile)
   --omlx-status  optional JSON from oMLX /v1/models/status for thinking_default fallback
-  --ls99-extras  include pi-default + pi-openai (ls99 opt-in layer)
+  --direct-launchers include pi-default + pi-openai on any machine
+  --no-direct-launchers omit them (otherwise preserve the existing selection)
+  --ls99-extras  deprecated alias for --direct-launchers
   --check        drift check only; exit 1 when outputs are stale
 
 Modes:
     pi-catalog --aliases ~/.pi/model-aliases.json \\
                 --models-out ~/.pi-omlx/agent/models.json \\
                 --launchers-out ~/.pi/generated/pi-launchers.zsh \\
-                --pi-agent-dir ~/.pi-omlx/agent --ls99-extras
+                --pi-agent-dir ~/.pi-omlx/agent --direct-launchers
 """
 
 from __future__ import annotations
@@ -460,7 +462,7 @@ def _supports_images(key: str, meta: dict) -> bool:
 def render_models(
     aliases: dict,
     *,
-    provider_name: str = "ls99-models",
+    provider_name: str = "model-gateway",
     gateway_url: str = "http://localhost:9111",
     gateway_api_key: str = "cloud",
     omlx_status: dict | None = None,
@@ -547,11 +549,12 @@ def render_models(
 def render_launchers(
     aliases: dict,
     *,
-    provider_name: str = "ls99-models",
+    provider_name: str = "model-gateway",
     gateway_url: str = "http://localhost:9111",
     gateway_api_key: str = "cloud",
     pi_agent_dir: str | None = None,
-    ls99_extras: bool = False,
+    direct_launchers: bool | None = None,
+    ls99_extras: bool | None = None,  # deprecated Python keyword alias
     aliases_path: str | None = None,
     models_out: str | None = None,
     launchers_out: str | None = None,
@@ -561,11 +564,14 @@ def render_launchers(
 ) -> str:
     """Render pi-<alias>(), pi-list, and pi-restart.
 
-    Optionally appends pi-default + pi-openai (ls99 opt-in layer). No
+    Optionally appends pi-default + pi-openai on any machine. No
     claude-*/codex-* — standardize on pi. If output paths are given, also emits
     a ``pi-regen`` function that re-runs pi-catalog with the same args, so the
     launcher can refresh itself + models.json after a catalog change.
+    The canonical keyword takes precedence over the deprecated alias.
     """
+    if direct_launchers is None:
+        direct_launchers = bool(ls99_extras)
     gw_host = gateway_url.rstrip("/").replace("https://", "").replace("http://", "")
     # Build the (alias, model_id, display, locality, image capability) rows from
     # the SAME eligibility rule as render_models, so launchers and models.json
@@ -603,6 +609,9 @@ def render_launchers(
         "unfunction pi-qwen35 pi-heretic pi-qwen35dense pi-qwen35tiny pi-qwen35tinyvl 2>/dev/null || true",
         "",
     ]
+    if not direct_launchers:
+        # Reloading after an explicit opt-out must remove previously sourced helpers.
+        lines += ["unfunction pi-default pi-openai 2>/dev/null || true", ""]
     # Installation wires profiles up front. Repair runs only on an actual
     # launch (not while sourcing .zshrc / running a doctor), through a baked
     # absolute path, and failures are visible instead of silently ignored.
@@ -653,7 +662,7 @@ def render_launchers(
                 f'  printf "  %-{width}s %s\\n" {shlex.quote(f"pi-{alias}")} '
                 f'{shlex.quote(name + " (" + model_id + ") [" + capability + "]")}'
             )
-    if ls99_extras:
+    if direct_launchers:
         lines += [
             '  echo ""',
             '  echo "Direct Pi:"',
@@ -681,7 +690,7 @@ def render_launchers(
             gateway_url=gateway_url,
             gateway_api_key=gateway_api_key,
             pi_agent_dir=pi_agent_dir,
-            ls99_extras=ls99_extras,
+            direct_launchers=direct_launchers,
             shared_dir=shared_dir,
             omlx_status_path=omlx_status_path,
             omlx_status_url=omlx_status_url,
@@ -694,13 +703,13 @@ def render_launchers(
         auto_regen=bool(models_out or launchers_out),
         aliases_path=aliases_path,
     )
-    if ls99_extras:
+    if direct_launchers:
         lines += ["", _render_pi_default(), "", _render_pi_openai()]
 
     return "\n".join(lines) + "\n"
 
 
-def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, gateway_url, gateway_api_key, pi_agent_dir, ls99_extras, shared_dir, omlx_status_path, omlx_status_url) -> list[str]:
+def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, gateway_url, gateway_api_key, pi_agent_dir, direct_launchers, shared_dir, omlx_status_path, omlx_status_url) -> list[str]:
     # Build the pi-catalog invocation that reproduces this launcher. Bakes the
     # machine-specific paths so `pi-regen` refreshes both outputs in one call.
     catalog_bin = str(Path(shared_dir) / "bin" / "pi-catalog") if shared_dir else "pi-catalog"
@@ -718,8 +727,7 @@ def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, 
         cmd += ["--omlx-status", omlx_status_path]
     if omlx_status_url:
         cmd += ["--omlx-status-url", omlx_status_url]
-    if ls99_extras:
-        cmd += ["--ls99-extras"]
+    cmd += ["--direct-launchers" if direct_launchers else "--no-direct-launchers"]
     if shared_dir:
         cmd += ["--shared-dir", shared_dir]
     cmd_str = " ".join(shlex.quote(c) for c in cmd)
@@ -802,7 +810,7 @@ def _render_pi_restart(*, gateway_url: str, auto_regen: bool = False, aliases_pa
     out = [
         "pi-restart() {",
         "  # Restart model-gateway via its portable CLI when available; fall",
-        "  # back to ls99's server-ci for legacy/dev-server services.",
+        "  # back to server-ci for legacy/dev-server services.",
         '  local svc="${1:-model-gw}"',
         '  if [ "$svc" = "-h" ] || [ "$svc" = "--help" ]; then',
         '    echo "Usage: pi-restart [service]   (default: model-gw)"',
@@ -998,19 +1006,48 @@ def _load_omlx_status(path: Path | None, url: str | None) -> dict:
         return {}
 
 
+def _existing_provider_name(path: Path | None) -> str:
+    """Keep a machine's existing provider identity when regenerating its models."""
+    if path and path.exists():
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict) or not isinstance(data.get("providers", {}), dict):
+            raise ValueError(f"{path}: expected a providers object")
+        providers = data.get("providers", {})
+        if len(providers) == 1:
+            return next(iter(providers))
+        if providers:
+            raise ValueError(f"{path}: multiple providers; specify --provider-name explicitly")
+    return "model-gateway"
+
+
+def _existing_direct_launchers(path: Path | None) -> bool:
+    """Inspect only recognized generated output; never execute an existing launcher."""
+    if not path or not path.exists():
+        return False
+    text = path.read_text()
+    return (
+        text.startswith("# Generated by pi-shared/bin/pi-catalog — do not hand-edit.\n")
+        and "\npi-default() {\n" in text
+        and "\npi-openai() {\n" in text
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--aliases", type=Path, required=True, help="path to model-aliases.json (gateway catalog contract)")
     parser.add_argument("--models-out", type=Path, default=None, help="write Pi models.json here")
     parser.add_argument("--launchers-out", type=Path, default=None, help="write pi-launchers.zsh here")
-    parser.add_argument("--provider-name", default="ls99-models", help="Pi provider name in models.json (default: ls99-models)")
+    parser.add_argument("--provider-name", help="Pi provider name (default: preserve existing models output, or model-gateway for new configs)")
     parser.add_argument("--gateway-url", default="http://localhost:9111", help="endpoint Pi providers point at")
     parser.add_argument("--gateway-api-key", default="cloud", help="apiKey for the Pi provider")
     parser.add_argument("--pi-agent-dir", default=None, help="PI_CODING_AGENT_DIR the launcher sets (default: none = default profile)")
     parser.add_argument("--shared-dir", type=Path, default=Path(__file__).resolve().parents[1], help="pi-shared checkout used by pi-shared-update (default: this renderer's checkout)")
     parser.add_argument("--omlx-status", type=Path, default=None, help="optional oMLX /v1/models/status JSON file for thinking_default fallback")
     parser.add_argument("--omlx-status-url", default=None, help="optional oMLX status URL (default: http://localhost:9110/v1/models/status when --omlx-status not given)")
-    parser.add_argument("--ls99-extras", action="store_true", help="include pi-default + pi-openai (ls99 opt-in layer)")
+    parser.add_argument("--direct-launchers", "--ls99-extras", dest="direct_launchers", action="store_true", default=None,
+                        help="include pi-default + pi-openai on any machine (--ls99-extras is a deprecated alias)")
+    parser.add_argument("--no-direct-launchers", dest="direct_launchers", action="store_false",
+                        help="omit direct launchers (default: preserve existing output; off for a new file)")
     parser.add_argument("--check", action="store_true", help="drift check only; exit 1 when stale")
     parser.add_argument("--quiet", action="store_true", help="suppress per-file write messages (used by pi-regen)")
     args = parser.parse_args(argv)
@@ -1019,6 +1056,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit(f"pi-catalog: aliases file not found: {args.aliases}")
     if not args.models_out and not args.launchers_out:
         sys.exit("pi-catalog: nothing to do (pass --models-out and/or --launchers-out)")
+
+    try:
+        provider_name = args.provider_name if args.provider_name is not None else _existing_provider_name(args.models_out)
+        direct_launchers = args.direct_launchers if args.direct_launchers is not None else _existing_direct_launchers(args.launchers_out)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
 
     aliases = json.loads(args.aliases.read_text())
     if not aliases:
@@ -1043,7 +1086,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.models_out:
         models = render_models(
             aliases,
-            provider_name=args.provider_name,
+            provider_name=provider_name,
             gateway_url=args.gateway_url,
             gateway_api_key=args.gateway_api_key,
             omlx_status=omlx_status,
@@ -1052,11 +1095,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.launchers_out:
         launchers = render_launchers(
             aliases,
-            provider_name=args.provider_name,
+            provider_name=provider_name,
             gateway_url=args.gateway_url,
             gateway_api_key=args.gateway_api_key,
             pi_agent_dir=pi_agent_dir,
-            ls99_extras=args.ls99_extras,
+            direct_launchers=direct_launchers,
             aliases_path=str(args.aliases.expanduser().resolve()),
             models_out=str(args.models_out.expanduser().resolve()) if args.models_out else None,
             launchers_out=str(args.launchers_out.expanduser().resolve()) if args.launchers_out else None,

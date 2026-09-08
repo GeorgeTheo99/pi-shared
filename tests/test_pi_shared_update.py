@@ -261,7 +261,7 @@ def test_pi_regen_preserves_custom_generation_settings(tmp_path):
 
     assert regenerated.returncode == 0, regenerated.stderr
     assert json.loads(models.read_text()) == before
-    provider = before["providers"]["ls99-models"]
+    provider = before["providers"]["model-gateway"]
     assert provider["apiKey"] == "custom-key"
     assert provider["models"][0]["contextWindow"] == 12345
     assert provider["models"][0]["maxTokens"] == 456
