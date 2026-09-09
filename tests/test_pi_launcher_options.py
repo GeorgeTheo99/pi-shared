@@ -76,8 +76,32 @@ def test_canonical_and_legacy_flags_render_canonical_regen(machine, flag):
     assert result.returncode == 0, result.stderr
     text = assert_state(machine, True, "ls99-models")
     assert '-u PI_CODING_AGENT_DIR -u OPENAI_API_KEY -u OPENAI_BASE_URL' in text
-    assert '--provider openai-codex --model gpt-5.5 --models "openai-codex/*"' in text
+    assert '--provider openai-codex --model gpt-6-astra --models "openai-codex/*"' in text
     assert render(machine, "--check").returncode == 0
+
+
+@pytest.mark.skipif(not shutil.which("zsh"), reason="zsh is required")
+@pytest.mark.parametrize("override", [[], ["--model", "gpt-5.5"]])
+def test_openai_launcher_defaults_to_astra_and_preserves_explicit_override(machine, override):
+    assert render(machine, "--direct-launchers").returncode == 0
+    home, _, env = machine
+    bin_dir = home / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "pi"
+    stub.write_text(f"#!{sys.executable}\n" + "import json, os, sys\n"
+                    "print(json.dumps({'args': sys.argv[1:], 'env': {k: os.environ.get(k) "
+                    "for k in ('PI_CODING_AGENT_DIR', 'OPENAI_API_KEY', 'OPENAI_BASE_URL')}}))\n")
+    stub.chmod(0o755)
+    result = run("zsh", "-f", "-c",
+                 f"source {shlex.quote(str(paths(machine)[2]))}; pi-openai {shlex.join(override)}",
+                 env={**env, "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
+                      "PI_CODING_AGENT_DIR": "/unused-profile", "OPENAI_API_KEY": "test-only",
+                      "OPENAI_BASE_URL": "https://invalid.example"})
+    assert result.returncode == 0, result.stderr
+    invocation = json.loads(result.stdout.splitlines()[-1])
+    assert invocation["args"] == ["--provider", "openai-codex", "--model", "gpt-6-astra",
+                                  "--models", "openai-codex/*", *override]
+    assert all(value is None for value in invocation["env"].values())
 
 
 def test_legacy_output_is_preserved_without_executing_it(machine):

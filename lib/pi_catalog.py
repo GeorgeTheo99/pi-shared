@@ -943,7 +943,7 @@ def _render_pi_openai() -> str:
         "pi-openai() {\n"
         '  echo "Pi → OpenAI subscription (ChatGPT Plus/Pro via /login OAuth)"\n'
         "  env -u PI_CODING_AGENT_DIR -u OPENAI_API_KEY -u OPENAI_BASE_URL \\\n"
-        '    pi --provider openai-codex --model gpt-5.5 --models "openai-codex/*" "$@"\n'
+        '    pi --provider openai-codex --model gpt-6-astra --models "openai-codex/*" "$@"\n'
         "}"
     )
 
