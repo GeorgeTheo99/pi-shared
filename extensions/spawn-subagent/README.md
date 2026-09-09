@@ -11,6 +11,7 @@ spawn_subagent
 Modes:
 
 - Single: `{ "agent": "scout", "task": "find auth entry points" }`
+- Isolated worker: `{ "agent": "worker", "task": "implement the focused change", "isolation": "worktree", "baseRevision": "HEAD" }`
 - Parallel: `{ "tasks": [{ "agent": "scout", "task": "find models" }, { "agent": "scout", "task": "find routes" }] }`
 - Parallel with per-task models/thinking/profiles: `{ "tasks": [{ "agent": "panelist", "task": "review X", "model": "provider/model-a", "thinking": "high", "agentDir": "~/.pi-omlx/agent" }, { "agent": "panelist", "task": "review X", "model": "provider/model-b" }] }`
 - Chain: `{ "chain": [{ "agent": "scout", "task": "inspect X" }, { "agent": "planner", "task": "plan from this: {previous}" }] }`
@@ -88,7 +89,23 @@ Lists available agents for the selected scope.
 - Persistent interactive jobs still count toward the active-job cap and the normal run timeout continues while parked. `wait_for({jobs:[...]})` wakes immediately on `awaiting_answer`, regardless of terminal `job_mode`, to avoid deadlock.
 - Interactive process handles are owner-session-only and are never serialized. Cancellation, timeout, process failure, or session shutdown/reload terminates and reaps the child; a reloaded process may inspect the sanitized snapshot but cannot rehydrate or answer it.
 - Nested subagent/workflow delegation is disabled by default (`max depth = 1`) and also excluded in child CLI arguments.
-- Does not create git worktrees or branches; use normal git/worktree workflows explicitly when needed.
+- Nonisolated calls keep the existing cwd behavior. Opt-in `isolation:"worktree"` creates a detached Git worktree for a foreground one-shot `worker` only; see below.
+
+## Opt-in worktree isolation
+
+`isolation:"worktree"` is currently supported only for a **foreground, one-shot, single `worker`**. Interactive, background, parallel, chain, job-action, and per-task isolation options are rejected rather than ignored. Independent single calls may run concurrently with distinct worktrees. Omitting isolation preserves existing behavior; `baseRevision` without isolation is an error.
+
+- `cwd` selects the source repository; the child runs at the new worktree's **repository root**, even when source cwd is a subdirectory. `baseRevision` resolves once to a commit (branch/tag/hash expressions are accepted). Omission selects `HEAD` only for a clean parent. A dirty parent requires explicit committed-base selection, e.g. `"baseRevision":"HEAD"`; parent tracked edits and untracked/ignored files are **never copied**. The task tells the child its actual workspace, resolved base, and parent-state difference.
+- Each worktree has a unique owner-only container under the Git common directory, `pi-subagent-worktree-*/workspace`, with an `ownership.json` recovery record. The existing managed child runner/scheduler receives that cwd; this feature adds no separate Pi execution path.
+- `details.results[0].worktree` is a versioned snapshot with path, base/head commit IDs, retention status, tracked/untracked/ignored inventory, tracked binary-change inventory, and local artifact references. Tracked inventory unions committed, staged, and working changes, including index-only differences. Names are NUL-parsed; inventory is scoped to the superproject (no recursive submodule contents or untracked binary inspection).
+- Inline inventory is capped at 100 paths per category and 16 KiB total. A private `inventory.json` preserves the full inventory up to 2 MiB; oversized, invalid-UTF-8, failed, or identity-changed inspection is explicitly `incomplete`. This is a non-atomic post-run snapshot, not proof that escaped processes or external writers stopped.
+- A private `tracked.patch` is produced only when the net tracked base-to-working-tree text diff fits 256 KiB. It omits binary payloads, untracked/ignored contents, and index-only changes; empty and unavailable/oversized patches are distinguished. Git external diff/textconv and hooks are disabled for these helper commands; Git commands have a 30-second bound. Artifacts may still contain sensitive tracked source: **never inline or upload them automatically**. Checkout filters/configuration are not sandboxed. Inherited Git repository/index/config redirection variables (e.g. `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_CONFIG_COUNT`) are refused before setup because the child runner inherits its environment.
+- **All worktrees are retained**, including pristine successes, failures, cancellations, partial setup, and clean detached-HEAD worker commits. There is deliberately no automatic cleanup API, merge, push, ref rewrite, or deletion. Clean status is not evidence that commits or reflogs are safe to discard. This avoids losing worker commits without inventing a durable-ref/bundle cleanup protocol. Owner death cannot resume the worker; retained Git worktree registrations and ownership records remain available for manual recovery.
+- Retention is unbounded for source workspaces to avoid discarding work; patch/inventory artifacts are bounded per run. Review retained work using `git worktree list`, preserve desired commits via an explicitly reviewed branch/ref or bundle, and handle dirty/ignored files before any separately authorized manual removal. Never delete an arbitrary path merely because it resembles this naming pattern.
+
+Worktrees are **not security sandboxes**. Credentials, filesystem access, Git objects/configuration, ports, databases, package caches, and external effects remain shared. This is opt-in checkout separation for cooperative workers, not a restriction on their authority.
+
+Targeted checks: `node --no-warnings --test tests/subagent_worktree*.test.mts`. These tests are also included automatically by the existing `npm run test:subagents` filename glob. Integration uses a stub child runner with real temporary Git repositories, not a paid model call.
 
 ## Limits and configuration
 

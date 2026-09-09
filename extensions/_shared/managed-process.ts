@@ -14,14 +14,21 @@ export interface ManagedProcessOptions {
 	maxEventBytes: number;
 	onSpawn?: (pid: number | undefined) => void;
 	onStdoutChunk?: (chunk: string) => void;
+	onStderrChunk?: (chunk: Buffer) => void;
 	onStdoutLine?: (line: string) => void;
 	limitStdoutEvents?: boolean;
 	stdin?: "ignore" | "pipe";
+	/** Ordinary commands must reap their original group even when the leader exits naturally. */
+	cleanupOnExit?: boolean;
 }
 
 export interface ManagedProcessResult {
 	exitCode: number;
 	exitSignal: NodeJS.Signals | null;
+	/** Null when no real process close/exit code was observed (including forced settlement). */
+	observedExitCode: number | null;
+	/** Evidence only for the original POSIX process group, never escaped descendants. */
+	cleanup: "confirmed" | "unconfirmed";
 	stderr: string;
 	stderrTruncated: boolean;
 	terminationReason?: ManagedTerminationReason;
@@ -111,6 +118,10 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 	let forceKillTimer: NodeJS.Timeout | undefined;
 	let settlementTimer: NodeJS.Timeout | undefined;
 	let runTimer: NodeJS.Timeout | undefined;
+	let cleanupTimer: NodeJS.Timeout | undefined;
+	let cleanupStarted = false;
+	let pipesClosed = false;
+	let leaderExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
 	let proc: ReturnType<typeof spawn> | undefined;
 	let resolveCompletion!: (result: ManagedProcessResult) => void;
 	let stdinQueue: Promise<void> = Promise.resolve();
@@ -119,7 +130,7 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 		resolveCompletion = resolve;
 	});
 
-	const finish = (exitCode: number | null, exitSignal: NodeJS.Signals | null) => {
+	const finish = (exitCode: number | null, exitSignal: NodeJS.Signals | null, forced = false) => {
 		if (settled) return;
 		settled = true;
 		closed = true;
@@ -130,19 +141,54 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 		if (forceKillTimer) clearTimeout(forceKillTimer);
 		if (settlementTimer) clearTimeout(settlementTimer);
 		if (runTimer) clearTimeout(runTimer);
+		if (cleanupTimer) clearTimeout(cleanupTimer);
 		options.signal?.removeEventListener("abort", onAbort);
 		if (!terminationReason && stdoutBuffer.trim() && Buffer.byteLength(stdoutBuffer, "utf8") <= options.maxEventBytes) {
 			const line = stdoutBuffer.endsWith("\r") ? stdoutBuffer.slice(0, -1) : stdoutBuffer;
 			options.onStdoutLine?.(line);
 		}
+		let cleanup: "confirmed" | "unconfirmed" = proc?.pid ? "unconfirmed" : "confirmed";
+		if (!forced && proc?.pid && process.platform !== "win32") {
+			try { process.kill(-proc.pid, 0); }
+			catch (error: any) { if (error?.code === "ESRCH") cleanup = "confirmed"; }
+		}
 		resolveCompletion({
 			exitCode: exitCode ?? 1,
-			exitSignal,
+			exitSignal: leaderExit ? leaderExit.signal : exitSignal,
+			observedExitCode: leaderExit ? leaderExit.code : forced || !proc?.pid ? null : exitCode,
+			cleanup,
 			stderr: stderr.toString(),
 			stderrTruncated: stderr.truncated,
 			terminationReason,
 			errorMessage,
 		});
+	};
+
+	const beginExitCleanup = () => {
+		if (cleanupStarted || settled || !leaderExit) return;
+		cleanupStarted = true;
+		if (runTimer) clearTimeout(runTimer);
+		const started = Date.now();
+		terminateProcessTree(proc?.pid, "SIGTERM");
+		const check = () => {
+			if (settled) return;
+			let groupAbsent = !proc?.pid;
+			if (proc?.pid && process.platform !== "win32") {
+				try { process.kill(-proc.pid, 0); }
+				catch (error: any) { if (error?.code === "ESRCH") groupAbsent = true; }
+			}
+			if (groupAbsent && pipesClosed) { finish(leaderExit!.code, leaderExit!.signal); return; }
+			const elapsed = Date.now() - started;
+			if (elapsed >= options.termGraceMs) terminateProcessTree(proc?.pid, "SIGKILL");
+			if (elapsed >= options.termGraceMs * 2) {
+				proc?.stdout?.destroy(); proc?.stderr?.destroy();
+				finish(leaderExit!.code, leaderExit!.signal, true);
+				return;
+			}
+			cleanupTimer = setTimeout(check, 20);
+			// Keep owner alive until bounded cleanup has finished, even if all pipes closed.
+		};
+		check();
 	};
 
 	const requestTermination = (reason: ManagedTerminationReason, message?: string) => {
@@ -161,7 +207,7 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 				if (closed) return;
 				proc?.stdout?.destroy();
 				proc?.stderr?.destroy();
-				finish(1, "SIGKILL");
+				finish(null, "SIGKILL", true);
 			}, options.termGraceMs);
 			settlementTimer.unref?.();
 		}, options.termGraceMs);
@@ -194,8 +240,9 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 		});
 		proc.stdout!.setEncoding("utf8");
 		proc.stdout!.on("data", (chunk: string) => {
-			if (closed || terminationReason) return;
+			if (closed) return;
 			options.onStdoutChunk?.(chunk);
+			if (terminationReason) return; // Capture teardown output, never parse new agent frames.
 			if (!options.onStdoutLine && options.limitStdoutEvents === false) return;
 			stdoutBuffer += chunk;
 			if (
@@ -222,7 +269,10 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 				options.onStdoutLine?.(line);
 			}
 		});
-		proc.stderr!.on("data", (chunk) => stderr.append(chunk));
+		proc.stderr!.on("data", (chunk: Buffer) => {
+			stderr.append(chunk);
+			options.onStderrChunk?.(chunk);
+		});
 		proc.on("error", (error) => {
 			if (!proc?.pid) {
 				terminationReason = "spawn_error";
@@ -232,7 +282,17 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 			}
 			requestTermination("spawn_error", error.message);
 		});
-		proc.on("close", (code, signal) => finish(code, signal));
+		proc.on("exit", (code, signal) => {
+			leaderExit = { code, signal };
+			if (options.cleanupOnExit) beginExitCleanup();
+		});
+		proc.on("close", (code, signal) => {
+			pipesClosed = true;
+			if (options.cleanupOnExit && proc?.pid) {
+				leaderExit ??= { code, signal };
+				beginExitCleanup();
+			} else finish(code, signal);
+		});
 	}
 
 	if (options.signal) {

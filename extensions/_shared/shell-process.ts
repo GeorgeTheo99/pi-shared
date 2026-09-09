@@ -15,6 +15,10 @@ export async function runShellProcess(
 	signal?: AbortSignal,
 ): Promise<ShellProcessResult> {
 	let stdout = "";
+	let retained = 0;
+	let omitted = 0;
+	const captureLimit = 1024 * 1024;
+	const output = () => stdout + (omitted ? `\n[stdout truncated: ${omitted} bytes omitted]` : "");
 	try {
 		const result = await runManagedProcess({
 			command: "sh",
@@ -28,19 +32,23 @@ export async function runShellProcess(
 			maxEventBytes: 64 * 1024,
 			limitStdoutEvents: false,
 			onStdoutChunk: (chunk) => {
-				stdout += chunk;
+				const buffer = Buffer.from(chunk);
+				const keep = Math.min(buffer.length, captureLimit - retained);
+				stdout += buffer.subarray(0, keep).toString("utf8");
+				retained += keep;
+				omitted += buffer.length - keep;
 			},
 		});
 		return {
 			code: result.exitCode,
-			stdout,
+			stdout: output(),
 			stderr: result.stderr,
 			aborted: result.terminationReason === "aborted",
 		};
 	} catch (error) {
 		return {
 			code: -1,
-			stdout,
+			stdout: output(),
 			stderr: error instanceof Error ? error.message : String(error),
 			aborted: signal?.aborted ?? false,
 		};

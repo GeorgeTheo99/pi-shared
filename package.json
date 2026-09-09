@@ -2,17 +2,24 @@
   "name": "pi-shared",
   "private": true,
   "scripts": {
-    "test": "npm run test:websearch && npm run test:browser && npm run test:goal && npm run test:ask-user && npm run test:self-handoff && npm run test:tool-summary && npm run test:panel && npm run test:subagents && npm run test:session-coordinator && npm run test:powerpoint",
+    "test": "npm run test:websearch && npm run test:browser && npm run test:goal && npm run test:ask-user && npm run test:self-handoff && npm run test:tool-summary && npm run test:panel && npm run test:subagents && npm run test:session-coordinator && npm run test:powerpoint && npm run test:command-jobs && npm run test:safe-edit && npm run test:doctor && npm run test:verification && npm run test:code-intel && npm run test:app-test && npm run test:integration-bundles",
     "test:websearch": "node --no-warnings --test tests/websearch_mcp_client.test.mts",
     "test:browser": "node --no-warnings --test tests/browser_tool_inventory.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/browser_worker_test_loader.mjs --test tests/browser_worker_wrapper.test.mts",
     "test:goal": "node --no-warnings --experimental-loader ./tests/fixtures/goal_test_loader.mjs --test tests/goal_abort.test.mts",
     "test:ask-user": "node --no-warnings --experimental-loader ./tests/fixtures/ask_user_test_loader.mjs --test tests/ask_user.test.mts",
     "test:self-handoff": "node --no-warnings --test tests/self_handoff.test.mts",
-    "test:tool-summary": "node --no-warnings --test tests/tool_summary_policy.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/tool_summary_test_loader.mjs --test tests/tool_summary_extension.test.mts",
+    "test:tool-summary": "node --no-warnings --test tests/tool_summary_policy.test.mts tests/tool_summary_json_query.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/tool_summary_test_loader.mjs --test tests/tool_summary_extension.test.mts",
     "test:panel": "node --no-warnings --experimental-loader ./tests/fixtures/panel_test_loader.mjs --test tests/panel_models.test.mts",
     "test:subagents": "node --no-warnings --experimental-loader ./tests/fixtures/subagent_test_loader.mjs --test tests/subagent_*.test.mts",
     "test:session-coordinator": "node --no-warnings --test tests/session_coordinator_state.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/session_coordinator_test_loader.mjs --test tests/session_coordinator_extension.test.mts",
-    "test:powerpoint": "node --no-warnings --test tests/powerpoint_skill.test.mjs"
+    "test:powerpoint": "node --no-warnings --test tests/powerpoint_skill.test.mjs",
+    "test:command-jobs": "node --no-warnings --experimental-loader ./tests/fixtures/subagent_test_loader.mjs --test tests/command_jobs*.test.mts",
+    "test:safe-edit": "node --no-warnings --test tests/safe_edit.test.mts",
+    "test:doctor": "node --no-warnings --experimental-loader ./tests/fixtures/dev_doctor_test_loader.mjs --test tests/dev_doctor.test.mts",
+    "test:verification": "node --no-warnings --experimental-loader ./tests/fixtures/verification_test_loader.mjs --test tests/verification*.test.mts",
+    "test:code-intel": "node --no-warnings --test tests/code_intel*.test.mts",
+    "test:app-test": "node --no-warnings --test tests/app_test_runtime.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/app_test_loader.mjs --test tests/app_test_tool.test.mts",
+    "test:integration-bundles": "npm --prefix extensions/integration-bundles test"
   },
   "keywords": ["pi-package"],
   "pi": {

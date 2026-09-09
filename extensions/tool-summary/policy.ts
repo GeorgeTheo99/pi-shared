@@ -389,6 +389,8 @@ const DIFF_GIT_HEADER = /^diff --git\s+\S+\s+\S+/;
 const DIFF_OLD_FILE_HEADER = /^---\s+\S+/;
 const DIFF_NEW_FILE_HEADER = /^\+\+\+\s+\S+/;
 const REDUCTION_CLIPPED_MARKER = "\n[… deterministic reduction clipped …]";
+// Exact scalar evidence in lexically formatted JSON; do not parse numeric values.
+const STRUCTURED_EVIDENCE_LINE = /^\s*"(?:exit[_-]?code|(?:test[_-]?)?counts?|total(?:[_-]?tests)?|passed|failed|failures|skipped|tests|artifact[_-]?id)"\s*:\s*(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|"(?:[^"\\]|\\.)*")\s*,?\s*$/i;
 
 function lineHasNonSuccessHttpStatus(line: string) {
 	for (const match of line.matchAll(new RegExp(HTTP_STATUS_OCCURRENCE.source, "gi"))) {
@@ -402,7 +404,7 @@ function requiredEvidenceText(lines: string[]) {
 	const requiredIndexes = new Set<number>();
 	for (let index = 0; index < lines.length; index += 1) {
 		const line = lines[index]!;
-		if (DIFF_GIT_HEADER.test(line) || lineHasNonSuccessHttpStatus(line)) {
+		if (DIFF_GIT_HEADER.test(line) || lineHasNonSuccessHttpStatus(line) || STRUCTURED_EVIDENCE_LINE.test(line)) {
 			requiredIndexes.add(index);
 		}
 		if (
@@ -423,7 +425,7 @@ function requiredEvidenceText(lines: string[]) {
 
 function requiredEvidenceSection(lines: string[]) {
 	const evidence = requiredEvidenceText(lines);
-	return evidence ? `[required HTTP failure and diff file lines]\n${evidence}` : "";
+	return evidence ? `[required HTTP failure, diff file, and structured evidence lines]\n${evidence}` : "";
 }
 
 function lexicalReductionSource(text: string) {
@@ -624,7 +626,7 @@ function summaryReplacementParts(
 		`summary source: ${source}`,
 		"",
 	].join("\n");
-	const footer = `\n\n[Exact original remains in session history. Use tool_result_recall with toolCallId ${JSON.stringify(candidate.toolCallId)} for search, head, tail, or line-range retrieval.]`;
+	const footer = `\n\n[Exact original remains in session history. Use tool_result_recall with toolCallId ${JSON.stringify(candidate.toolCallId)} for search, head, tail, line-range, or explicit-source JSON Pointer retrieval.]`;
 	return { header, footer };
 }
 

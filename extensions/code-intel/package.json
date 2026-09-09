@@ -1,0 +1,10 @@
+{
+  "name": "pi-shared-code-intel",
+  "private": true,
+  "type": "module",
+  "description": "Optional explicitly installed TypeScript language server for code_intel",
+  "dependencies": {
+    "typescript": "5.9.3",
+    "typescript-language-server": "5.0.0"
+  }
+}

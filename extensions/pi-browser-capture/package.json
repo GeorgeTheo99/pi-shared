@@ -8,7 +8,8 @@
   "pi": {
     "extensions": [
       "./src/browser-worker.ts",
-      "./src/app-testing.ts"
+      "./src/app-testing.ts",
+      "./src/app-test.ts"
     ]
   }
 }

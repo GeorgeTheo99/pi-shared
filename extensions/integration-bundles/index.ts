@@ -1,7 +1,7 @@
 /**
  * integration-bundles
  *
- * Lazy tool-bundle loader driven by `pi-shared/master_integration_list.yaml`.
+ * Active-schema bundle selector driven by a machine-local master list.
  *
  * - Hides non-default bundles' tools at startup via `pi.setActiveTools`.
  * - Exposes router tools so the model can load/unload/list bundles on demand;
@@ -11,7 +11,7 @@
  *   so the model can self-discover when to load each bundle.
  * - Enforces a per-model active-tool cap (e.g. <=120 for gpt-* / o-series to
  *   stay under OpenAI's 128-tool API hard limit), evicting LRU-loaded
- *   bundles first.
+ *   bundles first (load-recency, not tool-use recency).
  *
  * Note: this extension does NOT register the underlying enterprise tools —
  * `pi-enterprise` does that. It only controls visibility (active set) of
@@ -22,7 +22,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as yaml from "yaml";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { searchCatalog } from "./catalog.ts";
 import { Type } from "typebox";
 
 // ---------------------------------------------------------------------------
@@ -57,10 +58,9 @@ interface MasterList {
 // ---------------------------------------------------------------------------
 
 function findMasterList(): { path: string; data: MasterList } | null {
-	const candidates = [
-		process.env.PI_INTEGRATION_LIST,
-		path.join(os.homedir(), ".pi", "agent", "master_integration_list.yaml"),
-	].filter((p): p is string => Boolean(p));
+	// An explicit path is authoritative; a missing file must not select another policy.
+	const candidates = [process.env.PI_INTEGRATION_LIST ||
+		path.join(os.homedir(), ".pi", "agent", "master_integration_list.yaml")];
 
 	for (const candidate of candidates) {
 		try {
@@ -109,7 +109,7 @@ interface BundleState {
 	def: BundleDef;
 	tools: string[]; // resolved tool names (after glob expansion)
 	loaded: boolean;
-	loadedAt: number; // for LRU eviction
+	loadedAt: number; // monotonic successful-load sequence, not actual tool use
 	source: "default" | "trigger" | "model" | "user";
 }
 
@@ -125,6 +125,12 @@ interface ExtensionState {
 	routerTools: Set<string>;
 	currentModelId: string | null;
 	skillHints: SkillBundleHint[];
+	eligible: Set<string>;
+	manual: Set<string>;
+	known: Set<string>;
+	observed: Set<string> | null;
+	loadSequence: number;
+	budgetError: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,24 +141,24 @@ interface ExtensionState {
 function computeDesiredActiveSet(state: ExtensionState, allTools: string[]): string[] {
 	const desired = new Set<string>();
 
-	// 1. All non-bundle tools (built-ins + non-enterprise extensions) stay on.
+	// Only initially allowed or subsequently observed-active tools are eligible.
 	const allBundleTools = new Set<string>();
 	for (const b of state.bundles.values()) {
 		for (const t of b.tools) allBundleTools.add(t);
 	}
 	for (const name of allTools) {
-		if (!allBundleTools.has(name)) desired.add(name);
+		if (state.eligible.has(name) && (!allBundleTools.has(name) || state.manual.has(name))) desired.add(name);
 	}
 
-	// 2. Router tools always on.
+	// 2. Eligible router tools are pinned.
 	for (const name of state.routerTools) {
-		if (allTools.includes(name)) desired.add(name);
+		if (allTools.includes(name) && state.eligible.has(name)) desired.add(name);
 	}
 
 	// 3. Tools from currently-loaded bundles.
 	for (const b of state.bundles.values()) {
 		if (!b.loaded) continue;
-		for (const t of b.tools) desired.add(t);
+		for (const t of b.tools) if (state.eligible.has(t)) desired.add(t);
 	}
 
 	return [...desired];
@@ -174,7 +180,7 @@ function resolveModelOverride(state: ExtensionState): ModelOverride | null {
 }
 
 /**
- * Apply model cap by evicting LRU bundles until the active set fits.
+ * Apply model cap by evicting least-recently-loaded bundles until it fits.
  * Returns the evicted bundle names.
  */
 function enforceModelCap(state: ExtensionState, allTools: string[]): string[] {
@@ -185,7 +191,7 @@ function enforceModelCap(state: ExtensionState, allTools: string[]): string[] {
 	const desired = computeDesiredActiveSet(state, allTools);
 	if (desired.length <= cap) return [];
 
-	// Need to evict. Pick LRU bundles (oldest loadedAt first) that are not
+	// Need to evict. Pick oldest-loaded bundles that are not
 	// in defaults.always_load.
 	const alwaysLoad = new Set(state.master?.defaults?.always_load ?? []);
 	const evictable = [...state.bundles.entries()]
@@ -193,21 +199,92 @@ function enforceModelCap(state: ExtensionState, allTools: string[]): string[] {
 		.sort((a, b) => a[1].loadedAt - b[1].loadedAt);
 
 	const evicted: string[] = [];
-	let projected = desired.length;
 	for (const [name, b] of evictable) {
-		if (projected <= cap) break;
+		if (computeDesiredActiveSet(state, allTools).length <= cap) break;
 		b.loaded = false;
-		projected -= b.tools.length;
 		evicted.push(name);
 	}
 	return evicted;
 }
 
+/** No SDK exclusion provenance exists. Never infer permission from registration. */
+function refreshPolicy(pi: ExtensionAPI, state: ExtensionState): void {
+	const all = new Set(pi.getAllTools().map(t => t.name));
+	const active = new Set(pi.getActiveTools().filter(n => all.has(n)));
+	const changed = state.observed && (active.size !== state.observed.size ||
+		[...active].some(n => !state.observed!.has(n)));
+	if (!state.observed) {
+		state.eligible = new Set(active);
+	} else {
+		// Registry-only additions are not evidence of an external full selection.
+		const external = changed && ([...state.observed].some(n => all.has(n) && !active.has(n)) ||
+			[...active].some(n => state.known.has(n) && !state.observed!.has(n)));
+		for (const n of state.eligible) {
+			if (!all.has(n) || (external && !active.has(n))) state.eligible.delete(n);
+		}
+		for (const n of active) {
+			state.eligible.add(n);
+			if (state.known.has(n) && !state.observed.has(n)) state.manual.add(n);
+		}
+		for (const n of state.manual) if (!active.has(n)) state.manual.delete(n);
+	}
+	state.known = all;
+	state.observed = active;
+	rebuildBundleState(pi, state);
+	// Pinned bundles may gain their first eligible registration after startup.
+	for (const name of state.master?.defaults?.always_load ?? []) loadBundle(state, name, "default");
+}
+
 function applyActiveSet(pi: ExtensionAPI, state: ExtensionState): void {
+	if (!state.master) return;
 	const allTools = pi.getAllTools().map((t) => t.name);
 	enforceModelCap(state, allTools);
 	const desired = computeDesiredActiveSet(state, allTools);
+	const cap = resolveModelOverride(state)?.max_tools;
+	state.budgetError = cap != null && desired.length > cap
+		? `Tool budget impossible: pinned/base tools (${desired.length}) exceed cap ${cap}. Reduce the manual/base/default selection or change model; no base tools were silently removed.`
+		: null;
 	pi.setActiveTools(desired);
+	state.observed = new Set(pi.getActiveTools());
+}
+
+function unavailableReason(state: ExtensionState, b: BundleState): string | undefined {
+	if (!b.tools.length || b.def.tools.some(p => !matchToolNames([...state.known], [p]).length)) {
+		return "Unavailable: one or more tool patterns have no registered matches.";
+	}
+	if (b.tools.some(n => !state.eligible.has(n))) return "Unavailable: bundle contains excluded tools; explicitly enable them outside this router first.";
+	return undefined;
+}
+
+/** Preflight a requested load without evicting it or changing other bundles on failure. */
+function requestLoad(pi: ExtensionAPI, state: ExtensionState, name: string, source: BundleState["source"]): { ok: boolean; reason?: string } {
+	refreshPolicy(pi, state);
+	const b = state.bundles.get(name);
+	if (!b) return { ok: false, reason: `Unknown bundle: ${name}` };
+	const reason = unavailableReason(state, b);
+	if (reason) return { ok: false, reason };
+	const snapshot = new Map([...state.bundles].map(([n, value]) => [n, { ...value }]));
+	b.loaded = true;
+	const cap = resolveModelOverride(state)?.max_tools;
+	const all = [...state.known];
+	const pinned = new Set(state.master?.defaults?.always_load ?? []);
+	for (const [, other] of [...state.bundles].filter(([n, value]) => n !== name && value.loaded && !pinned.has(n))
+		.sort((a, b) => a[1].loadedAt - b[1].loadedAt)) {
+		if (cap == null || computeDesiredActiveSet(state, all).length <= cap) break;
+		other.loaded = false;
+	}
+	if (cap != null && computeDesiredActiveSet(state, all).length > cap) {
+		state.bundles = snapshot;
+		return { ok: false, reason: `Bundle "${name}" cannot fit the tool budget (cap ${cap}); load not applied.` };
+	}
+	b.loadedAt = ++state.loadSequence;
+	b.source = source;
+	applyActiveSet(pi, state);
+	const actual = new Set(pi.getActiveTools());
+	if (!b.loaded || b.tools.some(n => !actual.has(n))) {
+		return { ok: false, reason: `Bundle "${name}" is unavailable in the resulting active set.` };
+	}
+	return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -221,9 +298,11 @@ function loadBundle(
 ): { ok: boolean; reason?: string } {
 	const b = state.bundles.get(name);
 	if (!b) return { ok: false, reason: `Unknown bundle: ${name}` };
+	const reason = unavailableReason(state, b);
+	if (reason) return { ok: false, reason };
 	if (b.loaded) return { ok: true };
 	b.loaded = true;
-	b.loadedAt = Date.now();
+	b.loadedAt = ++state.loadSequence;
 	b.source = source;
 	return { ok: true };
 }
@@ -231,6 +310,7 @@ function loadBundle(
 function unloadBundle(state: ExtensionState, name: string): { ok: boolean; reason?: string } {
 	const b = state.bundles.get(name);
 	if (!b) return { ok: false, reason: `Unknown bundle: ${name}` };
+	if (state.master?.defaults?.always_load?.includes(name)) return { ok: false, reason: `Bundle "${name}" is pinned by always_load.` };
 	if (!b.loaded) return { ok: true };
 	b.loaded = false;
 	return { ok: true };
@@ -306,7 +386,7 @@ function extractFrontmatter(content: string): string | null {
 	return content.slice(3, end).replace(/^\n/, "");
 }
 
-function autoLoadBySkillMention(state: ExtensionState, userMessage: string): string[] {
+function autoLoadBySkillMention(pi: ExtensionAPI, state: ExtensionState, userMessage: string): string[] {
 	if (!userMessage || state.skillHints.length === 0) return [];
 	const loaded: string[] = [];
 	for (const hint of state.skillHints) {
@@ -317,14 +397,13 @@ function autoLoadBySkillMention(state: ExtensionState, userMessage: string): str
 		for (const bundleName of hint.requires) {
 			const b = state.bundles.get(bundleName);
 			if (!b || b.loaded) continue;
-			loadBundle(state, bundleName, "trigger");
-			loaded.push(`${bundleName} (via skill ${hint.name})`);
+			if (requestLoad(pi, state, bundleName, "trigger").ok) loaded.push(bundleName);
 		}
 	}
 	return loaded;
 }
 
-function autoLoadByTriggers(state: ExtensionState, userMessage: string): string[] {
+function autoLoadByTriggers(pi: ExtensionAPI, state: ExtensionState, userMessage: string): string[] {
 	const loaded: string[] = [];
 	for (const [name, b] of state.bundles) {
 		if (b.loaded) continue;
@@ -332,8 +411,7 @@ function autoLoadByTriggers(state: ExtensionState, userMessage: string): string[
 		for (const pattern of triggers) {
 			try {
 				if (new RegExp(pattern).test(userMessage)) {
-					loadBundle(state, name, "trigger");
-					loaded.push(name);
+					if (requestLoad(pi, state, name, "trigger").ok) loaded.push(name);
 					break;
 				}
 			} catch {
@@ -364,8 +442,9 @@ function formatBundlesBlock(state: ExtensionState): string {
 	const lines: string[] = [
 		"",
 		"",
-		"The following enterprise tool bundles are available. Each bundle's",
-		"tools are registered but only become callable once the bundle is loaded.",
+		"The following integration bundles are configured. Only eligible, registered",
+		"tools can be loaded; exclusions and missing registrations are never overridden.",
+		"Use enterprise_list_bundles({query: \"…\"}) for bounded tool/capability discovery.",
 		"Use `enterprise_load_bundle(\"<name>\")` to load a bundle when its",
 		"description matches the user's intent. Use `enterprise_unload_bundle`",
 		"to free slots if you are near the tool budget.",
@@ -373,25 +452,27 @@ function formatBundlesBlock(state: ExtensionState): string {
 	];
 	if (cap != null) {
 		lines.push(
-			`Active-tool budget for this model: ${cap}. Loading more bundles than fit will evict the least-recently-used non-default bundle automatically.`,
+			`Active-tool budget for this model: ${cap}. Loads may evict least-recently-loaded non-pinned bundles; impossible requests fail.`,
 			"",
 		);
 	}
+	if (state.budgetError) lines.push(state.budgetError);
 	lines.push("<available_bundles>");
-	for (const [name, b] of state.bundles) {
-		const status = b.loaded ? "loaded" : "available";
+	for (const [name, b] of [...state.bundles].slice(0, 40)) {
+		const status = unavailableReason(state, b) ? "unavailable" : b.loaded ? "loaded" : "available";
 		lines.push("  <bundle>");
 		lines.push(`    <name>${escapeXml(name)}</name>`);
 		lines.push(`    <status>${status}</status>`);
 		lines.push(`    <tool_count>${b.tools.length}</tool_count>`);
-		if (b.def.summary) lines.push(`    <summary>${escapeXml(b.def.summary)}</summary>`);
-		lines.push(`    <description>${escapeXml(b.def.description.trim())}</description>`);
+		if (b.def.summary) lines.push(`    <summary>${escapeXml(b.def.summary.slice(0, 300))}</summary>`);
+		lines.push(`    <description>${escapeXml(b.def.description.trim().slice(0, 300))}</description>`);
 		if (!b.loaded) {
 			lines.push(`    <load>enterprise_load_bundle({"name": "${escapeXml(name)}"})</load>`);
 		}
 		lines.push("  </bundle>");
 	}
 	lines.push("</available_bundles>");
+	if (state.bundles.size > 40) lines.push("Bundle preview limited to 40 entries; search/page enterprise_list_bundles for the remainder.");
 	return lines.join("\n");
 }
 
@@ -405,10 +486,12 @@ function formatStatusReport(state: ExtensionState, pi: ExtensionAPI): string {
 	lines.push(`Model: ${state.currentModelId ?? "(unknown)"}`);
 	lines.push(`Active tools: ${active.length}${cap != null ? ` / cap ${cap}` : " (no cap)"}`);
 	lines.push(`Total registered: ${allTools.length}`);
+	if (!state.master) lines.push("No master_integration_list.yaml found; activation management is disabled (discovery only).");
+	if (cap != null && active.length > cap) lines.push(`Tool budget exceeded: ${active.length} active / cap ${cap}. Reduce selections/defaults or change model.`);
 	lines.push("");
 	lines.push("Bundles:");
 	for (const [name, b] of state.bundles) {
-		const tag = b.loaded ? `LOADED via ${b.source}` : "available";
+		const tag = unavailableReason(state, b) ? "unavailable/excluded" : b.loaded ? `LOADED via ${b.source}` : "available";
 		lines.push(`  - ${name.padEnd(22)} ${tag.padEnd(22)}  ${b.tools.length} tools`);
 		if (b.def.summary) lines.push(`      ${b.def.summary}`);
 	}
@@ -431,6 +514,12 @@ export default function integrationBundlesExtension(pi: ExtensionAPI) {
 		]),
 		currentModelId: null,
 		skillHints: [],
+		eligible: new Set(),
+		manual: new Set(),
+		known: new Set(),
+		observed: null,
+		loadSequence: 0,
+		budgetError: null,
 	};
 
 	const found = findMasterList();
@@ -442,13 +531,14 @@ export default function integrationBundlesExtension(pi: ExtensionAPI) {
 	}
 	state.listPath = found.path;
 	state.master = found.data;
+	for (const name of state.master.defaults?.router_tools ?? []) state.routerTools.add(name);
 
 	registerRouterTools(pi, state);
 
 	// Build bundle state once we know the universe of tools (after session_start).
 	pi.on("session_start", async (_event, ctx) => {
 		state.currentModelId = ctx.model?.id ?? null;
-		rebuildBundleState(pi, state);
+		refreshPolicy(pi, state);
 		state.skillHints = discoverSkillHints();
 		applyDefaultLoadout(state);
 		applyActiveSet(pi, state);
@@ -456,6 +546,7 @@ export default function integrationBundlesExtension(pi: ExtensionAPI) {
 
 	pi.on("model_select", async (event, _ctx) => {
 		state.currentModelId = event.model?.id ?? null;
+		refreshPolicy(pi, state);
 		// Re-apply default loadout for the new model so claude-* gets its full
 		// pre-loaded set when the user switches into it mid-session.
 		applyDefaultLoadout(state);
@@ -464,23 +555,23 @@ export default function integrationBundlesExtension(pi: ExtensionAPI) {
 
 	// Per-prompt: auto-load by trigger, enforce cap, inject system-prompt block.
 	pi.on("before_agent_start", async (event, ctx) => {
-		state.currentModelId = ctx.model?.id ?? state.currentModelId;
-		// Lazily rebuild if pi-enterprise registered tools after session_start.
-		if (state.bundles.size === 0 || anyBundleStale(pi, state)) {
-			rebuildBundleState(pi, state);
-			applyDefaultLoadout(state);
-		}
-		const triggered = autoLoadByTriggers(state, event.prompt ?? "");
-		const skillTriggered = autoLoadBySkillMention(state, event.prompt ?? "");
+		const modelId = ctx.model?.id ?? state.currentModelId;
+		const modelChanged = modelId !== state.currentModelId;
+		state.currentModelId = modelId;
+		refreshPolicy(pi, state);
+		if (modelChanged) applyDefaultLoadout(state);
 		applyActiveSet(pi, state);
+		const triggered = autoLoadByTriggers(pi, state, event.prompt ?? "");
+		const skillTriggered = autoLoadBySkillMention(pi, state, event.prompt ?? "");
+		const stillLoaded = (names: string[]) => names.filter(n => state.bundles.get(n)?.loaded);
 
 		const block = formatBundlesBlock(state);
 		const notes: string[] = [];
-		if (triggered.length > 0) {
-			notes.push(`auto-loaded by trigger: ${triggered.join(", ")}`);
+		if (stillLoaded(triggered).length > 0) {
+			notes.push(`auto-loaded by trigger: ${stillLoaded(triggered).join(", ")}`);
 		}
-		if (skillTriggered.length > 0) {
-			notes.push(`auto-loaded via skill mention: ${skillTriggered.join(", ")}`);
+		if (stillLoaded(skillTriggered).length > 0) {
+			notes.push(`auto-loaded via skill mention: ${stillLoaded(skillTriggered).join(", ")}`);
 		}
 		const note = notes.length > 0 ? `\n\n[integration-bundles] ${notes.join("; ")}` : "";
 		return {
@@ -495,6 +586,7 @@ export default function integrationBundlesExtension(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const tokens = (args || "").trim().split(/\s+/).filter(Boolean);
 			const action = (tokens[0] || "status").toLowerCase();
+			refreshPolicy(pi, state);
 
 			if (action === "status" || !action) {
 				ctx.ui.notify(formatStatusReport(state, pi), "info");
@@ -516,12 +608,11 @@ export default function integrationBundlesExtension(pi: ExtensionAPI) {
 			}
 
 			if (action === "load") {
-				const r = loadBundle(state, target, "user");
+				const r = requestLoad(pi, state, target, "user");
 				if (!r.ok) {
 					ctx.ui.notify(r.reason || "load failed", "warning");
 					return;
 				}
-				applyActiveSet(pi, state);
 				ctx.ui.notify(`Loaded ${target}.\n\n${formatStatusReport(state, pi)}`, "info");
 				return;
 			}
@@ -569,6 +660,9 @@ function applyDefaultLoadout(state: ExtensionState): void {
 		}
 		if (best) for (const n of best.list) names.add(n);
 	}
+	for (const [name, b] of state.bundles) {
+		if (b.source === "default" && !names.has(name)) b.loaded = false;
+	}
 	for (const n of names) loadBundle(state, n, "default");
 }
 
@@ -590,18 +684,6 @@ function rebuildBundleState(pi: ExtensionAPI, state: ExtensionState): void {
 	}
 }
 
-function anyBundleStale(pi: ExtensionAPI, state: ExtensionState): boolean {
-	if (!state.master) return false;
-	const allTools = new Set(pi.getAllTools().map((t) => t.name));
-	for (const [, b] of state.bundles) {
-		// If the resolved tool list now picks up new matches that weren't
-		// captured at last rebuild, treat as stale.
-		const expected = matchToolNames([...allTools], b.def.tools ?? []);
-		if (expected.length !== b.tools.length) return true;
-	}
-	return false;
-}
-
 // ---------------------------------------------------------------------------
 // Router tools
 // ---------------------------------------------------------------------------
@@ -611,7 +693,7 @@ function registerRouterTools(pi: ExtensionAPI, state: ExtensionState): void {
 		name: "enterprise_load_bundle",
 		label: "Load Bundle",
 		description:
-			"Load an enterprise tool bundle by name, making its tools callable on the next model response in the same run. Use when a bundle's <description> in <available_bundles> matches the user's intent. The active-tool budget is enforced automatically — loading may evict the least-recently-used bundle.",
+			"Load an eligible registered integration bundle for the next model response. Excluded/missing tools and impossible budgets fail. May evict least-recently-loaded non-pinned bundles (not actual-use recency).",
 		parameters: Type.Object({
 			name: Type.String({ description: "Bundle name from <available_bundles>" }),
 		}),
@@ -619,11 +701,10 @@ function registerRouterTools(pi: ExtensionAPI, state: ExtensionState): void {
 			if (!state.master) {
 				throw new Error("No master_integration_list.yaml found.");
 			}
-			const r = loadBundle(state, params.name, "model");
+			const r = requestLoad(pi, state, params.name, "model");
 			if (!r.ok) {
 				throw new Error(r.reason || "load failed");
 			}
-			applyActiveSet(pi, state);
 			const b = state.bundles.get(params.name)!;
 			return {
 				content: [
@@ -632,7 +713,7 @@ function registerRouterTools(pi: ExtensionAPI, state: ExtensionState): void {
 						text:
 							`Loaded bundle "${params.name}" (${b.tools.length} tools).\n\n` +
 							`Tools now active: ${pi.getActiveTools().length}.\n` +
-							"These tools are callable on the next model response in this run.",
+							"These tools are active now and available on the next response unless another operation changes the selection.",
 					},
 				],
 				details: { bundle: params.name, tools: b.tools },
@@ -649,6 +730,8 @@ function registerRouterTools(pi: ExtensionAPI, state: ExtensionState): void {
 			name: Type.String({ description: "Bundle name to unload" }),
 		}),
 		async execute(_id, params) {
+			if (!state.master) throw new Error("No master_integration_list.yaml found; activation management is disabled.");
+			refreshPolicy(pi, state);
 			const r = unloadBundle(state, params.name);
 			if (!r.ok) {
 				throw new Error(r.reason || "unload failed");
@@ -658,7 +741,7 @@ function registerRouterTools(pi: ExtensionAPI, state: ExtensionState): void {
 				content: [
 					{
 						type: "text",
-						text: `Unloaded bundle "${params.name}". Active tools: ${pi.getActiveTools().length}.`,
+						text: `Unloaded bundle "${params.name}". Overlapping, router or manually selected tools may remain active. Active tools: ${pi.getActiveTools().length}.`,
 					},
 				],
 			};
@@ -669,12 +752,24 @@ function registerRouterTools(pi: ExtensionAPI, state: ExtensionState): void {
 		name: "enterprise_list_bundles",
 		label: "List Bundles",
 		description:
-			"List all integration bundles with their loaded/available status, summary, and tool counts. Use this to discover what enterprise capabilities exist before loading one.",
-		parameters: Type.Object({}),
-		async execute() {
-			return {
-				content: [{ type: "text", text: formatStatusReport(state, pi) }],
-			};
+			"Bounded read-only discovery of registered tool names/descriptions, configured bundles and pi-shared capability groups. Search uses case-insensitive literal terms (all must match). Groups are discovery labels, not loadable bundles unless configured. Registration/eligibility is not authorization or proof of service health.",
+		parameters: Type.Object({
+			query: Type.Optional(Type.String({ maxLength: 200 })),
+			group: Type.Optional(Type.String({ maxLength: 200, description: "Exact bundle/capability group name" })),
+			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, default: 20 })),
+			offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 10000, default: 0 })),
+		}),
+		async execute(_id, params) {
+			refreshPolicy(pi, state);
+			const active = new Set(pi.getActiveTools());
+			const cap = resolveModelOverride(state)?.max_tools ?? null;
+			const catalog = searchCatalog({ ...params, tools: pi.getAllTools(), active, eligible: state.eligible,
+				bundles: [...state.bundles].map(([name, b]) => ({ name, description: `${b.def.summary ?? ""} ${b.def.description}`, tools: b.tools,
+					loaded: b.loaded && !unavailableReason(state, b) && b.tools.every(n => active.has(n)), available: !unavailableReason(state, b) })) });
+			const details = { ...catalog, activationManaged: !!state.master, activeCount: active.size, cap,
+				budgetError: cap != null && active.size > cap ? `Tool budget exceeded: ${active.size} active / cap ${cap}.${state.budgetError ? " Pinned/base tools exceed the budget; reduce selections/defaults or change model." : ""}` : null,
+				message: state.master ? "Only eligible registered bundles can be loaded." : "No master_integration_list.yaml found; activation management is disabled (discovery only)." };
+			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
 	});
 }

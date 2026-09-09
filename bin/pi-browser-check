@@ -16,9 +16,22 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import sys
 import urllib.parse
 import uuid
+
+
+sys.dont_write_bytecode = True
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "extensions/dev-doctor"))
+from doctor_common import capability, read_bytes, read_json, timeout_value, timestamp
+
+
+class BrowserError(ValueError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
 
 
 GUIDANCE = (
@@ -33,10 +46,10 @@ GUIDANCE = (
 def worker_enabled():
     path = Path.home() / ".pi/research/config.json"
     try:
-        config = json.loads(path.read_text())
+        config = read_json(path)
     except FileNotFoundError:
         return True
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         raise ValueError("Cannot read browser-worker selection from ~/.pi/research/config.json; fix the research configuration") from None
     if not isinstance(config, dict):
         raise ValueError("Research configuration must be an object")
@@ -46,20 +59,29 @@ def worker_enabled():
     return enabled
 
 
-def check(timeout=3.0):
+def endpoint():
     raw = os.environ.get("BROWSER_WORKER_MCP_URL", "http://127.0.0.1:8890/mcp")
     # Deliberately canonical, matching the TS client: no parser normalization,
     # userinfo, localhost DNS, query, fragment, or implicit/default HTTP port.
     match = re.fullmatch(r"http://(127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})/mcp", raw)
     if not match or not 1 <= int(match[2]) <= 65535 or int(match[2]) == 80:
         raise ValueError("BROWSER_WORKER_MCP_URL must be an uncredentialed loopback HTTP /mcp URL with an explicit non-default port")
-    url = urllib.parse.urlsplit(raw)
-    token_path = Path(os.environ.get("BROWSER_WORKER_MCP_TOKEN_FILE", str(
+    return raw
+
+
+def token_file():
+    return Path(os.environ.get("BROWSER_WORKER_MCP_TOKEN_FILE", str(
         Path.home() / "srv/browser-worker/shared/tokens/pi-production"
     )))
+
+
+def check(timeout=3.0):
+    raw = endpoint()
+    url = urllib.parse.urlsplit(raw)
+    token_path = token_file()
     try:
-        token = token_path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError):
+        token = read_bytes(token_path, 16384).decode("utf-8").strip()
+    except (OSError, UnicodeError, RuntimeError):
         raise ValueError("browser-worker token file is missing, unreadable, or not UTF-8 (BROWSER_WORKER_MCP_TOKEN_FILE)") from None
     if not token:
         raise ValueError("browser-worker token file is empty")
@@ -76,7 +98,8 @@ def check(timeout=3.0):
         })
         response = connection.getresponse()
         if response.status != 200:
-            raise ValueError(f"browser-worker tools/list returned HTTP {response.status} (check service/auth; redirects are refused)")
+            raise BrowserError("auth_failed" if response.status in (401, 403) else "http_error",
+                               f"browser-worker tools/list returned HTTP {response.status} (check service/auth; redirects are refused)")
         body = response.read(1024 * 1024 + 1)
         if len(body) > 1024 * 1024:
             raise ValueError("browser-worker tools/list response exceeds 1 MiB")
@@ -84,8 +107,10 @@ def check(timeout=3.0):
             payload = json.loads(body)
         except (ValueError, UnicodeError):
             raise ValueError("browser-worker tools/list returned invalid JSON") from None
+    except TimeoutError:
+        raise BrowserError("timeout", "browser-worker tools/list unavailable or timed out; start/check the separately managed service") from None
     except (OSError, http.client.HTTPException):
-        raise ValueError("browser-worker tools/list unavailable or timed out; start/check the separately managed service") from None
+        raise BrowserError("unavailable", "browser-worker tools/list unavailable or timed out; start/check the separately managed service") from None
     finally:
         connection.close()
     result = payload.get("result") if isinstance(payload, dict) else None
@@ -102,12 +127,45 @@ def check(timeout=3.0):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args()
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--static", action="store_true", help="Inspect selection/endpoint/token-file presence only; no token read or network")
+    parser.add_argument("--timeout", type=timeout_value, default=3.0)
+    args = parser.parse_args()
+    if args.json or args.static:
+        row = capability("browser_worker", "static" if args.static else "authenticated_inventory", "not_checked", GUIDANCE,
+                         execution="not_tested")
+        try:
+            enabled = worker_enabled()
+            row["selected"] = enabled
+            if not enabled:
+                row.update(outcome="disabled", configured="no")
+            else:
+                endpoint()  # Validate without emitting the URL or reading the token.
+                row["token_file_present"] = token_file().is_file()
+                row["configured"] = "yes" if row["token_file_present"] else "no"
+                if args.static:
+                    row["outcome"] = "not_checked" if row["token_file_present"] else "missing_token"
+                else:
+                    def expired(_signum, _frame):
+                        raise BrowserError("timeout", "Browser inventory deadline exceeded")
+                    signal.signal(signal.SIGALRM, expired)
+                    signal.setitimer(signal.ITIMER_REAL, args.timeout)
+                    try:
+                        check(args.timeout)
+                    finally:
+                        signal.setitimer(signal.ITIMER_REAL, 0)
+                    row.update(outcome="inventory_verified", inventory_verified=True)
+        except (ValueError, OSError, RuntimeError) as error:
+            row["outcome"] = getattr(error, "code", "invalid_config")
+        row["verified_at"] = timestamp()
+        print(json.dumps({"schema_version": 1, "capabilities": [row]}) if args.json else
+              f"{row['outcome']}: {GUIDANCE}")
+        return 0 if row["outcome"] in {"disabled", "not_checked", "inventory_verified"} else 2
     try:
         if not worker_enabled():
             print("DISABLED: standalone browser-worker is not selected (browserWorkerEnabled=false); web_search/web_fetch and app_* are separate capabilities.")
             return 0
-        url = check()
+        url = check(args.timeout)
     except ValueError as error:
         print(f"WARN: optional browser-worker unavailable: {error}. {GUIDANCE}")
         return 2

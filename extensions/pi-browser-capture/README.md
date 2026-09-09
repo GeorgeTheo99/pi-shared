@@ -73,6 +73,106 @@ export BROWSER_MCP_APP_BASE_URL='http://127.0.0.1:8100'
 export BROWSER_MCP_APP_ALLOWED_HOSTS='127.0.0.1,localhost,dev.internal'
 ```
 
+## Reproducible isolated app tests
+
+`src/app-test.ts` adds one private router, `app_test`. The persistent/authenticated
+`app_*` tools above remain the default and are unchanged. `app_test` never reads,
+copies, or writes `BROWSER_MCP_APP_PROFILE_DIR`, storage state, or credentials.
+It uses installed Playwright Chromium; existing persistent tools still use Patchright.
+
+Actions:
+
+- `create` — fresh session-owned context/browser, `device: "desktop"` (1440×1000)
+  or `"mobile"` (iPhone 13 touch/mobile emulation at 390×844, pixel ratio 1).
+- `configure` — resize with `width`/`height` (240–1920). Device emulation is fixed
+  at creation: create a new context to change desktop/mobile.
+- `snapshot` — bounded ARIA snapshot of the body, depth 20; not an accessibility
+  compliance audit and not a DOM dump.
+- `run` — 1–30 explicit `steps`. Each step has `action`, optional `selector`,
+  `value`, and `timeoutMs`. Actions: `goto`, `click`, `fill`, `press`,
+  `wait_visible`, `assert_visible`, `assert_text`, `assert_url`.
+  Text/URL assertions use exact equality. Use explicit `wait_visible` for readiness.
+  The entire sequence is validated before execution; execution stops at the first
+  failure and reports its 1-based step, skipped count, and failure artifacts.
+  There is no wrapper retry, mutation replay, forced click, or selector repair.
+  Playwright's normal pre-action actionability waiting remains enabled.
+- `trace_start` / `trace_stop` — opt-in screenshot/DOM/network trace; sources off.
+  Explicit trace stop returns a ZIP path; a timer also requests stop after 60s.
+- `close` — close browser/proxy and delete context artifacts, including trace
+  staging files. Session switch/fork/shutdown also closes contexts. Context IDs
+  are bound to the exact Pi session, not accepted from another session/runtime.
+
+Example calls (use the returned context ID, never a persistent app tab ID):
+
+```json
+{"action":"create","device":"mobile"}
+{"action":"run","contextId":"<returned-id>","steps":[{"action":"goto","value":"/"},{"action":"wait_visible","selector":"h1"},{"action":"assert_text","selector":"h1","value":"My app"}]}
+{"action":"snapshot","contextId":"<returned-id>"}
+{"action":"close","contextId":"<returned-id>"}
+```
+
+### Target and artifact boundaries
+
+The runner honors `BROWSER_MCP_APP_BASE_URL` (default `http://127.0.0.1:8100`)
+and `BROWSER_MCP_APP_ALLOWED_HOSTS`, including `*.subdomain` rules. An explicitly
+empty base URL disables the default target; absolute URLs then require allowed hosts.
+It rejects credentialed and non-HTTP(S) explicit URLs. A per-context loopback proxy
+checks every HTTP request and HTTPS CONNECT destination, including browser redirects
+and subresources: Playwright routing alone only intercepts the first URL of a redirect
+chain. TLS is not intercepted; normal certificate validation remains enabled.
+HTTP forwarding does not replay/retry requests or copy authentication state.
+This is a hostname policy for trusted local/private apps, not a DNS/IP firewall,
+untrusted-code sandbox, or public-worker bypass. Allowed hostnames permit any port;
+DNS rebinding and arbitrary non-HTTP browser facilities are not a hardened sandbox.
+WebSockets, service workers, downloads, and extra tabs are unsupported. The runner
+closes popups; any initial popup network requests still pass through the target policy.
+Headless mode and the documented presets are fixed for reproducibility; persistent
+app browser executable, user-agent, timeout, and HTTPS-error overrides are not inherited.
+
+Private files live in generated 0700 runtime/context directories under
+`BROWSER_MCP_APP_ARTIFACT_DIR/app-test` (otherwise the existing storage root's
+`artifacts/app/app-test`). Exported files are 0600; callers cannot set artifact paths.
+Failure evidence includes a viewport-only PNG and bounded console/network JSON tails.
+Network tails omit headers/bodies and strip URL queries/fragments. Console text,
+screenshots, page content, and opt-in traces **can contain secrets** from the app;
+private filesystem permissions are not redaction or protection from other same-user
+processes. Do not upload evidence without reviewing it.
+
+| Limit | Value |
+| --- | --- |
+| Contexts per runtime / context lifetime | 4 / 15 minutes |
+| Steps per run / run execution deadline | 30 / 60 seconds |
+| Per-step timeout | 1–10,000 ms (default 10,000) |
+| Console/network tails | 100 entries each, 512 characters per entry |
+| Snapshot output | 16,000 characters, truncated flag |
+| Failure screenshot | Viewport only, retained only if ≤2 MiB |
+| Trace starts / stop timer | 5 per context / 60 seconds per recording |
+| Trace export | Retained only if ≤16 MiB |
+| Retained exports per context | 20 files / 32 MiB |
+
+These are **retention/output limits, not hard disk or browser memory quotas**.
+Playwright buffers snapshots/screenshots and writes raw trace staging data before
+export checks; staging remains private until context close. A trace ZIP can exceed
+its limit while being written and is then deleted. Trace stop/export and browser
+cleanup are asynchronous; timers/deadlines are best effort under event-loop or
+browser stalls. Failure capture can add up to its 3-second screenshot timeout after
+the run deadline. Context expiry starts after creation. Artifacts disappear on normal
+close/expiry/session cleanup; copy needed evidence beforehand. Crashes/forced kills
+can leave private directories: there is no crash-proof janitor or cross-run quota.
+
+### Verification
+
+From the repository root (browser dependencies and Chromium must already be installed):
+
+```bash
+node --no-warnings --test tests/app_test_runtime.test.mts tests/browser_tool_inventory.test.mts
+node --no-warnings --experimental-loader ./tests/fixtures/app_test_loader.mjs --test tests/app_test_tool.test.mts
+```
+
+The runtime suite uses only local fixture servers and real Chromium, including a
+real 60-second automatic trace-stop check. `npm run test:app-test` runs both suites
+and is included in root `npm test`; these commands do not activate a Pi profile.
+
 ## Intended use
 
 - Use `browser_fetch` / `browser_inspect` for actual interaction with public web pages.

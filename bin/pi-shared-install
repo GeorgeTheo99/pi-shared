@@ -343,7 +343,7 @@ main() {
   fi
   migrate_legacy_launcher_path
   if [ -s "$LAUNCHERS_OUT" ] && ! grep -qsF 'pi-launchers.zsh' "$HOME/.zshrc"; then
-    printf '\nNext step: source the generated launchers so pi-list is available (pi-setup/install.sh does this for you):\n'
+    printf '\nNext step: source the generated launchers so pi-list is available (add this to your shell startup file if desired):\n'
     printf '  [ -f %q ] && source %q\n' "$LAUNCHERS_OUT" "$LAUNCHERS_OUT"
   fi
   ok "pi-shared installed"

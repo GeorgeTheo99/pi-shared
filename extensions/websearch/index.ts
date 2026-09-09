@@ -2,7 +2,7 @@
  * Web Search & Fetch Tools — native Pi wrappers around the local-search MCP broker.
  *
  * The MCP broker is the stable entry point for product/Pi search. It owns the
- * backend strategy (local SearXNG first, policy-controlled Tavily egress)
+ * backend strategy (Brave in the standalone local_web_search service)
  * so clients do not bypass broker-level reliability, policy, and observability.
  */
 
@@ -86,7 +86,7 @@ const webSearch = defineTool({
 	name: "web_search",
 	label: "Web Search",
 	description:
-		"Search the web via the local-search MCP broker, which uses loopback SearXNG with policy-controlled Tavily fallback or supplementation. Use this for ANY question about current events, news, facts, people, places, or any topic that requires up-to-date information. Returns ranked results with titles, URLs, and snippets.",
+		"Search the web via the configured local-search MCP broker. The broker owns provider selection and policy (Brave in the standalone service). Use this for ANY question about current events, news, facts, people, places, or any topic that requires up-to-date information. Returns ranked results with titles, URLs, and snippets.",
 	promptSnippet: "web_search for quick web lookups via the local-search MCP broker",
 	promptGuidelines: [
 		"Use web_search for quick facts, current information, or single-page lookups. Use web_fetch to read a specific URL found via web_search.",

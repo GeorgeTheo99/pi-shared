@@ -13,12 +13,54 @@ import os
 from pathlib import Path
 import shlex
 import shutil
-import signal
-import subprocess
 import sys
 import tempfile
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "extensions/dev-doctor"))
+from doctor_common import bounded_run, capability, read_json, positive_timeout
+
+GUIDANCE = "Inspect profile settings and trusted extension dependencies; run pi-shared-install only after approval."
+
+
+def static_report(agent_dir: Path, require_models=False):
+    rows = []
+    try:
+        settings = read_json(agent_dir / "settings.json")
+        if not isinstance(settings, dict) or any(
+            key in settings and not isinstance(settings[key], list) for key in ("packages", "extensions")
+        ):
+            raise ValueError("Invalid profile settings")
+        rows.append(capability("profile", "static", "inspected", GUIDANCE,
+                               installed="yes", configured="yes"))
+        rows.append(capability("extensions", "static", "not_checked",
+                               "Use --probe-imports only after trusting all configured extension code; import is not session activation.",
+                               configured="yes" if settings.get("packages") or settings.get("extensions") else "unknown"))
+    except (OSError, ValueError, RuntimeError):
+        rows.append(capability("profile", "static", "invalid_config" if (agent_dir / "settings.json").exists() else "missing",
+                               GUIDANCE, installed="yes" if agent_dir.is_dir() else "no", configured="no"))
+        rows.append(capability("extensions", "static", "not_checked", GUIDANCE))
+    try:
+        catalog = read_json(agent_dir / "models.json")
+        providers = catalog.get("providers") if isinstance(catalog, dict) else None
+        if not isinstance(providers, dict) or any(not isinstance(p, dict) for p in providers.values()):
+            raise ValueError("Invalid providers")
+        models = [p.get("models", []) for p in providers.values()]
+        if any(not isinstance(items, list) or any(not isinstance(m, dict) or not isinstance(m.get("id"), str)
+               or not m["id"] for m in items) for items in models):
+            raise ValueError("Invalid models")
+        if require_models and not any(models):
+            raise ValueError("Empty required model catalog")
+        rows.append(capability("models", "static", "not_exercised",
+                               "Model declarations only; credentials, availability and inference were not tested. Doctor never calls models.",
+                               configured="yes" if providers else "no", declared_models=sum(map(len, models))))
+    except FileNotFoundError:
+        rows.append(capability("models", "static", "missing" if require_models else "not_checked",
+                               "No models.json; built-in or extension models may exist. No credentials or model execution checked."))
+    except (OSError, ValueError, RuntimeError):
+        rows.append(capability("models", "static", "invalid_config", "Validate models.json without exposing credential values.", configured="no"))
+    return rows
 
 
 def sdk_path() -> Path:
@@ -33,7 +75,7 @@ def sdk_path() -> Path:
         manifest = candidate / "package.json"
         if not manifest.is_file():
             continue
-        package = json.loads(manifest.read_text())
+        package = read_json(manifest)
         if package.get("name") not in ("@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"):
             continue
         module = (candidate / package.get("main", "dist/index.js")).resolve()
@@ -42,29 +84,17 @@ def sdk_path() -> Path:
     raise RuntimeError("Cannot locate the installed Pi SDK; set PI_INSTALL_DIR to its package directory")
 
 
-def bounded_run(argv: list[str], *, env: dict, cwd: Path, seconds: float):
-    process = subprocess.Popen(argv, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, start_new_session=True)
-    try:
-        out, err = process.communicate(timeout=seconds)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.communicate()
-        raise RuntimeError(f"Pi profile probe timed out after {seconds:g}s; no successful load was verified")
-    return process.returncode, out, err
-
-
-def check(agent_dir: Path, expected: list[Path], require_models: bool, seconds: float) -> None:
+def check(agent_dir: Path, expected: list[Path], require_models: bool, seconds: float, safe=False):
     if not (agent_dir / "settings.json").is_file():
         raise RuntimeError(f"Missing profile settings: {agent_dir / 'settings.json'}")
-    settings = json.loads((agent_dir / "settings.json").read_text())
+    settings = read_json(agent_dir / "settings.json")
     if not isinstance(settings, dict):
         raise RuntimeError("Profile settings must be a JSON object")
     if require_models:
         model_file = agent_dir / "models.json"
         if not model_file.is_file():
             raise RuntimeError(f"Missing model catalog: {model_file}")
-        catalog = json.loads(model_file.read_text())
+        catalog = read_json(model_file)
         providers = catalog.get("providers", {})
         if not isinstance(providers, dict) or not any(isinstance(p, dict) and p.get("models") for p in providers.values()):
             raise RuntimeError(f"Empty generated model catalog: {model_file}")
@@ -78,15 +108,16 @@ def check(agent_dir: Path, expected: list[Path], require_models: bool, seconds: 
         env = {**os.environ, "PI_CODING_AGENT_DIR": str(agent_dir), "PI_OFFLINE": "1",
                "PI_SKIP_VERSION_CHECK": "1"}
         rc, _out, _err = bounded_run([node, str(ROOT / "lib/probe_extensions.mjs"), str(sdk),
-                                      str(agent_dir), str(cwd), str(report_path), *map(str, expected)],
-                                     env=env, cwd=cwd, seconds=seconds)
+                                      str(agent_dir), str(cwd), str(report_path), *map(str, expected), *(["--safe-report"] if safe else [])],
+                                     env=env, cwd=cwd, seconds=seconds,
+                                     new_session=os.environ.get("PI_DOCTOR_GROUPED") != "1")
         if not report_path.is_file():
             raise RuntimeError(f"Pi probe exited {rc} without a verification report; check Pi/Node compatibility")
-        report = json.loads(report_path.read_text())
+        report = read_json(report_path)
         if rc != 0 or report.get("ok") is not True:
             details = report.get("errors") or [f"probe exit {rc}"]
             raise RuntimeError("; ".join(map(str, details)))
-        print(f"OK  {agent_dir}: {len(report['extensions'])} extensions imported without errors")
+        return report
 
 
 def main() -> int:
@@ -95,12 +126,38 @@ def main() -> int:
     parser.add_argument("--expect-package", type=Path, action="append", default=[])
     parser.add_argument("--require-models", action="store_true")
     parser.add_argument("--timeout", type=float, default=60)
+    parser.add_argument("--json", action="store_true", help="Return secret-safe structured evidence")
+    parser.add_argument("--static", action="store_true", help="Inspect configuration only; do not import extensions")
     args = parser.parse_args()
+    agent_dir = args.agent_dir.expanduser().resolve()
     try:
-        if args.timeout <= 0:
-            raise RuntimeError("--timeout must be positive")
-        check(args.agent_dir.expanduser().resolve(), [p.expanduser().resolve() for p in args.expect_package],
-              args.require_models, args.timeout)
+        positive_timeout(args.timeout)
+    except ValueError:
+        if args.json:
+            print(json.dumps({"schema_version": 1, "capabilities": [capability("profile", "static", "invalid_config",
+                              "--timeout must be finite and positive")]}))
+        else:
+            print("FAIL  --timeout must be finite and positive", file=sys.stderr)
+        return 1
+    if args.json or args.static:
+        rows = static_report(agent_dir, args.require_models)
+        if not args.static and rows[0]["outcome"] == "inspected":
+            try:
+                report = check(agent_dir, [p.expanduser().resolve() for p in args.expect_package],
+                               args.require_models, args.timeout, safe=True)
+                rows[1] = capability("extensions", "import", "imported" if report["extension_count"] else "no_extensions_imported",
+                                     GUIDANCE, loaded="yes" if report["extension_count"] else "no",
+                                     imported_count=report["extension_count"], configured=rows[1]["configured"])
+            except (RuntimeError, OSError, ValueError, TypeError, KeyError) as error:
+                rows[1] = capability("extensions", "import", getattr(error, "code", "import_failed"), GUIDANCE,
+                                     configured=rows[1]["configured"])
+        failed = any(row["outcome"] in {"missing", "invalid_config", "import_failed", "timeout", "output_limit", "spawn_error", "canceled"} for row in rows)
+        print(json.dumps({"schema_version": 1, "capabilities": rows}) if args.json else
+              "\n".join(f"{r['capability']}: {r['outcome']} — {r['guidance']}" for r in rows))
+        return 1 if failed else 0
+    try:
+        report = check(agent_dir, [p.expanduser().resolve() for p in args.expect_package], args.require_models, args.timeout)
+        print(f"OK  {agent_dir}: {len(report['extensions'])} extensions imported without errors")
     except (RuntimeError, OSError, ValueError, TypeError, KeyError) as exc:
         print(f"FAIL  {exc}", file=sys.stderr)
         print(f"Repair profile/dependencies with {shlex.quote(str(ROOT / 'bin/pi-shared-install'))}; "

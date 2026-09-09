@@ -1,0 +1,152 @@
+diff --git a/packages/coding-agent/src/core/resource-loader.ts b/packages/coding-agent/src/core/resource-loader.ts
+index 04102425b828b5b8dcf501afa539a1e76081693f..0337c97e93a6c199d5e33ee5bbf1c530227c50c4 100644
+--- a/packages/coding-agent/src/core/resource-loader.ts
++++ b/packages/coding-agent/src/core/resource-loader.ts
+@@ -124,12 +124,9 @@ export function loadProjectContextFiles(options: {
+ 	const resolvedAgentDir = resolvePath(options.agentDir);
+ 
+ 	const contextFiles: Array<{ path: string; content: string }> = [];
+-	const seenPaths = new Set<string>();
+-
+ 	const globalContext = loadContextFileFromDir(resolvedAgentDir);
+ 	if (globalContext) {
+ 		contextFiles.push(globalContext);
+-		seenPaths.add(globalContext.path);
+ 	}
+ 
+ 	const ancestorContextFiles: Array<{ path: string; content: string }> = [];
+@@ -141,9 +138,8 @@ export function loadProjectContextFiles(options: {
+ 		const contextFile = loadContextFileFromDir(currentDir);
+ 		const isShadowed =
+ 			shadowedContextFile !== undefined && canonicalizePath(contextFile?.path ?? "") === shadowedContextFile;
+-		if (contextFile && !isShadowed && !seenPaths.has(contextFile.path)) {
++		if (contextFile && !isShadowed) {
+ 			ancestorContextFiles.unshift(contextFile);
+-			seenPaths.add(contextFile.path);
+ 		}
+ 
+ 		const parentDir = dirname(currentDir);
+@@ -153,7 +149,23 @@ export function loadProjectContextFiles(options: {
+ 
+ 	contextFiles.push(...ancestorContextFiles);
+ 
+-	return contextFiles;
++	// Keep the most-specific occurrence of each canonical file and loaded content.
++	// Distinct files may contain identical rules, and a file may change between reads.
++	const seenContents = new Map<string, Set<string>>();
++	return contextFiles
++		.reverse()
++		.filter((file) => {
++			const canonicalPath = canonicalizePath(file.path);
++			let contents = seenContents.get(canonicalPath);
++			if (contents?.has(file.content)) return false;
++			if (!contents) {
++				contents = new Set<string>();
++				seenContents.set(canonicalPath, contents);
++			}
++			contents.add(file.content);
++			return true;
++		})
++		.reverse();
+ }
+ 
+ export interface DefaultResourceLoaderOptions {
+diff --git a/packages/coding-agent/test/resource-loader-context-dedup.test.ts b/packages/coding-agent/test/resource-loader-context-dedup.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..20185d8c2387547e7a8379800c128b0dcf11b494
+--- /dev/null
++++ b/packages/coding-agent/test/resource-loader-context-dedup.test.ts
+@@ -0,0 +1,93 @@
++import assert from "node:assert/strict";
++import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join, sep } from "node:path";
++import { afterEach, beforeEach, describe, it, vi } from "vitest";
++import { loadProjectContextFiles } from "../src/core/resource-loader.ts";
++import * as text from "../src/utils/text.ts";
++
++describe("loadProjectContextFiles canonical deduplication", () => {
++	let root: string;
++	let agentDir: string;
++	let cwd: string;
++
++	beforeEach(() => {
++		root = mkdtempSync(join(tmpdir(), "pi-context-dedup-"));
++		agentDir = join(root, "agent");
++		cwd = join(root, "project", "child");
++		mkdirSync(agentDir, { recursive: true });
++		mkdirSync(cwd, { recursive: true });
++	});
++
++	afterEach(() => {
++		vi.restoreAllMocks();
++		rmSync(root, { recursive: true, force: true });
++	});
++
++	function load() {
++		// Ignore real ancestors above the fixture, which may have their own rules.
++		return loadProjectContextFiles({ agentDir, cwd }).filter((file) => file.path.startsWith(`${root}${sep}`));
++	}
++
++	it("keeps the most-specific alias and preserves surviving ancestor order", () => {
++		const shared = join(root, "shared.md");
++		writeFileSync(shared, "shared");
++		writeFileSync(join(root, "AGENTS.md"), "ancestor");
++		writeFileSync(join(root, "project", "AGENTS.md"), "project");
++		symlinkSync(shared, join(agentDir, "AGENTS.md"));
++		symlinkSync(shared, join(cwd, "AGENTS.md"));
++		assert.deepEqual(load(), [
++			{ path: join(root, "AGENTS.md"), content: "ancestor" },
++			{ path: join(root, "project", "AGENTS.md"), content: "project" },
++			{ path: join(cwd, "AGENTS.md"), content: "shared" },
++		]);
++	});
++
++	it("keeps distinct files with identical content", () => {
++		writeFileSync(join(agentDir, "AGENTS.md"), "identical");
++		writeFileSync(join(cwd, "AGENTS.md"), "identical");
++		assert.deepEqual(load().map((file) => file.path), [join(agentDir, "AGENTS.md"), join(cwd, "AGENTS.md")]);
++	});
++
++	it("deduplicates symlinked directories", () => {
++		writeFileSync(join(cwd, "AGENTS.md"), "shared");
++		const alias = join(root, "alias");
++		symlinkSync(cwd, alias, "junction");
++		agentDir = alias;
++		assert.deepEqual(load(), [{ path: join(cwd, "AGENTS.md"), content: "shared" }]);
++	});
++
++	it("keeps the ancestor position when agentDir is itself an ancestor", () => {
++		agentDir = join(root, "project");
++		writeFileSync(join(root, "AGENTS.md"), "ancestor");
++		writeFileSync(join(agentDir, "AGENTS.md"), "project");
++		writeFileSync(join(cwd, "AGENTS.md"), "child");
++		assert.deepEqual(load().map((file) => file.content), ["ancestor", "project", "child"]);
++	});
++
++	it("keeps differing content loaded from the same lexical path", () => {
++		agentDir = cwd;
++		const path = join(cwd, "AGENTS.md");
++		writeFileSync(path, "before");
++		vi.spyOn(text, "stripBom").mockImplementationOnce((content) => {
++			writeFileSync(path, "after");
++			return content;
++		});
++		assert.deepEqual(load(), [{ path, content: "before" }, { path, content: "after" }]);
++	});
++
++	it("keeps differing content loaded through aliases of the same canonical path", () => {
++		const shared = join(root, "shared.md");
++		writeFileSync(shared, "before");
++		symlinkSync(shared, join(agentDir, "AGENTS.md"));
++		symlinkSync(shared, join(cwd, "AGENTS.md"));
++		vi.spyOn(text, "stripBom").mockImplementationOnce((content) => {
++			writeFileSync(shared, "after");
++			return content;
++		});
++		assert.deepEqual(load(), [
++			{ path: join(agentDir, "AGENTS.md"), content: "before" },
++			{ path: join(cwd, "AGENTS.md"), content: "after" },
++		]);
++	});
++});

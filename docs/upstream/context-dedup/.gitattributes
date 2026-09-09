@@ -1,0 +1,3 @@
+# Unified-diff context markers intentionally precede blank lines and tab indents.
+# validate.mjs checks actual changed source with git apply --whitespace=error-all.
+context-dedup.patch -whitespace

@@ -1,0 +1,73 @@
+{
+  "repository": "https://github.com/earendil-works/pi",
+  "commit": "b2602be77cb7b0de45dd616407fd210daa48aa75",
+  "commitUrl": "https://github.com/earendil-works/pi/commit/b2602be77cb7b0de45dd616407fd210daa48aa75",
+  "commitApi": "https://api.github.com/repos/earendil-works/pi/commits/b2602be77cb7b0de45dd616407fd210daa48aa75",
+  "tree": "831c0638ada9ab52a42e20203a3085404b2e5e4d",
+  "commitDate": "2026-09-07T20:26:47Z",
+  "subject": "fix(ai): optimize EventStream queue",
+  "githubSignatureVerified": false,
+  "retrievedDate": "2026-09-08",
+  "verification": "Commit resolved from GitHub main then re-read by exact SHA. Each vendored source matched the pinned GitHub Contents API decoded bytes and Git blob SHA-1. This is public-source identity verification, not signed-commit attestation.",
+  "sources": [
+    {
+      "path": "packages/coding-agent/src/core/resource-loader.ts",
+      "local": "baseline/resource-loader.ts.txt",
+      "url": "https://raw.githubusercontent.com/earendil-works/pi/b2602be77cb7b0de45dd616407fd210daa48aa75/packages/coding-agent/src/core/resource-loader.ts",
+      "contentsApi": "https://api.github.com/repos/earendil-works/pi/contents/packages/coding-agent/src/core/resource-loader.ts?ref=b2602be77cb7b0de45dd616407fd210daa48aa75",
+      "bytes": 40180,
+      "sha256": "1877e9535820cb8b45e5a84598ac8ae581058bb0fbee6f0c64ec672f8ab986dd",
+      "gitBlob": "04102425b828b5b8dcf501afa539a1e76081693f"
+    },
+    {
+      "path": "packages/coding-agent/src/utils/paths.ts",
+      "local": "baseline/paths.ts.txt",
+      "url": "https://raw.githubusercontent.com/earendil-works/pi/b2602be77cb7b0de45dd616407fd210daa48aa75/packages/coding-agent/src/utils/paths.ts",
+      "contentsApi": "https://api.github.com/repos/earendil-works/pi/contents/packages/coding-agent/src/utils/paths.ts?ref=b2602be77cb7b0de45dd616407fd210daa48aa75",
+      "bytes": 4880,
+      "sha256": "a687cdb54b82216673fea5be1210c48e64ffa8398d64cfabf2bd7dba5c9d4210",
+      "gitBlob": "a8bcaae26be725367c23c2e3d1b97914c17e66db"
+    },
+    {
+      "path": "packages/coding-agent/src/utils/text.ts",
+      "local": "baseline/text.ts.txt",
+      "url": "https://raw.githubusercontent.com/earendil-works/pi/b2602be77cb7b0de45dd616407fd210daa48aa75/packages/coding-agent/src/utils/text.ts",
+      "contentsApi": "https://api.github.com/repos/earendil-works/pi/contents/packages/coding-agent/src/utils/text.ts?ref=b2602be77cb7b0de45dd616407fd210daa48aa75",
+      "bytes": 404,
+      "sha256": "bb323f9607c499115b532021f4f0163c6df04d834aee9c32c3c77b273bd2d7c6",
+      "gitBlob": "737466e851bac7de1deeda16a71c7d0e8cd2e8ab"
+    },
+    {
+      "path": "packages/coding-agent/src/core/footer-data-provider.ts",
+      "local": "baseline/footer-data-provider.ts.txt",
+      "url": "https://raw.githubusercontent.com/earendil-works/pi/b2602be77cb7b0de45dd616407fd210daa48aa75/packages/coding-agent/src/core/footer-data-provider.ts",
+      "contentsApi": "https://api.github.com/repos/earendil-works/pi/contents/packages/coding-agent/src/core/footer-data-provider.ts?ref=b2602be77cb7b0de45dd616407fd210daa48aa75",
+      "bytes": 11687,
+      "sha256": "024ae5b3f50a15db9c149f644845ffb267df838b3a555a0756db95043e05a0e2",
+      "gitBlob": "3119d63d35a7e9646432e05d96217a7d05ba85cb"
+    },
+    {
+      "path": "LICENSE",
+      "local": "baseline/LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/earendil-works/pi/b2602be77cb7b0de45dd616407fd210daa48aa75/LICENSE",
+      "contentsApi": "https://api.github.com/repos/earendil-works/pi/contents/LICENSE?ref=b2602be77cb7b0de45dd616407fd210daa48aa75",
+      "bytes": 1069,
+      "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
+      "gitBlob": "b0a8e9b81083294360c69b4ec45d3d39a2b28197"
+    }
+  ],
+  "patch": {
+    "path": "context-dedup.patch",
+    "sha256": "fbcb7141680237c1c37d4f4985b858d91c43035a0d1592ef1c754b8484779e3e",
+    "outputs": [
+      {
+        "path": "packages/coding-agent/src/core/resource-loader.ts",
+        "sha256": "53dfd9c4e7d7489d9938e4ba2313dd071030271cd2cf511273cf53e096cf51a1"
+      },
+      {
+        "path": "packages/coding-agent/test/resource-loader-context-dedup.test.ts",
+        "sha256": "a0c7ca786addf2e9ccbb35457621e1e8e7082491f09fe68eacf9da65fced0488"
+      }
+    ]
+  }
+}

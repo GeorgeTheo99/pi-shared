@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Lazy tool-bundle loader driven by master_integration_list.yaml. Keeps GPT under OpenAI's 128-tool API cap while letting Claude use everything.",
+  "description": "Conservative tool-bundle activation and bounded discovery driven by a machine-local master list.",
+  "scripts": {
+    "test": "node --no-warnings --experimental-loader ../../tests/fixtures/integration_bundles_test_loader.mjs --test ../../tests/integration_bundles*.test.mts"
+  },
   "pi": {
     "extensions": ["./index.ts"]
   },

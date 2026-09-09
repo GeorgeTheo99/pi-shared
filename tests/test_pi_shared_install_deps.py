@@ -34,6 +34,9 @@ def _make_repo(tmp_path: Path, extensions: dict[str, dict | None]) -> Path:
     (repo / "package.json").write_text(json.dumps({"name": "pi-shared", "pi": {"extensions": ["./extensions"]}}))
     shutil.copy(SHARED_ROOT / "bin" / "pi-shared-install", repo / "bin" / "pi-shared-install")
     shutil.copy(SHARED_ROOT / "bin" / "pi-shared-check-deps", repo / "bin" / "pi-shared-check-deps")
+    helpers = repo / "extensions/dev-doctor"
+    helpers.mkdir(parents=True)
+    shutil.copy(SHARED_ROOT / "extensions/dev-doctor/doctor_common.py", helpers / "doctor_common.py")
     for name in ("pi-catalog", "pi-omlx-repair", "pi-vanilla"):
         _write_exec(repo / "bin" / name, "#!/bin/sh\nexit 0\n")
     for name, deps in extensions.items():
@@ -160,6 +163,25 @@ def test_check_deps_detects_unresolvable_dependency(tmp_path):
     assert result.returncode == 1
     assert "cannot resolve yaml" in result.stderr
     assert "npm ci --ignore-scripts" in result.stderr
+
+
+@pytest.mark.parametrize("variant,expected", [("valid", 0), ("missing_bin", 1), ("broken_main", 1), ("outside_bin", 1)])
+def test_check_deps_recognizes_bin_only_packages_without_executing_them(tmp_path, variant, expected):
+    repo = _make_repo(tmp_path, {"language": {"fixture-cli": "1.0.0"}})
+    package = repo / "extensions/language/node_modules/fixture-cli"
+    package.mkdir(parents=True)
+    manifest = {"name": "fixture-cli", "bin": {"fixture-cli": "cli.mjs"}}
+    (package / "cli.mjs").write_text("throw new Error('must never execute')")
+    if variant == "missing_bin":
+        (package / "cli.mjs").unlink()
+    elif variant == "broken_main":
+        manifest["main"] = "missing.js"
+    elif variant == "outside_bin":
+        manifest["bin"]["fixture-cli"] = "../outside.mjs"
+        (package.parent / "outside.mjs").write_text("throw new Error('outside')")
+    (package / "package.json").write_text(json.dumps(manifest))
+    result = subprocess.run([str(repo / "bin/pi-shared-check-deps"), str(repo / "extensions")], capture_output=True, text=True)
+    assert result.returncode == expected, result.stderr
 
 
 def test_check_deps_reports_real_checkout_state():

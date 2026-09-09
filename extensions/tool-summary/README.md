@@ -29,7 +29,7 @@ Summaries, retry cooldowns, raw-exposure markers, mode, thresholds, and reset ep
 
 Image-bearing results are exempt from *summarization*, but their image parts are still subject to image aging (rule 8) — the newest 4 images stay raw, older ones become text placeholders in provider context only.
 
-Oversized error results always use deterministic reduction so exact exit codes, stderr, assertions, stack locations, paths, URLs, IDs, hashes, statuses, and important values are not paraphrased. Deterministic summaries reserve space for every recognized non-2xx HTTP status line and every `diff --git`, `---`, and `+++` file header. If those required exact lines cannot all fit, the result stays raw and a terminal overflow marker prevents lossy retries. Model failure, empty/incomplete output, or timeout leaves the result raw during its retry cooldown; lifecycle cancellation does not count as a failure.
+Oversized error results always use deterministic reduction so exact exit codes, stderr, assertions, stack locations, paths, URLs, IDs, hashes, statuses, and important values are not paraphrased. Deterministic summaries reserve space for every recognized non-2xx HTTP status line and every `diff --git`, `---`, and `+++` file header, plus recognized scalar JSON exit codes, counts (`count`, `total`, `passed`, `failed`, `failures`, `skipped`, `tests`), and artifact IDs. These values are selected lexically, never reconstructed by a model. If those required exact lines cannot all fit, the result stays raw and a terminal overflow marker prevents lossy retries. Model failure, empty/incomplete output, or timeout leaves the result raw during its retry cooldown; lifecycle cancellation does not count as a failure.
 
 ## Slash controls
 
@@ -69,8 +69,53 @@ The `tool_result_recall` tool retrieves exact text from the original stored `too
 - `head`: first lines.
 - `tail`: last lines.
 - `line-range`: inclusive 1-based line range.
+- `json-pointer`: RFC 6901 selection over an explicitly chosen original text part or stored `details` (see below).
 
 Recall output is exempt from summarization to prevent recursion. It is capped at 50,000 characters and 2,000 lines. If a requested exact slice is too large, the tool returns a size error instead of silently truncating it; request a narrower line range. Search may return a bounded subset of exact matching lines and reports omissions.
+
+### Structured recall
+
+```json
+{"toolCallId":"call_123","operation":"json-pointer","source":"text","contentIndex":0,"pointer":"/rows/0/id"}
+```
+
+For stored tool metadata, use `"source":"details"` and omit `contentIndex`.
+`source` and `pointer` are required for JSON Pointer; text also requires an explicit
+zero-based index into the **original content array**, including image parts in the
+index count. Text parts are never concatenated for JSON queries. Use `pointer:""`
+for the root, `/a~1b` for key `a/b`, and `/~0` for key `~`. Array indices must be
+canonical nonnegative integers: no leading zeros, signs, or `-`. JSONPath and URI
+fragment pointers are not supported.
+
+- Text selections return the original JSON value span, preserving large integer,
+  exponent, negative-zero, string-escape, and internal whitespace lexemes exactly.
+- Details selections use JSON serialization of the **already stored JavaScript
+  value**; they cannot recover original numeric precision or formatting. Normal
+  JSON serialization rules apply (for example, undefined object properties are
+  omitted). Unserializable details fail clearly.
+- `details.version:1` and `status:ok|missing|error` distinguish successful selection
+  (including `valueType:null`) from a missing target and query errors. `found`
+  identifies the original result; `matched` identifies a resolved pointer.
+  Query errors are returned as structured outcomes, like legacy recall diagnostics,
+  not as Pi execution exceptions. Selected JSON is in the untrusted text wrapper;
+  metadata contains its SHA-256 and zero-based, end-exclusive UTF-16 source span.
+- Provenance includes session/entry/call identity, original tool/error state,
+  content and selected-source hashes, source/index/pointer, and fidelity.
+  Recall reads only original message entries on the active branch, including
+  pre-compaction originals; it never uses a provider summary or another branch.
+  Reused call IDs fail as ambiguous even if their text is identical.
+- Entire JSON sources are validated. Duplicate object keys are rejected, even in
+  an unrelated subtree, rather than choosing an implementation-dependent value.
+  Limits: 5,000,000 source characters, 4,096 pointer characters, 128 nesting levels,
+  and 200,000 values. Oversized provenance is refused too.
+- JSON recall returns at most 50,000 serialized characters **and UTF-8 bytes**
+  (including content and details), and 2,000 text lines. Oversized selections are
+  omitted entirely with `error:selection_too_large`, `omitted:true`, `exact:false`;
+  `truncated:false` means no partial JSON was returned. Choose a narrower pointer.
+- Exactness is relative to stored data, not upstream completeness. Explicit
+  `details.truncated:true` or `details.truncation.truncated:true` is reported as
+  `upstreamTruncation:reported`; otherwise it is `unknown`. Recall never recovers
+  data already removed by the original tool or provider.
 
 ## Safety and lifecycle
 

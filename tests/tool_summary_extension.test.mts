@@ -683,6 +683,37 @@ test("active-model summarization requests low reasoning only through supported p
   });
 });
 
+test("registered JSON Pointer recall selects original parts after summarization and remains branch-scoped", async () => {
+  __resetCompleteStub();
+  const raw = `{"padding":"${"x".repeat(20_000)}","id":9007199254740993,"truncated":true}`;
+  const source = toolEntry("call-json", "custom_json", raw);
+  (source.message as any).details = { id: "stored-id", truncated: true };
+  const original = structuredClone(source);
+  const harness = makeHarness([source]);
+  await start(harness, "json-recall");
+  await harness.handlers.get("context")!({ type: "context", messages: contextMessages(harness) }, harness.ctx);
+  await providerAcceptedRaw(harness);
+  await drain();
+  const messages = contextMessages(harness);
+  await harness.handlers.get("context")!({ type: "context", messages }, harness.ctx);
+  assert.match(messages[0].content[0].text, /Stored summary/);
+  const recall = harness.tools.get("tool_result_recall")!.execute;
+  const params = { toolCallId: "call-json", operation: "json-pointer", source: "text", contentIndex: 0, pointer: "/id" };
+  const result = await recall("json-recall", params, undefined, undefined, harness.ctx);
+  assert.match(result.content[0].text, /\[Begin selected JSON\]\n9007199254740993\n\[End selected JSON\]/);
+  assert.equal(result.details.provenance.entryId, source.id);
+  assert.equal(result.details.provenance.upstreamTruncation, "reported");
+  assert.deepEqual(source, original);
+  const details = await recall("details-recall", { ...params, source: "details", contentIndex: undefined }, undefined, undefined, harness.ctx);
+  assert.match(details.content[0].text, /\n"stored-id"\n/);
+  assert.equal(details.details.provenance.fidelity, "stored-javascript-json-serialization");
+  assert.equal(completeCalls.length, 0);
+  harness.setBranch([]);
+  const inactive = await recall("inactive-recall", params, undefined, undefined, harness.ctx);
+  assert.equal(inactive.details.error, "result_not_found");
+  assert.doesNotMatch(inactive.content[0].text, /9007199254740993/);
+});
+
 test("recall retrieves exact head, tail, line-range, and literal search without recursive summarization", async () => {
   __resetCompleteStub();
   const raw = "one\nTwo target\r\ntHree\nfour";

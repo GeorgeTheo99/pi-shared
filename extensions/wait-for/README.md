@@ -81,6 +81,19 @@ Any watched job reaching `awaiting_answer` wakes immediately regardless of `job_
 
 Terminal statuses are `completed`, `failed`, `canceled`; `awaiting_answer` is actionable but nonterminal, and `canceling` remains nonterminal until the owner has actually stopped and reaped its child processes. While waiting, the TUI shows terminal and awaiting-answer counts plus a per-job status block. `wait_for` reads the same owner-leased, atomically written job store (`~/.pi/agent/spawn-subagent/jobs.json`, overridable via `PI_SUBAGENT_STATE_DIR` or legacy `PI_SPAWN_SUBAGENT_DIR`) that `jobAction: "status"` uses, so it works across sessions/processes and treats expired owner leases as failed instead of hanging indefinitely.
 
+## Managed command jobs
+
+`jobs` also accepts `cmd_…` IDs from `command_job`, alone or mixed with subagent
+IDs. Completion means terminal, not necessarily successful: inspect the returned
+command status and exact exit code. Unknown IDs and impossible `any_success` or
+`any_failure` outcomes fail promptly. Wait interruption leaves jobs running.
+
+For configured local server probes use `readiness:true` with command IDs and
+`job_mode:"all"` only. It waits for every probe to be ready while its command is
+still running; readiness is not completion. See [command jobs](../command-jobs/README.md).
+Shell evaluations respect the remaining overall deadline, plus bounded process
+cleanup grace, and retain at most 1 MiB stdout instead of unbounded capture.
+
 ## Beyond `wait_for`: event‑driven resume (documented pattern, not built)
 
 `wait_for` keeps the full conversation in memory and resumes **in place, zero‑token, zero re‑read** — so for any task that fits in its 24h cap while Pi can stay open (a `tmux`/`nohup` session survives logout on an always‑on server), `wait_for` is the right tool and there is nothing to gain from killing the process. The patterns below only earn their keep when a task **exceeds 24h** or must **survive a reboot / Pi process death**, and they cost more than `wait_for` (a fresh‑session re‑read at resume, plus launchd moving parts). They are documented here as the known escalation path; they are **not** built tooling yet.

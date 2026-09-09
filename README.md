@@ -13,12 +13,35 @@ Shared pi instructions and explicitly shareable pi resources.
 - `prompts/` — shared prompt templates.
 - `workflows/` — saved JavaScript workflows for the `workflow` tool (`<name>.js` invocable as `workflow({ name })`). Shared, committed; project workflows live under `.pi/workflows/`.
 - `themes/` — shared themes.
+- [Development tooling roadmap](docs/plans/development-tooling-roadmap.md) — proposed implementation sequence, tool contracts, acceptance criteria, and first delivery slice.
 - `bin/pi-vanilla` — recovery launcher for a vanilla Pi session when shared/local harness resources break normal startup.
 - `bin/pi-omlx-repair` — repair/wiring script for the dedicated `~/.pi-omlx/agent` Pi profile used by local oMLX/cloud model launchers.
 - `bin/pi-catalog` — render Pi CLI artifacts (`models.json` + `pi-launchers.zsh`) from a `model-aliases.json` catalog (the model-gateway public contract). The Pi-side of the model-gateway/Pi separation: the gateway owns the generic catalog, pi-catalog owns Pi-specific rendering. Install per-machine via a `~/.local/bin` symlink.
 - `bin/pi-shared-install` / `install.sh` — portable installer that symlinks shared helper scripts into `~/.local/bin`, wires this repo into `~/.pi/agent/settings.json`, and optionally renders initial Pi catalog artifacts.
 - `lib/pi_catalog.py` — the importable module behind `bin/pi-catalog` (render functions + CLI).
 - `tests/test_pi_catalog.py` — tests for the catalog renderer (`python3 -m pytest tests/`).
+
+## Development tools
+
+The [implementation guide](docs/plans/development-tooling-implementation.md) covers setup,
+verification, and activation prerequisites for the development-tooling roadmap.
+
+| Tool | Purpose |
+|---|---|
+| `command_job` + `wait_for` | Bounded local commands, readiness, logs, and explicit process outcomes |
+| `verify` | Reviewed project checks with TAP/JUnit/exit evidence and source freshness |
+| `code_intel` | Read-only TypeScript/JavaScript navigation and diagnostics |
+| `dev_doctor` / `bin/pi-doctor` | Static environment inspection with explicitly selected probes |
+| `tool_result_recall` | Exact text recall and lossless JSON Pointer selection |
+| `app_test` | Isolated local/private browser contexts, assertions and failure evidence |
+| `spawn_subagent` with `isolation:"worktree"` | Retained, committed-base single-worker Git isolation |
+| `enterprise_list_bundles` | Bounded discovery without overriding user tool exclusions |
+| `safe_edit` | Exact single-file preview/apply with stale-input rejection |
+
+Existing `bash`, `read`, `edit`, persistent `app_*`, and public browser-worker tools
+remain available. Reload/restart is a user action; verification trust and language-
+server configuration are not granted automatically. None of these tools is an OS
+sandbox, and process completion is not the same as test success or service readiness.
 
 ## Pi launcher profiles
 
@@ -91,7 +114,7 @@ Requirements and behavior:
 `bin/pi-omlx-repair` repairs the dedicated `~/.pi-omlx/agent` profile used by generated `pi-*` model launchers. It resolves the pi-shared repo from its own script/symlink location, so it works outside `~/local_code`. It:
 
 - writes `settings.json` so this `pi-shared` repo is loaded as a package
-- includes `~/.codex/skills` and a local extensions directory only if one exists
+- includes the optional sibling `pi-databricks` package when present and removes its obsolete standalone resource entries
 - symlinks `~/.pi-omlx/agent/AGENTS.md` to this repo's `AGENTS.md`
 - preserves the installed Pi zero-usage context fallback and the local DSML output filter across Pi updates
 - keeps superseded auto-retry failures out of restored model context and the visible transcript while preserving append-only audit/cost records, and uses protocol-neutral premature-stream wording
@@ -187,7 +210,7 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
 - `extensions/websearch` — local-search MCP-backed web tools:
   - `web_search` calls the MCP broker tool `web_search(query, num_results)`
   - `web_fetch` calls the MCP broker tool `web_fetch(url, max_chars)`
-  - the broker is the stable entry point and owns loopback/self-hosted SearXNG plus policy-controlled Tavily behavior; Pi does not bypass it with direct SearXNG fallback. See `extensions/websearch/README.md`.
+  - the broker is the stable entry point and owns provider policy. The standalone `local_web_search` service uses Brave Search and its own bounded fetch fallbacks; Pi does not bypass the broker. See `extensions/websearch/README.md`.
 - `extensions/goal` — durable `/goal` loop for long-running work:
   - `/goal <objective> [--max-turns N]` starts a user-requested goal
   - `/goal status`, `/goal pause`, `/goal resume`, `/goal reclaim`, `/goal clear` control it
@@ -380,7 +403,22 @@ This repo is loaded by Pi through the `packages` setting. On this machine it is 
 }
 ```
 
-Project-local setups can instead use `./pi-shared` from `~/local_code/.pi/settings.json`. After editing shared Pi resources in the repo, run `/reload` in Pi.
+Project-local setups can instead use `../pi-shared` from `~/local_code/.pi/settings.json`: Pi resolves package paths against the settings file's directory, not the shell's working directory. The installer already registers the package globally, so a second project entry is normally unnecessary. After editing shared Pi resources in the repo, run `/reload` in Pi.
+
+## MCP discovery
+
+There are two intentional connection paths; `/mcp` is not a complete inventory of all MCP-backed capabilities:
+
+| Capability | Connection owner | Discovery |
+|---|---|---|
+| Configured servers such as Blender/FreeCAD | Optional `pi-mcp-adapter` package | `/mcp` |
+| `browser_fetch`, `browser_inspect` | Native `pi-browser-capture` wrapper → independent browser-worker MCP | `/mcp-connections` or `dev_doctor` |
+| `web_search`, `web_fetch`, `deep_research` | Native wrappers → independent search MCP broker | `/mcp-connections` or `dev_doctor` |
+| `app_*` | In-process private-app browser runtime, not MCP | Pi tool inventory |
+
+`/mcp-connections` is a read-only command provided by `extensions/dev-doctor`. It combines adapter-reported metadata with current-runtime, source-checked wrapper tool registration, without opening connections, reading credentials, or launching servers. Cached metadata, registered tools and active tools are **not service-readiness checks**. If the adapter is absent or has not published a snapshot, its status remains unknown. `dev_doctor` includes the same section; the standalone `bin/pi-doctor` cannot observe the active Pi runtime.
+
+Keep the wrappers and servers separate. Do not also register the browser/search servers in the adapter merely to make them appear in `/mcp`; that can create duplicate tool routes and bypass wrapper-specific behavior. Repository folders under `local_code` are not scanned to discover servers.
 
 ## Installation verification
 
@@ -406,29 +444,19 @@ execution work.
 
 ## Setup on another machine
 
-1. Clone or pull this repo to the same workspace location, or adjust the path in `.pi/settings.json`.
-2. Point that machine's Pi `AGENTS.md` at this repo.
-3. Ensure project settings include `./pi-shared` as a package.
-4. Run `./install.sh` — it wires settings, renders catalogs, and runs a locked `npm ci --ignore-scripts` in every extension that has a `package-lock.json` (fails loudly if `npm` is missing or an install fails; `bin/pi-shared-check-deps` re-verifies that each dependency resolves). Browser binaries are **not** downloaded here — see below.
-5. For `web_search` / `deep_research`, run/configure the local-search MCP broker on that machine. Recommended endpoint: `http://127.0.0.1:8889/mcp`; the broker owns loopback/self-hosted SearXNG and explicit Tavily disabled/fallback/supplement policy. Override with `PI_WEBSEARCH_MCP_URL`, `SEARCH_MCP_URL`, `WEBSEARCH_MCP_URL`, or `~/.pi/research/config.json`.
-6. For `app_*`, set `BROWSER_MCP_APP_BASE_URL` when the target app is not `http://127.0.0.1:8100`; optionally add `BROWSER_MCP_APP_ALLOWED_HOSTS` for additional private hosts.
-7. Install the optional `pi-vanilla` recovery launcher if desired.
-8. Run `~/local_code/pi-shared/bin/pi-omlx-repair` on machines that use generated `pi-*` oMLX/cloud launchers.
-9. Run `/reload`.
+1. Install Pi separately, plus Python 3 and Node/npm. Clone this repo anywhere; use a reviewed release/revision for reproducibility. `~/local_code` is only a suggested location.
+2. Run `./install.sh --no-catalog` for shared tools without a model-gateway catalog. The installer preserves existing settings, registers this checkout globally, wires helper/context symlinks, and runs locked `npm ci --ignore-scripts` in extensions with lockfiles. Use the catalog options above when needed. Plain `pi install git:…` alone does not install these nested extension dependencies.
+3. For search/research, separately install/configure `local_web_search` (Brave Search). Provision its private Brave key **before** starting its installer, following that repository's README. Override the default `http://127.0.0.1:8889/mcp` with `PI_WEBSEARCH_MCP_URL`, `SEARCH_MCP_URL`, `WEBSEARCH_MCP_URL`, or the research config. Missing search affects search/research calls, not unrelated Pi tools.
+4. For public browser tools, separately provision browser-worker and an owner-only client token as documented in [Pi Browser Capture](extensions/pi-browser-capture/README.md). If not using it, merge `"browserWorkerEnabled": false` into `~/.pi/research/config.json`; this suppresses optional-worker warnings, not search or `app_*`.
+5. For private `app_*` tests, install Chromium explicitly (see below) and set `BROWSER_MCP_APP_BASE_URL` / `BROWSER_MCP_APP_ALLOWED_HOSTS` for the intended app. These tools do not use browser-worker.
+6. Run the static doctor, then explicitly chosen dependency/import/service checks. Restart Pi or run `/reload`, then `/mcp-connections` to see both MCP integration paths. Failed optional services must remain clearly reported as unavailable, not mistaken for successful full setup.
 
 Example:
 
 ```bash
-git clone <your-pi-shared-repo-url> ~/local_code/pi-shared
-mkdir -p ~/.pi/agent
-ln -sfn ~/local_code/pi-shared/AGENTS.md ~/.pi/agent/AGENTS.md
-mkdir -p ~/local_code/.pi
-cat > ~/local_code/.pi/settings.json <<'JSON'
-{
-  "packages": ["./pi-shared"]
-}
-JSON
-~/local_code/pi-shared/install.sh      # settings + catalogs + locked extension deps
+git clone https://github.com/GeorgeTheo99/pi-shared.git ~/local_code/pi-shared
+~/local_code/pi-shared/install.sh --no-catalog   # safe settings/context wiring + locked extension deps
+python3 ~/local_code/pi-shared/bin/pi-doctor     # static evidence; not service readiness
 ~/local_code/pi-shared/bin/pi-shared-check-deps   # verify: yaml, patchright, playwright resolve
 
 # Optional recovery launcher that bypasses shared/local Pi resources
@@ -437,28 +465,22 @@ ln -sfn ~/local_code/pi-shared/bin/pi-vanilla ~/.local/bin/pi-vanilla
 # Ensure ~/.local/bin is in PATH, then verify:
 pi-vanilla --list-models gpt-5.5
 
-# Optional web_search / deep_research MCP endpoint config if not on 127.0.0.1:8889/mcp
-mkdir -p ~/.pi/research
-cat > ~/.pi/research/config.json <<'JSON'
-{
-  "websearchMcpUrl": "http://127.0.0.1:8889/mcp"
-}
-JSON
+# Optional endpoint selection: merge websearchMcpUrl into ~/.pi/research/config.json
+# rather than overwriting existing research/browser settings.
 
 # Optional app_* target config if the app is not on 127.0.0.1:8100
 export BROWSER_MCP_APP_BASE_URL='http://127.0.0.1:8100'
 
-# Verify local-search MCP broker
-curl -fsS http://127.0.0.1:8889/health | python3 -m json.tool
-curl -fsS -H 'Accept: application/json' -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":"check","method":"tools/call","params":{"name":"web_search","arguments":{"query":"pi websearch health check","num_results":3}}}' \
-  http://127.0.0.1:8889/mcp | python3 -m json.tool >/dev/null
+# If the optional services were installed, run their explicit checks:
+local-search verify
+python3 ~/local_code/pi-shared/bin/pi-browser-check  # inventory only, not browser execution
 ```
 
-Then start Pi from `~/local_code` and run:
+Then restart Pi from any working directory, or run in an existing session:
 
 ```text
 /reload
+/mcp-connections
 ```
 
 ## Updating on either machine
@@ -484,7 +506,7 @@ source ~/.pi/generated/pi-launchers.zsh
 
 If `package.json` dependencies changed for an extension, re-run `./install.sh` (or `npm ci --ignore-scripts` in that extension directory), then run `/reload` in Pi.
 
-The browser extension's JavaScript packages are installed by `./install.sh`; the Chromium binary is a separate, explicit step (hundreds of MB) only needed for browser-capture features:
+The browser extension's JavaScript packages are installed by `./install.sh`; the Chromium binary is a separate, explicit step (hundreds of MB) for the in-process `app_*` tools. Public browser binaries are managed separately by browser-worker:
 
 ```bash
 cd ~/local_code/pi-shared/extensions/pi-browser-capture

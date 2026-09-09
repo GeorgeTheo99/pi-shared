@@ -29,7 +29,9 @@ Shared Pi extension for brokered multi-source research through the local-search 
 
 ## MCP broker configuration
 
-Direct SearXNG is not used by this client. The local-search MCP broker is the required entry point and owns backend strategy, including loopback/self-hosted SearXNG and policy-controlled provider fallback or supplementation.
+The local-search MCP broker is the required entry point for research calls and owns provider strategy. The standalone `local_web_search` service uses Brave Search and bounded direct/Decodo/Jina page retrieval; SearXNG is retired there. Provision the service's private Brave key before its first started install. Alternative brokers/overlays may implement the same contract.
+
+This native extension orchestrates MCP calls directly; it is not a server registration in `pi-mcp-adapter`. Use `/mcp-connections` or `dev_doctor` to see both integration paths. Missing search makes research unavailable, not unrelated Pi features.
 
 Configured URLs are collected in this order:
 
@@ -52,7 +54,7 @@ Config file example:
 
 ## Credentials and request safety
 
-Broker authentication and Tavily forwarding are separate:
+Broker authentication and legacy Tavily forwarding are separate. Tavily forwarding is retained for compatible alternative brokers, not required by the Brave-only standalone service:
 
 - Broker token (`Authorization: Bearer ...`): `PI_WEBSEARCH_MCP_API_KEY`, then `SEARCH_MCP_API_KEY`.
 - Tavily key (`X-Tavily-Key`): `PI_WEBSEARCH_TAVILY_API_KEY`, then `TAVILY_API_KEY`.

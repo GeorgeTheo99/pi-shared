@@ -1,63 +1,119 @@
-#!/usr/bin/env bash
-# pi-shared-check-deps — verify that every locked Pi extension package can
-# actually resolve its declared runtime dependencies from its own directory.
-#
-# Usage:
-#   pi-shared-check-deps [EXTENSIONS_DIR ...]
-#
-# With no arguments, checks pi-shared's own extensions/. Pass one or more
-# extension parent directories (e.g. ~/local_code/pi-databricks/extensions) to
-# check other Pi packages with the same rule. A directory is checked when it
-# has package.json + package-lock.json with non-empty dependencies. Merely
-# having a node_modules/ folder is not sufficient: each dependency is resolved
-# with Node's `require.resolve`, which is what Pi does at startup.
-#
-# Exit 0 when everything resolves; 1 with one line per missing dependency and
-# the exact repair command.
-set -uo pipefail
+#!/usr/bin/env python3
+"""Check locked extension runtime modules or declared bin-only package files.
 
-_self="${BASH_SOURCE[0]:-$0}"
-while [ -L "$_self" ]; do
-  _dir="$(cd "$(dirname "$_self")" && pwd)"
-  _self="$(readlink "$_self")"
-  case "$_self" in /*) ;; *) _self="$_dir/$_self" ;; esac
-done
-ROOT_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
+Default CLI/exit contract: 0 when all resolve, 1 on failure. --json adds bounded,
+secret-safe aggregate evidence; --static reads declarations without running Node.
+No dependencies are imported and no installation or repair is performed.
+"""
+from __future__ import annotations
 
-if [ $# -eq 0 ]; then
-  set -- "$ROOT_DIR/extensions"
-fi
-
-command -v node >/dev/null 2>&1 || { echo "FAIL  node is not on PATH (required by Pi extensions)" >&2; exit 1; }
-command -v python3 >/dev/null 2>&1 || { echo "FAIL  python3 is not on PATH" >&2; exit 1; }
-
-FAIL=0
-for parent in "$@"; do
-  [ -d "$parent" ] || continue
-  while IFS=$'\t' read -r dir dep; do
-    [ -n "$dir" ] || continue
-    if node -e "require.resolve(process.argv[1], { paths: [process.argv[2]] })" "$dep" "$dir" >/dev/null 2>&1; then
-      printf 'ok    %s -> %s\n' "${dir##*/}" "$dep"
-    else
-      printf 'FAIL  %s cannot resolve %s (repair: cd %s && npm ci --ignore-scripts)\n' "${dir##*/}" "$dep" "$dir" >&2
-      FAIL=1
-    fi
-  done < <(python3 - "$parent" <<'PY'
-import json, sys
+import argparse
+import json
+import os
 from pathlib import Path
-root = Path(sys.argv[1])
-for pkg in sorted(root.glob("*/package.json")):
-    d = pkg.parent
-    if not (d / "package-lock.json").is_file():
-        continue
+import shlex
+import shutil
+import sys
+import time
+
+sys.dont_write_bytecode = True
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "extensions/dev-doctor"))
+from doctor_common import CheckError, bounded_run, capability, read_json, timeout_value, timestamp
+
+GUIDANCE = "Review locked extension dependencies; explicitly run npm ci --ignore-scripts in the affected extension directory after approval."
+
+RESOLVE_SCRIPT = r"""
+const fs = require('node:fs'), path = require('node:path');
+const name = process.argv[1], directory = process.argv[2];
+try {
+  try { require.resolve(name, {paths: [directory]}); process.exit(0); } catch {}
+  // CLI-only dependencies legitimately have no main module. Inspect their
+  // declared files without importing code or running the binary. A broken
+  // declared module must not be rescued by an unrelated executable.
+  const manifest = require.resolve(name + '/package.json', {paths: [directory]});
+  if (fs.statSync(manifest).size > 262144) throw new Error();
+  const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+  if (pkg.name !== name || pkg.main != null || pkg.exports != null) throw new Error();
+  const bins = typeof pkg.bin === 'string' ? [pkg.bin] : Object.values(pkg.bin || {});
+  if (!bins.length || bins.length > 100) throw new Error();
+  const root = fs.realpathSync(path.dirname(manifest));
+  for (const bin of bins) {
+    if (typeof bin !== 'string' || !bin || bin.length > 4096) throw new Error();
+    const target = fs.realpathSync(path.resolve(root, bin));
+    if (!target.startsWith(root + path.sep) || !fs.statSync(target).isFile()) throw new Error();
+    fs.accessSync(target, fs.constants.R_OK);
+  }
+  process.exit(0);
+} catch { process.exit(1); }
+"""
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("parents", nargs="*", type=Path)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--static", action="store_true")
+    parser.add_argument("--timeout", type=timeout_value, default=60)
+    args = parser.parse_args()
+    row = capability("dependencies", "static" if args.static else "resolution", "not_checked", GUIDANCE)
+    dependencies = []
+    failures = 0
+    checked = 0
+    scanned = 0
+    deadline = time.monotonic() + args.timeout
     try:
-        deps = json.loads(pkg.read_text()).get("dependencies") or {}
-    except json.JSONDecodeError:
-        print(f"{d}\t<invalid package.json>")
-        continue
-    for name in sorted(deps):
-        print(f"{d}\t{name}")
-PY
-  )
-done
-exit "$FAIL"
+        for parent in args.parents or [ROOT / "extensions"]:
+            if not parent.is_dir():
+                # Legacy CLI skipped missing optional directories. Structured
+                # callers must not mistake that for a completed scan.
+                if args.json or args.static:
+                    raise CheckError("missing", "Extension directory is missing")
+                continue
+            for pkg in parent.glob("*/package.json"):
+                scanned += 1
+                if scanned > 4096 or time.monotonic() >= deadline:
+                    raise CheckError("output_limit", "Dependency scan exceeds the bounded inventory limit")
+                if not (pkg.parent / "package-lock.json").is_file():
+                    continue
+                package = read_json(pkg)
+                deps = (package.get("dependencies") or {}) if isinstance(package, dict) else None
+                if not isinstance(deps, dict):
+                    raise CheckError("invalid_config", "Invalid dependency manifest")
+                dependencies.extend((pkg.parent, dep) for dep in sorted(deps))
+                if len(dependencies) > 512 or time.monotonic() >= deadline:
+                    raise CheckError("output_limit", "Dependency scan exceeds the bounded inventory limit")
+        row.update(configured="yes" if dependencies else "no", declared_count=len(dependencies))
+        if not args.static:
+            node = shutil.which("node")
+            if not node:
+                raise CheckError("missing", "node is not on PATH (required by Pi extensions)")
+            for directory, dependency in dependencies:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CheckError("timeout", "Dependency resolution deadline exceeded")
+                rc, _, _ = bounded_run([node, "-e", RESOLVE_SCRIPT, "--",
+                                        dependency, str(directory.resolve())], seconds=remaining,
+                                        new_session=os.environ.get("PI_DOCTOR_GROUPED") != "1")
+                checked += 1
+                failures += rc != 0
+                if not args.json:
+                    if rc == 0:
+                        print(f"ok    {directory.name} -> {dependency}")
+                    else:
+                        print(f"FAIL  {directory.name} cannot resolve {dependency} (repair: cd {shlex.quote(str(directory))} && npm ci --ignore-scripts)", file=sys.stderr)
+            row.update(outcome="missing_dependency" if failures else "resolved", installed="no" if failures else "yes")
+    except (RuntimeError, OSError, ValueError) as error:
+        row["outcome"] = getattr(error, "code", "invalid_config")
+        if not args.json:
+            print(f"FAIL  {error}", file=sys.stderr)
+    row.update(checked_count=checked, failed_count=failures, verified_at=timestamp())
+    if args.json:
+        print(json.dumps({"schema_version": 1, "capabilities": [row]}))
+    elif args.static:
+        print(f"dependencies: {row['outcome']} (resolution not tested)")
+    return 0 if row["outcome"] in {"not_checked", "resolved"} else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

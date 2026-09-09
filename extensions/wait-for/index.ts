@@ -36,8 +36,8 @@ import { runShellProcess } from "../_shared/shell-process.ts";
 import {
 	type JobSnapshot,
 	TERMINAL_JOB_STATUS,
-	readJobSnapshots,
 } from "../_shared/job-store.ts";
+import { readUnifiedJobSnapshots, type UnifiedJobSnapshot } from "../_shared/job-snapshots.ts";
 
 const DEFAULT_POLL_INTERVAL = 10;
 const MIN_POLL_INTERVAL = 1;
@@ -52,7 +52,9 @@ export function evaluateJobMode(
 	ids: string[],
 	snapshots: Map<string, JobSnapshot>,
 	mode: JobWaitMode,
-): { done: boolean; reason: string } {
+): { done: boolean; reason: string; error?: string } {
+	const missing = ids.filter(id => !snapshots.has(id));
+	if (missing.length) return { done: true, reason: "Unknown job IDs", error: `Unknown job IDs: ${missing.join(", ")}` };
 	const awaiting = ids.filter((id) => snapshots.get(id)?.status === "awaiting_answer");
 	if (awaiting.length > 0) {
 		return { done: true, reason: `job ${awaiting[0]} is awaiting_answer and needs a correlated parent answer` };
@@ -76,16 +78,17 @@ export function evaluateJobMode(
 			if (terminal.length === ids.length) return { done: true, reason: `all ${ids.length} job(s) terminal` };
 			break;
 	}
+	if (terminal.length === ids.length) return { done: true, reason: "Requested outcome is impossible", error: `All jobs terminal without matching ${mode}` };
 	return { done: false, reason: "" };
 }
 
-function summarizeJobs(ids: string[], snapshots: Map<string, JobSnapshot>): string {
+function summarizeJobs(ids: string[], snapshots: Map<string, UnifiedJobSnapshot>): string {
 	return ids
 		.map((id) => {
 			const s = snapshots.get(id);
 			const status = s?.status ?? "unknown";
 			const label = s?.label ? ` — ${truncate(s.label, 60)}` : "";
-			return `${id}: ${status}${label}`;
+			return `${id}: ${status}${label}${s?.command ? ` [command=${s.command.status}, exit=${s.command.exitCode ?? "unknown"}, readiness=${s.command.readiness}, cleanup=${s.command.cleanup ?? "pending"}]` : ""}`;
 		})
 		.join("\n");
 }
@@ -130,12 +133,10 @@ function textResult(text: string, details: WaitForDetails) {
 	};
 }
 
-function errorResult(text: string, details: WaitForDetails) {
-	return {
-		content: [{ type: "text" as const, text }],
-		details,
-		isError: true,
-	};
+function errorResult(text: string, _details: WaitForDetails): never {
+	// Pi marks resolved tool executions successful; throwing is required for a
+	// finalized isError tool-result message (a returned isError field is ignored).
+	throw new Error(text);
 }
 
 /** Sleep that resolves early if the abort signal fires. Rejects with AbortError. */
@@ -177,8 +178,9 @@ function truncate(text: string, max: number): string {
 const waitForTool = defineTool({
 	name: "wait_for",
 	label: "Wait For",
+	executionMode: "sequential",
 	description:
-		"Block the agent loop until either a shell `condition` is true or a background subagent job becomes actionable (`awaiting_answer`) or terminal, then resume — without burning tokens while waiting. `condition` is a shell command run with `sh -c` (exit code 0 = met, non-zero = not yet). `jobs` are background subagent job ids; pass `job_mode` to control terminal completion. Any `awaiting_answer` job always wakes the wait so the parent can answer without deadlock. `condition` and `jobs` are mutually exclusive. Always set a `timeout`. The call is abortable (Esc/Ctrl-C).",
+		"Block the agent loop until either a shell `condition` is true or a background subagent job becomes actionable (`awaiting_answer`) or terminal, then resume — without burning tokens while waiting. `condition` is a shell command run with `sh -c` (exit code 0 = met, non-zero = not yet). `jobs` are command_job cmd_ IDs or background subagent job ids; pass `job_mode` to control terminal completion. Use readiness=true only for command jobs with configured probes, to wait for all to become ready rather than complete. Any `awaiting_answer` job always wakes the wait so the parent can answer without deadlock. `condition` and `jobs` are mutually exclusive. Always set a `timeout`. The call is abortable (Esc/Ctrl-C).",
 	promptSnippet:
 		"wait_for to block the agent loop (zero tokens) until a shell condition is true or background subagent jobs finish, instead of polling",
 	promptGuidelines: [
@@ -202,6 +204,7 @@ const waitForTool = defineTool({
 					"Background subagent job ids to wait for instead of a shell condition. Mutually exclusive with `condition`. Resumes immediately for `awaiting_answer`, or when `job_mode` is satisfied by terminal statuses (`completed`, `failed`, `canceled`).",
 			}),
 		),
+		readiness: Type.Optional(Type.Boolean({ description: "With command jobs and job_mode=all only: wait for every configured readiness probe. Service readiness is separate from successful completion." })),
 		job_mode: Type.Optional(
 			Type.String({
 				description:
@@ -226,10 +229,14 @@ const waitForTool = defineTool({
 	}),
 
 	async execute(_toolCallId, params, signal, onUpdate, ctx) {
+		if (!Number.isFinite(params.timeout) || params.timeout <= 0 || (params.poll_interval !== undefined && !Number.isFinite(params.poll_interval))) throw new Error("timeout/poll_interval must be finite and timeout positive");
+		if (params.job_mode !== undefined && !isJobWaitMode(params.job_mode)) throw new Error("Invalid job_mode");
+		if (params.jobs && (params.jobs.length > 64 || params.jobs.some(id => !id.trim()))) throw new Error("Provide 1–64 nonempty job IDs");
 		const condition = params.condition?.trim();
 		const jobIds = (params.jobs ?? []).map((s) => s.trim()).filter(Boolean);
 		const jobMode: JobWaitMode = isJobWaitMode(params.job_mode) ? params.job_mode : "all";
 		const useJobs = jobIds.length > 0;
+		if (params.readiness && (!useJobs || jobMode !== "all" || jobIds.some(id => !id.startsWith("cmd_")))) throw new Error("readiness requires command job IDs and job_mode=all");
 		const timeout = clamp(Math.floor(params.timeout), 1, MAX_TIMEOUT);
 		const pollInterval = clamp(
 			params.poll_interval ?? DEFAULT_POLL_INTERVAL,
@@ -316,9 +323,15 @@ const waitForTool = defineTool({
 				let reason = "";
 
 				if (useJobs) {
-					const snapshots = readJobSnapshots();
-					const missing = jobIds.filter((id) => !snapshots.has(id));
-					const evalResult = evaluateJobMode(jobIds, snapshots, jobMode);
+					const snapshots = readUnifiedJobSnapshots(jobIds, cwd);
+					let evalResult = evaluateJobMode(jobIds, snapshots, jobMode);
+					if (params.readiness && !evalResult.error) {
+						const records = jobIds.map(id => snapshots.get(id)!.command!);
+						const invalid = records.find(r => r.readiness === "not_requested" || r.readiness === "failed" || !["starting", "running"].includes(r.status));
+						evalResult = invalid ? { done: true, reason: "Readiness unavailable", error: `Job ${invalid.id} cannot become ready: ${invalid.status}/${invalid.readiness}` }
+							: { done: records.every(r => r.readiness === "ready"), reason: "All command readiness probes passed (processes still running)" };
+					}
+					if (evalResult.error) throw new Error(evalResult.error);
 					done = evalResult.done;
 					reason = evalResult.reason;
 					const termCount = jobIds.filter(
@@ -326,16 +339,14 @@ const waitForTool = defineTool({
 					).length;
 					const awaitingCount = jobIds.filter((id) => snapshots.get(id)?.status === "awaiting_answer").length;
 					lastProgress = `${termCount}/${jobIds.length} terminal${awaitingCount ? ` • ${awaitingCount} awaiting answer` : ""}`;
-					lastStdout =
-						summarizeJobs(jobIds, snapshots) +
-						(missing.length ? `\n(not yet in store: ${missing.join(", ")})` : "");
+					lastStdout = summarizeJobs(jobIds, snapshots);
 					lastStderr = "";
 				} else {
-					const cond = await runShellProcess(condition!, cwd, MAX_CONDITION_TIMEOUT * 1000, signal);
+					const cond = await runShellProcess(condition!, cwd, Math.max(1, Math.min(MAX_CONDITION_TIMEOUT * 1000, deadline - Date.now())), signal);
 					if (cond.aborted || signal?.aborted) throw new AbortError();
 					lastStdout = cond.stdout;
 					lastStderr = cond.stderr;
-					done = cond.code === 0;
+					done = cond.code === 0 && Date.now() <= deadline;
 				}
 				checks += 1;
 
@@ -345,7 +356,7 @@ const waitForTool = defineTool({
 						? `Jobs ready after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}).`
 						: `Condition met after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}). Resuming.`;
 					const tail = useJobs
-						? `\n${reason}\n${lastStdout}\n\nInspect with spawn_subagent({jobAction:"status",jobId:"<id>"}); if awaiting_answer, reply with jobAction:"answer" plus its questionId.`
+						? `\n${reason}\n${lastStdout}\n\nInspect cmd_ IDs with command_job({action:"status",id:"<id>"}); inspect subagents with spawn_subagent({jobAction:"status",jobId:"<id>"}). Answer awaiting_answer with the correlated questionId.`
 						: "";
 					return textResult(head + tail, {
 						...baseDetails,
@@ -359,8 +370,8 @@ const waitForTool = defineTool({
 				}
 
 				// Not yet: gather optional progress (condition mode only), then stream an update.
-				if (!useJobs && progress) {
-					const prog = await runShellProcess(progress, cwd, MAX_CONDITION_TIMEOUT * 1000, signal);
+				if (!useJobs && progress && Date.now() < deadline) {
+					const prog = await runShellProcess(progress, cwd, Math.max(1, Math.min(MAX_CONDITION_TIMEOUT * 1000, deadline - Date.now())), signal);
 					if (prog.aborted || signal?.aborted) throw new AbortError();
 					lastProgress = prog.stdout;
 				}
@@ -393,7 +404,7 @@ const waitForTool = defineTool({
 			const elapsedMs = Date.now() - startedAt;
 			if (aborted) {
 				return textResult(
-					`Wait aborted after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}).${useJobs ? " Background jobs continue; cancel them explicitly with spawn_subagent jobAction=cancel." : " Active condition/progress processes were terminated."}`,
+					`Wait aborted after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}).${useJobs ? " Background jobs continue; cancel explicitly with command_job action=cancel or spawn_subagent jobAction=cancel." : " Active condition/progress processes were terminated."}`,
 					{ ...baseDetails, aborted: true, checks, elapsedMs, lastStdout, lastStderr, lastProgress },
 				);
 			}

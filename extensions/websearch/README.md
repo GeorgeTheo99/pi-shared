@@ -4,20 +4,22 @@ Shared Pi extension that provides `web_search` and `web_fetch` through the local
 
 - `web_search` calls the broker tool `web_search(query, num_results)`.
 - `web_fetch` calls the broker tool `web_fetch(url, max_chars)`.
-- The broker is the stable entry point. It owns backend strategy: loopback/self-hosted SearXNG first, then policy-controlled Tavily fallback or supplementation.
-- Pi clients do **not** fall back directly to SearXNG. If the broker is down, the tool reports a broker error so reliability issues are fixed at the shared entry point instead of bypassed.
+- The broker is the stable entry point and owns backend strategy. The standalone `local_web_search` service uses Brave Search and direct-first page retrieval with optional Decodo/Jina recovery; SearXNG is retired there.
+- Pi clients do **not** fall back directly to search providers. If the broker is down, the tool reports a broker error so reliability issues are fixed at the shared entry point instead of bypassed.
 - For low-risk, reversible local actions, treat strong `web_search` results as execution hints: try the most plausible fix or workflow quickly, verify it directly, and only escalate to deeper research if that concrete path fails.
 
 ## MCP broker requirement
 
-This extension does **not** install or run local-search. Each machine that loads `pi-shared` must have a reachable MCP broker exposing these JSON-RPC tools:
+This extension does **not** install or run local-search. Using these tools requires a reachable MCP broker exposing the following JSON-RPC tools; unrelated Pi features remain usable without it:
 
 - `web_search(query: str, num_results: int = 8)`
 - `web_fetch(url: str, max_chars: int = 20000)`
 
 Recommended local URL: `http://127.0.0.1:8889/mcp`.
 
-The broker handles SearXNG configuration internally. The shared local-search broker uses loopback `http://127.0.0.1:8888` and supports explicit Tavily `disabled`, `fallback`, and `supplement` policies.
+Provision the standalone broker's owner-only Brave key before its first started install, following the `local_web_search` README. Provider credentials belong to the service, not Pi settings. Alternative brokers/overlays may implement the same tool contract.
+
+These are native Pi wrappers that contact MCP directly, not registrations in `pi-mcp-adapter`. Consequently `/mcp` does not list them. Use `/mcp-connections` or `dev_doctor` for both integration paths; registered tools are not proof of service readiness.
 
 ## MCP URL resolution
 
@@ -42,7 +44,7 @@ Config file example:
 
 ## Credentials and transport safety
 
-Broker authentication and Tavily forwarding use separate credentials:
+Broker authentication and legacy Tavily forwarding use separate credentials. Tavily forwarding remains client compatibility for other brokers; it is **not** a requirement or search-provider choice for the Brave-only `local_web_search` service:
 
 - Broker token (`Authorization: Bearer ...`): `PI_WEBSEARCH_MCP_API_KEY`, then `SEARCH_MCP_API_KEY`.
 - Tavily key (`X-Tavily-Key`): `PI_WEBSEARCH_TAVILY_API_KEY`, then `TAVILY_API_KEY`.
@@ -55,7 +57,7 @@ Each `web_search` or `web_fetch` call has one total deadline across all configur
 
 When supplied by the broker, `web_search` preserves `status`, `backend`, `attempted`, `fallback_reason`, `timings_ms`, and `provider_states` in the tool result details alongside the existing fields.
 
-## Why broker-first instead of direct SearXNG?
+## Why broker-first instead of direct provider calls?
 
 Pros:
 
@@ -63,12 +65,11 @@ Pros:
 - Centralized fallback, dedupe, circuit breaking, SSRF guards, provider policy, and observability.
 - Easier to add or swap providers without changing every client.
 
-Cons versus pure direct SearXNG:
+Tradeoffs:
 
-- One extra local HTTP/JSON-RPC hop.
-- The broker becomes the required availability boundary.
-- SearXNG-specific knobs/results must be exposed by the broker before clients can use them.
-- Structured SearXNG JSON may be normalized or wrapped by the broker, so clients needing raw fields should add broker support for those fields.
+- One extra HTTP/JSON-RPC hop.
+- The broker becomes the availability boundary for search/fetch calls.
+- Provider-specific options/results must be exposed by the broker before clients can use them.
 
 ## Verification
 
@@ -78,14 +79,13 @@ Run the client contract tests from `pi-shared`:
 npm run test:websearch
 ```
 
-Then verify the live broker on the target machine:
+For the standalone broker, verify health and MCP inventory on the target machine:
 
 ```bash
-curl -fsS http://127.0.0.1:8889/health | python3 -m json.tool
-curl -fsS -H 'Accept: application/json' -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":"check","method":"tools/call","params":{"name":"web_search","arguments":{"query":"pi websearch health check","num_results":3}}}' \
-  http://127.0.0.1:8889/mcp | python3 -m json.tool
+local-search verify
 ```
+
+This is not a provider search smoke. A real `web_search` call additionally exercises Brave and may incur provider charges.
 
 Then restart Pi or run:
 

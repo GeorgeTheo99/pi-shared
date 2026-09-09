@@ -247,6 +247,18 @@ test("structured reduction preserves unsafe-size JSON integer lexemes exactly", 
 	assert.doesNotMatch(reduced, /9007199254740992/);
 });
 
+test("deterministic JSON summaries reserve authoritative exit codes, counts, and artifact IDs", () => {
+	const source = `{"head":"${"x".repeat(8_000)}","exitCode":7,"counts":{"passed":9007199254740993,"failed":2,"total":9007199254740995},"artifact_id":"artifact-exact","tail":"${"y".repeat(8_000)}"}`;
+	assert.equal(deterministicReductionCanPreserve(source, 1_500), true);
+	const reduced = deterministicReduce(source, 1_500, "structured");
+	for (const exact of ['"exitCode": 7', '"passed": 9007199254740993', '"failed": 2', '"total": 9007199254740995', '"artifact_id": "artifact-exact"']) {
+		assert.ok(reduced.includes(exact), exact);
+	}
+	assert.ok(reduced.length <= 1_500);
+	const overflow = JSON.stringify({ rows: Array.from({ length: 100 }, (_, index) => ({ artifactId: `artifact-${index}` })) });
+	assert.equal(deterministicReductionCanPreserve(overflow, 500), false);
+});
+
 test("structured reducer formats lexically before selecting important identifiers", () => {
 	const source = JSON.stringify({
 		rows: Array.from({ length: 400 }, (_, index) => ({ index, value: "v".repeat(20) })),

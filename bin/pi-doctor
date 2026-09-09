@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Inspect Pi capability evidence without repair, installation, or model calls.
+
+Default: static inspection only. --probe-imports executes trusted extension code
+in a disposable SDK loader (initializers may have effects); --probe-browser sends
+an authenticated loopback tools/list request, NOT a browser execution test;
+--probe-deps executes Node require.resolve, not dependency imports. Each checker
+has a hard deadline and bounded output. No project configuration is executed.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+
+sys.dont_write_bytecode = True
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "extensions/dev-doctor"))
+from doctor_common import bounded_run, capability, timeout_value, timestamp
+
+
+def run_checker(name, args, probe_type, seconds):
+    try:
+        rc, out, _ = bounded_run([sys.executable, str(ROOT / "bin" / name), "--json", *args],
+                                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PI_DOCTOR_GROUPED": "1"}, cwd=ROOT,
+                                 seconds=seconds)
+        report = json.loads(out)
+        rows = report["capabilities"]
+        if report.get("schema_version") != 1 or not isinstance(rows, list) or not rows or any(
+            not isinstance(row, dict) or not all(key in row for key in
+                ("capability", "installed", "loaded", "active", "configured", "verified_at", "probe_type", "outcome", "guidance"))
+            for row in rows
+        ) or rc not in (0, 1, 2):
+            raise ValueError("Invalid checker report")
+        # Preserve the checker process outcome independently of its findings.
+        for row in rows:
+            row["checker_exit_code"] = rc
+        return rows, rc != 0
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
+        return [capability(name, probe_type, getattr(error, "code", "invalid_report"),
+                           "Run the named checker locally with --json; inspect configuration and installed runtime compatibility.")], True
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--agent-dir", type=Path, default=Path(os.environ.get("PI_CODING_AGENT_DIR", "~/.pi/agent")))
+    parser.add_argument("--extensions-dir", action="append", type=Path, default=[])
+    parser.add_argument("--probe-imports", action="store_true")
+    parser.add_argument("--probe-browser", action="store_true")
+    parser.add_argument("--probe-deps", action="store_true")
+    parser.add_argument("--timeout", type=timeout_value, default=10, help="Hard deadline per checker in seconds (0 < timeout <= 60)")
+    args = parser.parse_args()
+    rows = [capability(name, "static", "available" if shutil.which(name) else "missing",
+                       f"Install {name} explicitly if needed; PATH presence is not execution evidence.",
+                       installed="yes" if shutil.which(name) else "no") for name in ("pi", "node", "python3")]
+    failed = any(row["outcome"] == "missing" for row in rows)
+    probes = [
+        ("pi-profile-check", ["--agent-dir", str(args.agent_dir.expanduser().resolve()),
+                              *([] if args.probe_imports else ["--static"])], "import" if args.probe_imports else "static"),
+        ("pi-browser-check", [] if args.probe_browser else ["--static"], "authenticated_inventory" if args.probe_browser else "static"),
+        ("pi-shared-check-deps", [*map(lambda p: str(p.expanduser().resolve()), args.extensions_dir),
+                                  *([] if args.probe_deps else ["--static"])], "resolution" if args.probe_deps else "static"),
+    ]
+    for name, argv, probe_type in probes:
+        result, checker_failed = run_checker(name, [*argv, "--timeout", str(args.timeout)], probe_type, args.timeout)
+        rows.extend(result)
+        failed |= checker_failed
+        if any(row["outcome"] == "canceled" for row in result):
+            break  # Cancellation must not start any remaining opt-in probes.
+    report = {"schema_version": 1, "verified_at": timestamp(),
+              "outcome": "issues_found" if failed else "inspection_complete", "capabilities": rows,
+              "scope": "Selected profile declarations and pi-shared dependencies (or explicit extension directories); not current-session load/activation. Browser selection uses ~/.pi/research/config.json. No model or browser execution tests."}
+    if args.json:
+        print(json.dumps(report))
+    else:
+        print(f"Pi doctor: {report['outcome']} (not a readiness verdict)")
+        for row in rows:
+            print(f"{row['capability']}: {row['outcome']} [{row['probe_type']}] "
+                  f"installed={row['installed']} loaded={row['loaded']} active={row['active']} configured={row['configured']}")
+            print(f"  {row['guidance']}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

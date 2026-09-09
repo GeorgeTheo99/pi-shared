@@ -1,0 +1,6 @@
+{
+  "name": "pi-shared-verification",
+  "private": true,
+  "type": "module",
+  "dependencies": { "saxes": "6.0.0" }
+}
