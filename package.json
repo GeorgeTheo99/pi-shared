@@ -2,8 +2,9 @@
   "name": "pi-shared",
   "private": true,
   "scripts": {
-    "test": "npm run test:websearch && npm run test:browser && npm run test:goal && npm run test:ask-user && npm run test:self-handoff && npm run test:tool-summary && npm run test:panel && npm run test:subagents && npm run test:session-coordinator && npm run test:powerpoint && npm run test:command-jobs && npm run test:safe-edit && npm run test:doctor && npm run test:verification && npm run test:code-intel && npm run test:app-test && npm run test:integration-bundles",
+    "test": "npm run test:websearch && npm run test:research && npm run test:browser && npm run test:goal && npm run test:ask-user && npm run test:self-handoff && npm run test:tool-summary && npm run test:panel && npm run test:subagents && npm run test:session-coordinator && npm run test:powerpoint && npm run test:command-jobs && npm run test:safe-edit && npm run test:doctor && npm run test:verification && npm run test:code-intel && npm run test:app-test && npm run test:integration-bundles",
     "test:websearch": "node --no-warnings --test tests/websearch_mcp_client.test.mts",
+    "test:research": "node --no-warnings --experimental-loader ./tests/fixtures/research_test_loader.mjs --test tests/deep_research*.test.mts",
     "test:browser": "node --no-warnings --test tests/browser_tool_inventory.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/browser_worker_test_loader.mjs --test tests/browser_worker_wrapper.test.mts",
     "test:goal": "node --no-warnings --experimental-loader ./tests/fixtures/goal_test_loader.mjs --test tests/goal_abort.test.mts",
     "test:ask-user": "node --no-warnings --experimental-loader ./tests/fixtures/ask_user_test_loader.mjs --test tests/ask_user.test.mts",

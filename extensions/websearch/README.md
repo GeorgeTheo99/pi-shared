@@ -53,6 +53,10 @@ Pi forwards a Tavily key only for `web_search` calls to a loopback broker (`loca
 
 Each `web_search` or `web_fetch` call has one total deadline across all configured endpoint attempts (20 seconds for search, 65 seconds for fetch). Cancelling the Pi tool call aborts the in-flight broker request and remains a cancellation rather than a broker error. The longer fetch deadline lets the broker finish its own 60-second fallback chain.
 
+The shared transport treats standard MCP `result.isError: true` as a failed endpoint attempt, never successful text. Non-OK HTTP bodies are canceled before fallback; cleanup waits share the request deadline and cancellation signal. Error diagnostics are bounded and redact known configured endpoint/header secrets, including echoed values (not an arbitrary-secret scanner).
+
+For internal callers, `endpointUrl` is a **redacted diagnostic label only**. A successful result's zero-based `endpointIndex` identifies its original configured URL without returning the private URL in diagnostics. Never reuse a diagnostic label as a request URL.
+
 ## Search details
 
 When supplied by the broker, `web_search` preserves `status`, `backend`, `attempted`, `fallback_reason`, `timings_ms`, and `provider_states` in the tool result details alongside the existing fields.
