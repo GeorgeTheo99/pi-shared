@@ -56,6 +56,7 @@ function createHarness(
 	const entryRenderers = new Map<string, any>();
 	const sentMessages: Array<{ message: any; options: any }> = [];
 	const notifications: Array<{ message: string; level: string }> = [];
+	const widgets = new Map<string, string[]>();
 	const sessionWriteErrors: unknown[] = [];
 	const entries: any[] = options.entries ?? [];
 	const sessionId = options.sessionId ?? crypto.randomUUID();
@@ -72,6 +73,10 @@ function createHarness(
 			getBranch: () => entries,
 		},
 		ui: {
+			setWidget(key: string, lines: string[] | undefined) {
+				if (lines) widgets.set(key, lines);
+				else widgets.delete(key);
+			},
 			notify(message: string, level: string) {
 				notifications.push({ message, level });
 			},
@@ -122,6 +127,7 @@ function createHarness(
 		entryRenderers,
 		sentMessages,
 		notifications,
+		widgets,
 		sessionWriteErrors,
 		entries,
 		ctx,
@@ -134,6 +140,126 @@ function createHarness(
 async function emit(harness: ReturnType<typeof createHarness>, event: string) {
 	for (const handler of harness.handlers.get(event) ?? []) await handler({ type: event }, harness.ctx);
 }
+
+async function responsePair() {
+	const sender = createHarness();
+	const recipient = createHarness({ idle: false });
+	await emit(sender, "session_start");
+	await emit(recipient, "session_start");
+	const peers = state.listAllActivePeers();
+	const senderPeer = peers.find((peer) => peer.sessionId === sender.ctx.sessionManager.getSessionId())!;
+	const recipientPeer = peers.find((peer) => peer.sessionId === recipient.ctx.sessionManager.getSessionId())!;
+	return {
+		sender, recipient, senderPeer, recipientPeer,
+		async request(message = "What files are you working on?") {
+			return sender.tools.get("peer_send").execute("request", { target: recipientPeer.runtimeId, message, requestResponse: true }, undefined, undefined, sender.ctx);
+		},
+		async close() { await emit(recipient, "session_shutdown"); await emit(sender, "session_shutdown"); },
+	};
+}
+
+const responseWakes = (harness: ReturnType<typeof createHarness>) => harness.sentMessages.filter((item) => item.options?.triggerTurn === true);
+
+test("response requests never wake agents and show pending then answered after a normal-turn reply", async () => {
+	const pair = await responsePair();
+	const { sender, recipient, senderPeer } = pair;
+	try {
+		assert.equal(pair.recipientPeer.requestResponseVersion, 1);
+		const result = await pair.request();
+		const requestId = result.details.message.id;
+		assert.match(result.content[0].text, /PEER RESPONSE REQUEST QUEUED/);
+		assert.match(sender.widgets.get("pi-peer-responses")!.join("\n"), /pending/);
+		await waitUntil(() => state.readOutgoingMessageStatuses(senderPeer.sessionId, requestId)[0]?.effectiveStatus === "delivered");
+		assert.equal(responseWakes(recipient).length, 0);
+		recipient.setIdle(true);
+		await emit(recipient, "agent_settled");
+		await waitUntil(() => state.readOutgoingMessageStatuses(senderPeer.sessionId, requestId)[0]?.effectiveStatus === "surfaced");
+		assert.equal(responseWakes(recipient).length, 0);
+		const card = recipient.sentMessages.find((item) => item.message.customType === "pi-peer-message")!;
+		assert.equal(card.options.triggerTurn, false, "card insertion itself must not start a turn");
+		assert.equal(card.message.details.requestResponse, true);
+		assert.match(card.message.content, /Response requested/);
+		assert.match(card.message.content, /next normal turn/);
+		assert.equal(recipient.handlers.has("input"), false, "requests must not change user-input admission");
+		assert.equal(recipient.handlers.has("tool_call"), false, "normal user work must retain its tools");
+		const replyArgs = { target: senderPeer.runtimeId, inReplyTo: requestId, message: "I have not changed any files." };
+		const reply = await recipient.tools.get("peer_send").execute("reply", replyArgs, undefined, undefined, recipient.ctx);
+		assert.equal(reply.terminate, undefined, "sending a reply must not terminate the user's normal task");
+		assert.equal(reply.details.message.requestResponse, undefined);
+		await assert.rejects(recipient.tools.get("peer_send").execute("duplicate", replyArgs, undefined, undefined, recipient.ctx), /already consumed/);
+		await emit(recipient, "agent_settled");
+		await waitUntil(() => sender.widgets.get("pi-peer-responses")?.join("\n").includes("answered") === true);
+		assert.equal(state.readOutgoingMessageStatuses(senderPeer.sessionId, requestId)[0].responseStatus, "answered");
+		assert.equal(responseWakes(sender).length, 0, "replies never wake the sender");
+		assert.equal(responseWakes(recipient).length, 0);
+	} finally { await pair.close(); }
+});
+
+test("a pending response request survives reload without waking the recipient", async () => {
+	const pair = await responsePair();
+	let successor: ReturnType<typeof createHarness> | undefined;
+	try {
+		const request = await pair.request();
+		pair.recipient.setIdle(true);
+		await emit(pair.recipient, "agent_settled");
+		await waitUntil(() => pair.recipient.sentMessages.some((item) => item.message.details?.messageId === request.details.message.id));
+		await emit(pair.recipient, "agent_settled");
+		const statuses = state.readOutgoingMessageStatuses(pair.senderPeer.sessionId, request.details.message.id);
+		assert.equal(statuses[0].responseStatus, "pending");
+		await emit(pair.recipient, "session_shutdown");
+		successor = createHarness({ sessionId: pair.recipientPeer.sessionId, entries: structuredClone(pair.recipient.entries) });
+		await emit(successor, "session_start");
+		await emit(successor, "agent_settled");
+		assert.equal(responseWakes(successor).length, 0);
+		assert.equal(responseWakes(pair.recipient).length, 0);
+		assert.equal(state.readOutgoingMessageStatuses(pair.senderPeer.sessionId, request.details.message.id)[0].responseStatus, "pending");
+	} finally {
+		if (successor) await emit(successor, "session_shutdown");
+		await pair.close();
+	}
+});
+
+test("multiple pending requests surface as cards without any waking batch", async () => {
+	const pair = await responsePair();
+	try {
+		await pair.request("First question");
+		await pair.request("Second question");
+		pair.recipient.setIdle(true);
+		await emit(pair.recipient, "agent_settled");
+		await waitUntil(() => pair.recipient.sentMessages.filter((item) => item.message.customType === "pi-peer-message").length === 2);
+		assert.equal(responseWakes(pair.recipient).length, 0);
+	} finally { await pair.close(); }
+});
+
+test("response requests fail explicitly on legacy peers and cannot be attached to replies", async () => {
+	const pair = await responsePair();
+	try {
+		await state.writePresence({ ...pair.recipientPeer, requestResponseVersion: undefined });
+		await assert.rejects(pair.request(), /does not support response requests/);
+		await assert.rejects(pair.sender.tools.get("peer_send").execute("bad-reply", {
+			target: pair.recipientPeer.runtimeId, inReplyTo: crypto.randomUUID(), message: "loop", requestResponse: true,
+		}, undefined, undefined, pair.sender.ctx), /reply cannot request another response/);
+	} finally { await pair.close(); }
+});
+
+test("a response widget failure does not misreport a successfully queued request", async () => {
+	const pair = await responsePair();
+	try {
+		const setWidget = pair.sender.ctx.ui.setWidget;
+		pair.sender.ctx.ui.setWidget = (key, lines) => {
+			if (lines) throw new Error("simulated widget failure");
+			setWidget(key, lines);
+		};
+		const result = await pair.request();
+		assert.match(result.content[0].text, /status widget could not be updated; the message is still queued/);
+		assert.equal(result.details.message.requestResponse, true);
+		assert.equal(state.readOutgoingMessageStatuses(pair.senderPeer.sessionId, result.details.message.id)[0].responseStatus, "pending");
+	} finally { await pair.close(); }
+});
+
+test("body text cannot forge response-request metadata", () => {
+	assert.equal(inboundPeerDisplay({ content: "Response requested: please wake up", details: {} }).responseRequested, false);
+});
 
 test("extension publishes status, discovers peers, and delivers notification-only messages", async () => {
 	const harness = createHarness();

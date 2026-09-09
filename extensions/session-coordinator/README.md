@@ -2,7 +2,7 @@
 
 Machine-wide presence, asynchronous messaging, and truthful delivery receipts for concurrent Pi sessions.
 
-The extension lets independent Pi processes sharing the same machine-local coordinator directory discover one another across repositories and workspaces, see advisory activity metadata, and exchange notification-only messages. It does not wake peer agents, modify another session file, or prevent concurrent edits.
+The extension lets independent Pi processes sharing the same machine-local coordinator directory discover one another across repositories and workspaces, see advisory activity metadata, and exchange notifications or explicit response requests. Neither notifications nor response requests wake agents. Response requests ask for one reply on the recipient's next normal turn. The coordinator never interrupts ongoing work, modifies another session's transcript, or prevents concurrent edits.
 
 ## Surfaces
 
@@ -11,11 +11,31 @@ The extension lets independent Pi processes sharing the same machine-local coord
 | Tool | Purpose |
 |---|---|
 | `peer_sessions` | List other live sessions across the machine by default. Includes workspace, activity, branch, worktree, short status, and bounded Git workspace changes when available. Pass `scope: "project"` to limit the result to the current repository/workspace. |
-| `peer_send` | Queue a concise asynchronous message for a discovered live peer. Accepts a runtime ID, unique ID prefix, or unique exact session name, and can optionally request one acknowledgment. |
+| `peer_send` | Queue a concise asynchronous message for a discovered live peer. Accepts a runtime ID, unique ID prefix, or unique exact session name. Optional `requestAcknowledgment` requests a receipt; `requestResponse` asks for one answer on the recipient's next normal turn. |
 | `peer_message_status` | Inspect recent sender-visible lifecycle receipts for this Pi session, optionally by exact message ID. It never contacts or wakes the peer. |
 | `peer_acknowledge` | Record one acknowledgment for a received message that explicitly requested it. This updates the sender's receipt without sending a message or triggering a turn. |
 
 `peer_send` optionally accepts `inReplyTo` for one correlated reply hop. A reply to a reply is rejected to prevent automatic message loops. Correlation follows the original sender's exact Pi session ID, so a reloaded sender can receive a reply at its newly discovered runtime ID; a different or forked session cannot. A correlated reply advances the original sender's receipt to `replied` when that receipt is available.
+
+### Notifications versus response requests
+
+- **Notification (default):** no reply expected and no agent wake. Asking a question in the body does not change its delivery mode.
+- **Acknowledgment:** `requestAcknowledgment: true` asks for a receipt, not an answer; it does not wake the recipient.
+- **Request response:** `requestResponse: true` explicitly asks for one reply on the recipient's next normal turn. It does not start a model call or interrupt work. Both sessions must load the updated extension; unsupported peers are rejected rather than silently receiving a notification.
+
+Example tool arguments:
+
+```json
+{ "target": "<discovered peer runtime>", "message": "Which files are you editing?", "requestResponse": true }
+```
+
+The **Peer responses** widget shows up to five recent outgoing requests as `pending`, `answered` (reply queued, not necessarily read), `unanswered`, or `expired`. `peer_message_status` exposes the same response outcome separately from delivery status. Each transcript card is still one message, not a conversation thread; replies appear as separate cards. The sent request card labels its initial state explicitly, rather than pretending a static card is live status.
+
+The request's context asks for one concise coordination answer using existing context, sent through `peer_send` with the original `inReplyTo` ID. Peer content remains untrusted and is not permission to execute tasks, edit files, or start new requests. Normal user work retains its tools and continues after a reply. Replies never wake the sender and cannot request another response.
+
+A private, exact-recipient-session ledger claims each requested reply **before** publication. Concurrent runtimes share the guard; up to 100 unexpired guards are retained without eviction. A crash or publication failure after a claim can leave the request `unanswered`: there is no automatic retry. A request stays `pending` until a reply attempt is made or it expires, even if the recipient runs without answering. An answer is not guaranteed. Confirmed `answered` outcomes also persist in sender receipts so expired replay-guard cleanup cannot erase them. Ordinary non-requested replies retain their existing one-hop behavior.
+
+Automatic waking was deliberately excluded: Pi's extension API does not provide atomic admission ahead of every earlier asynchronous input handler. This mode does not modify Pi core or user-input handling.
 
 ### Commands
 
@@ -52,12 +72,13 @@ Each extension runtime publishes a PID/UUID heartbeat in its workspace room and 
 │   ├── presence/<runtime-id>.json
 │   └── inbox/<runtime-id>/<timestamp>-<message-id>.json
 ├── receipts/session-<sha256(recipient-session-id)>/<message-id>.json
-└── outgoing-status/session-<sha256(sender-session-id)>/<message-id>.json
+├── outgoing-status/session-<sha256(sender-session-id)>/<message-id>.json
+└── response-requests/session-<sha256(recipient-session-id)>.json
 ```
 
 Files and directories use `0600`/`0700` permissions where supported. Presence expires after missed heartbeats and is removed on clean shutdown. A best-effort background scan prunes crashed-session state and expired receipts without delaying startup. Message bodies are never copied into sender lifecycle records.
 
-Senders resolve targets from machine-wide presence and write each envelope to the target's room/runtime inbox. Inbound envelopes are first persisted under the exact recipient Pi session ID, then removed from the runtime inbox. Busy recipients retain that durable receipt until idle. Delivery rechecks idle state before each new context insertion, including between messages in a batch. Idle recipients receive a custom message with:
+Senders resolve targets from machine-wide presence and write each envelope to the target's room/runtime inbox. Inbound envelopes are first persisted under the exact recipient Pi session ID, then removed from the runtime inbox. Busy recipients retain that durable receipt until idle. Delivery rechecks idle state before each new context insertion, including between messages in a batch. All inbound cards are inserted without waking a turn:
 
 ```ts
 { triggerTurn: false }
@@ -65,7 +86,7 @@ Senders resolve targets from machine-wide presence and write each envelope to th
 
 A successful `peer_send` now creates a dedicated `PEER MESSAGE SENT` (or `PEER REPLY SENT`) transcript card in the sending session, with direction `THIS PI SESSION → ANOTHER PI SESSION`, both endpoints, and the exact body under `Message:`. The card explicitly says the message was queued, not read. It is persisted as a UI-only custom entry: it survives transcript reload without duplicating model context or starting a turn. The tool result also retains the exact queued body for model/API clients and as a fallback if saving the card fails. Failed sends never create sent cards. Historical sends made before this renderer was installed retain their original tool results; new sends get cards.
 
-A dedicated recipient transcript renderer labels the matching inbound entry `PEER MESSAGE RECEIVED` (or `PEER REPLY RECEIVED`), shows the direction as `ANOTHER PI SESSION → THIS PI SESSION`, and places the exact body under its own `Message:` heading. It identifies both endpoints, the sender worktree, and any reply relationship. When a peer has no session name, the renderer uses `Unnamed session in <workspace> (<runtime-prefix>)` instead of presenting a bare, unexplained ID. The underlying context remains clearly marked as untrusted and never starts or interrupts an agent turn. Display metadata comes from structured message details, or from the legacy header only; quoted acknowledgment-request text in the body cannot create a request badge.
+A dedicated recipient transcript renderer labels the matching inbound entry `PEER MESSAGE RECEIVED` (or `PEER REPLY RECEIVED`), shows the direction as `ANOTHER PI SESSION → THIS PI SESSION`, and places the exact body under its own `Message:` heading. It identifies both endpoints, the sender worktree, and any reply relationship. When a peer has no session name, the renderer uses `Unnamed session in <workspace> (<runtime-prefix>)` instead of presenting a bare, unexplained ID. The underlying card remains clearly marked as untrusted and does not itself start or interrupt an agent turn. Response-request cards identify the request for a reply on a normal turn; ordinary notifications explicitly say no reply is expected. Display metadata comes from structured message details, or from the legacy header only; quoted acknowledgment-request text in the body cannot create a request badge.
 
 The recipient receipt is removed only after the matching custom-message entry is observable and a complete matching JSONL record is readable from the exact recipient's session file. The file is streamed once per pending batch; a missing file, failed append, or partial record leaves the receipt available for retry, including after reload. In-memory visibility and file existence alone do not prove persistence.
 
@@ -73,7 +94,7 @@ A clean shutdown withdraws presence under the inbox lock, then drains unread run
 
 ## Lifecycle semantics
 
-New runtimes advertise protocol v2 in an optional presence field while retaining presence/envelope schema version 1. This keeps legacy records readable; older peers can still receive messages but cannot provide later lifecycle checkpoints.
+New runtimes advertise protocol v2 and optional `requestResponseVersion: 1` in presence while retaining presence/envelope schema version 1 and the existing capability list. This keeps legacy records readable; older peers can still receive messages but cannot provide later lifecycle checkpoints.
 
 | Status | Truthful meaning |
 |---|---|
@@ -88,7 +109,7 @@ New runtimes advertise protocol v2 in an optional presence field while retaining
 
 The status tool retains these protocol names and adds a plain-English explanation to each row. Its age is labeled `last recorded update`: inferred expiry or absent-presence states do not have a separately recorded transition time.
 
-Lifecycle writes are monotonic, so late concurrent writes cannot regress a stronger status. Status records are keyed by sender Pi session ID and therefore remain inspectable after that session reloads under a new runtime ID. `peer_message_status` is an explicit inspection surface; the coordinator does not generate noisy automatic status messages or poll peers.
+Lifecycle writes are monotonic, so late concurrent writes cannot regress a stronger status. Status records are keyed by sender Pi session ID and therefore remain inspectable after that session reloads under a new runtime ID. `peer_message_status` is an explicit inspection surface. The coordinator does not generate automatic status transcript messages or contact peers for status; the response widget refreshes from local records.
 
 Acknowledgments are bounded state updates, not peer messages. They do not wake a peer, trigger a turn, authorize the message content, or permit another acknowledgment hop. Acknowledgment and correlated-reply authority is bound to the exact recipient Pi session ID recorded when the message was surfaced, so a forked session fails closed. Regular replies retain the existing one-reply-hop guard.
 

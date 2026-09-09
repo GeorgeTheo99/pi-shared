@@ -16,6 +16,7 @@ export const MAX_STATUS_CHARS = 200;
 export const MAX_WORKSPACE_CHANGES = 10;
 export const MAX_OUTGOING_STATUS_RECORDS = 100;
 export const MAX_SESSION_RECEIPTS = 100;
+export const MAX_RESPONSE_REQUESTS = 100;
 const STALE_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const RUNTIME_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ROOM_ID_RE = /^(?:git|cwd)-[0-9a-f]{32}$/;
@@ -51,6 +52,7 @@ export interface PeerPresence {
 	leaseExpiresAt: number;
 	capabilities: ["messages"];
 	protocolVersion?: 2;
+	requestResponseVersion?: 1;
 	workspaceChanges?: string[];
 	workspaceChangesOmitted?: number;
 }
@@ -72,6 +74,7 @@ export interface PeerMessageEnvelope {
 	message: string;
 	inReplyTo?: string;
 	requestAcknowledgment?: boolean;
+	requestResponse?: boolean;
 	hops: 0 | 1;
 	createdAt: number;
 	expiresAt: number;
@@ -96,6 +99,8 @@ export interface PeerMessageStatusRecord {
 	targetSessionName?: string;
 	trackingSupported: boolean;
 	acknowledgmentRequested: boolean;
+	responseRequested?: boolean;
+	responseAnsweredAt?: number;
 	status: PersistedMessageStatus;
 	createdAt: number;
 	updatedAt: number;
@@ -108,6 +113,14 @@ export interface PeerMessageStatusRecord {
 
 export interface PeerMessageStatusView extends PeerMessageStatusRecord {
 	effectiveStatus: MessageStatus;
+	responseStatus?: "pending" | "answered" | "unanswered" | "expired";
+}
+
+export interface ResponseRequestBinding {
+	messageId: string;
+	senderSessionId: string;
+	recipientSessionId: string;
+	expiresAt: number;
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number, minimum: number): number {
@@ -404,6 +417,7 @@ export function normalizePresence(value: unknown): PeerPresence | undefined {
 		value.capabilities.length !== 1 ||
 		value.capabilities[0] !== "messages" ||
 		(value.protocolVersion !== undefined && value.protocolVersion !== 2) ||
+		(value.requestResponseVersion !== undefined && value.requestResponseVersion !== 1) ||
 		(value.workspaceChangesOmitted !== undefined &&
 			(!Number.isInteger(value.workspaceChangesOmitted) || Number(value.workspaceChangesOmitted) < 0))
 	) {
@@ -426,6 +440,7 @@ export function normalizePresence(value: unknown): PeerPresence | undefined {
 		leaseExpiresAt: value.leaseExpiresAt,
 		capabilities: ["messages"],
 		protocolVersion: value.protocolVersion === 2 ? 2 : undefined,
+		requestResponseVersion: value.requestResponseVersion === 1 ? 1 : undefined,
 		workspaceChanges: normalizeWorkspaceChanges(value.workspaceChanges),
 		workspaceChangesOmitted:
 			typeof value.workspaceChangesOmitted === "number" ? value.workspaceChangesOmitted : undefined,
@@ -504,6 +519,132 @@ export function listAllActivePeers(selfRuntimeId?: string, now = Date.now()): Pe
 		.sort((left, right) => left.startedAt - right.startedAt || left.runtimeId.localeCompare(right.runtimeId));
 }
 
+interface ResponseRequestRecord extends ResponseRequestBinding {
+	replyAttempted?: true;
+	replyQueued?: true;
+}
+
+interface ResponseRequestLedger {
+	version: 1;
+	recipientSessionId: string;
+	requests: ResponseRequestRecord[];
+}
+
+function responseLedgerPath(sessionId: string): string {
+	return path.join(coordinatorConfig().stateDir, "response-requests", `${receiptKey(sessionId)}.json`);
+}
+
+function validResponseBinding(value: unknown): value is ResponseRequestBinding {
+	return isRecord(value) && typeof value.messageId === "string" && RUNTIME_ID_RE.test(value.messageId)
+		&& Boolean(boundedString(value.senderSessionId, 1_024))
+		&& Boolean(boundedString(value.recipientSessionId, 1_024))
+		&& typeof value.expiresAt === "number" && Number.isFinite(value.expiresAt) && value.expiresAt > 0;
+}
+
+function readResponseLedger(sessionId: string): ResponseRequestLedger {
+	let value: unknown;
+	try {
+		// Unlike readJsonFile's fallback, only absence is safe to initialize. A
+		// malformed ledger must never erase an already-consumed attempt.
+		value = JSON.parse(fs.readFileSync(responseLedgerPath(sessionId), "utf8"));
+	} catch (error: any) {
+		if (error?.code === "ENOENT") return { version: 1, recipientSessionId: sessionId, requests: [] };
+		throw new Error("Unreadable or corrupt response request ledger", { cause: error });
+	}
+	const corrupt = () => new Error("Corrupt response request ledger");
+	if (!isRecord(value) || value.version !== 1 || value.recipientSessionId !== sessionId
+		|| !Array.isArray(value.requests) || value.requests.length > MAX_RESPONSE_REQUESTS) throw corrupt();
+	const ids = new Set<string>();
+	const requests: ResponseRequestRecord[] = [];
+	for (const item of value.requests) {
+		if (!validResponseBinding(item) || !isRecord(item) || item.recipientSessionId !== sessionId
+			|| ids.has(item.messageId)
+			|| (item.replyAttempted !== undefined && item.replyAttempted !== true)
+			|| (item.replyQueued !== undefined && item.replyQueued !== true)
+			|| (item.replyQueued === true && item.replyAttempted !== true)) throw corrupt();
+		if (!item.replyAttempted) throw corrupt();
+		ids.add(item.messageId);
+		// Explicit projection keeps the durable ledger body-free.
+		requests.push({ messageId: item.messageId, senderSessionId: item.senderSessionId,
+			recipientSessionId: sessionId, expiresAt: item.expiresAt,
+			replyAttempted: item.replyAttempted as true | undefined, replyQueued: item.replyQueued as true | undefined });
+	}
+	return { version: 1, recipientSessionId: sessionId, requests };
+}
+
+function boundResponseRequest(ledger: ResponseRequestLedger, binding: ResponseRequestBinding): ResponseRequestRecord | undefined {
+	const record = ledger.requests.find((item) => item.messageId === binding.messageId);
+	if (record && (record.senderSessionId !== binding.senderSessionId || record.expiresAt !== binding.expiresAt
+		|| record.recipientSessionId !== binding.recipientSessionId)) throw new Error("Response request binding mismatch");
+	return record;
+}
+
+function addResponseRequest(ledger: ResponseRequestLedger, binding: ResponseRequestBinding): ResponseRequestRecord {
+	// Retain every unexpired reply-attempt guard; never evict one to make room.
+	ledger.requests = ledger.requests.filter((item) => item.expiresAt > Date.now());
+	if (ledger.requests.length >= MAX_RESPONSE_REQUESTS) {
+		throw new Error(`Response request ledger is full (${MAX_RESPONSE_REQUESTS} requests).`);
+	}
+	const record = { messageId: binding.messageId, senderSessionId: binding.senderSessionId,
+		recipientSessionId: binding.recipientSessionId, expiresAt: binding.expiresAt };
+	ledger.requests.push(record);
+	return record;
+}
+
+async function withResponseLedger<T>(binding: ResponseRequestBinding, mutate: (ledger: ResponseRequestLedger) => T): Promise<T> {
+	if (!validResponseBinding(binding)) throw new Error("Invalid response request binding");
+	const filePath = responseLedgerPath(binding.recipientSessionId);
+	ensurePrivateDir(coordinatorConfig().stateDir);
+	ensurePrivateDir(path.dirname(filePath));
+	return withInterprocessLock(`${filePath}.lock`, async () => {
+		const ledger = readResponseLedger(binding.recipientSessionId);
+		const result = mutate(ledger);
+		await atomicWriteJson(filePath, ledger);
+		return result;
+	}, { timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 });
+}
+
+/** Claim before publication; uncertain enqueue failures deliberately consume it. */
+export async function claimRequestReply(binding: ResponseRequestBinding): Promise<boolean> {
+	return withResponseLedger(binding, (ledger) => {
+		let record = boundResponseRequest(ledger, binding);
+		if (record?.replyAttempted || binding.expiresAt <= Date.now()) return false;
+		record ??= addResponseRequest(ledger, binding);
+		record.replyAttempted = true;
+		return true;
+	});
+}
+
+/** Only call after reply enqueue has resolved successfully. Delivery rank is not proof. */
+export async function markRequestReplyQueued(binding: ResponseRequestBinding): Promise<void> {
+	await withResponseLedger(binding, (ledger) => {
+		const record = boundResponseRequest(ledger, binding);
+		if (!record?.replyAttempted) throw new Error("Response reply was not claimed before enqueue");
+		record.replyQueued = true;
+	});
+	// Preserve the confirmed outcome for the sender's full receipt-retention
+	// window even after an expired recipient replay guard is pruned.
+	ensureOutgoingStatusDirs(binding.senderSessionId);
+	await withInterprocessLock(outgoingStatusRecordsLockPath(binding.senderSessionId), async () => {
+		const filePath = outgoingStatusPath(binding.senderSessionId, binding.messageId);
+		const record = normalizeMessageStatusRecord(readJsonFile<unknown>(filePath, undefined));
+		if (!record || !record.responseRequested || record.senderSessionId !== binding.senderSessionId
+			|| record.targetSessionId !== binding.recipientSessionId || record.expiresAt !== binding.expiresAt) return;
+		if (record.responseAnsweredAt === undefined) await atomicWriteJson(filePath, { ...record, responseAnsweredAt: Date.now() });
+	}, { timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 });
+}
+
+function requestResponseStatus(record: PeerMessageStatusRecord, now: number): PeerMessageStatusView["responseStatus"] {
+	if (record.responseAnsweredAt !== undefined) return "answered";
+	const binding: ResponseRequestBinding = { messageId: record.messageId, senderSessionId: record.senderSessionId,
+		recipientSessionId: record.targetSessionId!, expiresAt: record.expiresAt };
+	const request = boundResponseRequest(readResponseLedger(binding.recipientSessionId), binding);
+	if (request?.replyQueued) return "answered";
+	if (binding.expiresAt <= now) return "expired";
+	if (request?.replyAttempted) return "unanswered";
+	return "pending";
+}
+
 const MESSAGE_STATUS_RANK: Record<PersistedMessageStatus, number> = {
 	pending: 0,
 	queued: 1,
@@ -536,6 +677,8 @@ export function normalizeMessageStatusRecord(value: unknown): PeerMessageStatusR
 		(value.targetSessionId !== undefined && !targetSessionId) ||
 		typeof value.trackingSupported !== "boolean" ||
 		typeof value.acknowledgmentRequested !== "boolean" ||
+		(value.responseRequested !== undefined && typeof value.responseRequested !== "boolean") ||
+		(value.responseRequested === true && !targetSessionId) ||
 		!validStatus ||
 		![value.createdAt, value.updatedAt, value.expiresAt].every(
 			(item) => typeof item === "number" && Number.isFinite(item),
@@ -557,6 +700,7 @@ export function normalizeMessageStatusRecord(value: unknown): PeerMessageStatusR
 		targetSessionName: boundedString(value.targetSessionName, 200),
 		trackingSupported: value.trackingSupported,
 		acknowledgmentRequested: value.acknowledgmentRequested,
+		responseRequested: value.responseRequested as boolean | undefined,
 		status: validStatus,
 		createdAt: value.createdAt as number,
 		updatedAt: value.updatedAt as number,
@@ -565,6 +709,7 @@ export function normalizeMessageStatusRecord(value: unknown): PeerMessageStatusR
 		surfacedAt: optionalTimestamp("surfacedAt"),
 		acknowledgedAt: optionalTimestamp("acknowledgedAt"),
 		repliedAt: optionalTimestamp("repliedAt"),
+		responseAnsweredAt: value.responseRequested === true ? optionalTimestamp("responseAnsweredAt") : undefined,
 	};
 }
 
@@ -596,13 +741,14 @@ function targetOrSuccessorAlive(record: PeerMessageStatusRecord): boolean {
 
 function statusView(record: PeerMessageStatusRecord, now: number): PeerMessageStatusView {
 	let effectiveStatus: MessageStatus = record.status;
-	if (!record.trackingSupported) return { ...record, effectiveStatus };
+	const responseStatus = record.responseRequested ? requestResponseStatus(record, now) : undefined;
+	if (!record.trackingSupported) return { ...record, effectiveStatus, responseStatus };
 	if (MESSAGE_STATUS_RANK[record.status] < MESSAGE_STATUS_RANK.surfaced && record.expiresAt <= now) {
 		effectiveStatus = "expired";
 	} else if (record.status === "queued" && !targetOrSuccessorAlive(record)) {
 		effectiveStatus = "unread_session_ended";
 	}
-	return { ...record, effectiveStatus };
+	return { ...record, effectiveStatus, responseStatus };
 }
 
 export function readOutgoingMessageStatuses(
@@ -633,6 +779,7 @@ export async function persistOutgoingMessageStatus(input: {
 		targetSessionName: boundedString(input.targetSessionName, 200),
 		trackingSupported: input.trackingSupported,
 		acknowledgmentRequested: envelope.requestAcknowledgment === true,
+		responseRequested: envelope.requestResponse === true ? true : undefined,
 		status: "pending",
 		createdAt: envelope.createdAt,
 		updatedAt: envelope.createdAt,
@@ -724,6 +871,8 @@ export function normalizeEnvelope(value: unknown): PeerMessageEnvelope | undefin
 		(value.inReplyTo !== undefined &&
 			(typeof value.inReplyTo !== "string" || !RUNTIME_ID_RE.test(value.inReplyTo))) ||
 		(value.requestAcknowledgment !== undefined && typeof value.requestAcknowledgment !== "boolean") ||
+		(value.requestResponse !== undefined && typeof value.requestResponse !== "boolean") ||
+		(value.requestResponse === true && (!targetSessionId || value.hops !== 0 || value.inReplyTo !== undefined)) ||
 		value.untrusted !== true
 	) {
 		return undefined;
@@ -743,6 +892,7 @@ export function normalizeEnvelope(value: unknown): PeerMessageEnvelope | undefin
 		message,
 		inReplyTo: boundedString(value.inReplyTo, 64),
 		requestAcknowledgment: value.requestAcknowledgment === true ? true : undefined,
+		requestResponse: value.requestResponse === true ? true : undefined,
 		hops: value.hops,
 		createdAt: value.createdAt,
 		expiresAt: value.expiresAt,
@@ -758,9 +908,14 @@ export function createEnvelope(input: {
 	message: string;
 	inReplyTo?: string;
 	requestAcknowledgment?: boolean;
+	requestResponse?: boolean;
 	hops?: 0 | 1;
 	now?: number;
 }): PeerMessageEnvelope {
+	if (input.requestResponse === true && (!boundedString(input.targetSessionId, 1_024)
+		|| (input.hops ?? 0) !== 0 || input.inReplyTo !== undefined)) {
+		throw new Error("Response requests require an exact target session, hops 0, and no inReplyTo.");
+	}
 	const now = input.now ?? Date.now();
 	const envelope: PeerMessageEnvelope = {
 		version: 1,
@@ -772,6 +927,7 @@ export function createEnvelope(input: {
 		message: sanitizeMessage(input.message),
 		inReplyTo: input.inReplyTo,
 		requestAcknowledgment: input.requestAcknowledgment === true ? true : undefined,
+		requestResponse: input.requestResponse,
 		hops: input.hops ?? 0,
 		createdAt: now,
 		expiresAt: now + DEFAULT_MESSAGE_TTL_MS,
@@ -797,6 +953,9 @@ export async function enqueueMessage(envelope: PeerMessageEnvelope): Promise<voi
 			}
 			if (envelope.targetSessionId && target.sessionId !== envelope.targetSessionId) {
 				throw new Error("Peer runtime changed Pi sessions before delivery; refresh peer_sessions before retrying.");
+			}
+			if (normalized.requestResponse && target.requestResponseVersion !== 1) {
+				throw new Error("Peer session does not support response requests; refresh peer_sessions before retrying.");
 			}
 			const dir = inboxDir(envelope.roomId, envelope.targetRuntimeId);
 			ensurePrivateDir(dir);

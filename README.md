@@ -225,7 +225,7 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - see `extensions/self-handoff/README.md` for cancellation, `/goal reclaim`, and stock Pi's non-transactional replacement limits
 - `extensions/session-coordinator` — machine-local presence and asynchronous peer coordination:
   - `peer_sessions` lists live sessions machine-wide or project-scoped with advisory branch/worktree/activity metadata and bounded Git workspace changes
-  - `peer_send` remains notification-only and never wakes or interrupts a peer; optional acknowledgments and one correlated reply hop are bounded against loops
+  - `peer_send` defaults to notifications; opt-in `requestResponse: true` asks for one reply on the recipient's next normal turn, with pending/answered status and durable duplicate-reply protection. No message wakes or interrupts a peer
   - `peer_message_status` exposes truthful `pending`, `queued`, `delivered`, `surfaced`, `acknowledged`, `replied`, `expired`, and `unread_session_ended` checkpoints; `surfaced` never claims read
   - exact same-session successors can safely adopt unread dead-runtime inboxes; ambiguous, different-session, and legacy ownership fails closed
   - see `extensions/session-coordinator/README.md` for storage, compatibility, lifecycle, and trust semantics

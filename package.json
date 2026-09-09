@@ -11,7 +11,7 @@
     "test:tool-summary": "node --no-warnings --test tests/tool_summary_policy.test.mts tests/tool_summary_json_query.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/tool_summary_test_loader.mjs --test tests/tool_summary_extension.test.mts",
     "test:panel": "node --no-warnings --experimental-loader ./tests/fixtures/panel_test_loader.mjs --test tests/panel_models.test.mts",
     "test:subagents": "node --no-warnings --experimental-loader ./tests/fixtures/subagent_test_loader.mjs --test tests/subagent_*.test.mts",
-    "test:session-coordinator": "node --no-warnings --test tests/session_coordinator_state.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/session_coordinator_test_loader.mjs --test tests/session_coordinator_extension.test.mts",
+    "test:session-coordinator": "node --no-warnings --test tests/session_coordinator_state.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/session_coordinator_test_loader.mjs --test tests/session_coordinator_extension.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/integration_bundles_test_loader.mjs --test tests/session_coordinator_sdk.test.mts",
     "test:powerpoint": "node --no-warnings --test tests/powerpoint_skill.test.mjs",
     "test:command-jobs": "node --no-warnings --experimental-loader ./tests/fixtures/subagent_test_loader.mjs --test tests/command_jobs*.test.mts",
     "test:safe-edit": "node --no-warnings --test tests/safe_edit.test.mts",

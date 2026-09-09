@@ -5,7 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
-import type { PeerPresence } from "../extensions/session-coordinator/state.ts";
+import type { PeerPresence, ResponseRequestBinding } from "../extensions/session-coordinator/state.ts";
+import { withInterprocessLock } from "../extensions/_shared/file-lock.ts";
 
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-coordinator-test-"));
 process.env.PI_SESSION_COORDINATOR_DIR = stateDir;
@@ -341,6 +342,7 @@ test("orphan inbox directories are pruned independently of presence files", asyn
 test("legacy presence and envelopes remain valid without protocol-v2 fields", () => {
 	const legacyPresence = { ...presence(), protocolVersion: undefined };
 	assert.equal(coordinator.normalizePresence(legacyPresence)?.protocolVersion, undefined);
+	assert.equal(coordinator.normalizePresence(legacyPresence)?.requestResponseVersion, undefined);
 	const legacyEnvelope = coordinator.createEnvelope({
 		roomId: legacyPresence.roomId,
 		targetRuntimeId: legacyPresence.runtimeId,
@@ -353,6 +355,7 @@ test("legacy presence and envelopes remain valid without protocol-v2 fields", ()
 	});
 	assert.equal(coordinator.normalizeEnvelope(legacyEnvelope)?.targetSessionId, undefined);
 	assert.equal(coordinator.normalizeEnvelope(legacyEnvelope)?.requestAcknowledgment, undefined);
+	assert.equal(coordinator.normalizeEnvelope(legacyEnvelope)?.requestResponse, undefined);
 });
 
 test("outgoing lifecycle records are private, monotonic, and expose truthful terminal warnings", async () => {
@@ -395,6 +398,8 @@ test("outgoing lifecycle records are private, monotonic, and expose truthful ter
 	status = coordinator.readOutgoingMessageStatuses(senderSessionId, envelope.id, now + 5)[0];
 	assert.equal(status.effectiveStatus, "replied");
 	assert.equal(status.acknowledgmentRequested, true);
+	assert.equal(status.responseRequested, undefined);
+	assert.equal(status.responseStatus, undefined);
 
 	const unread = coordinator.createEnvelope({
 		roomId,
@@ -625,4 +630,170 @@ test("session receipts remain durable independently of Pi session-file creation"
 	assert.deepEqual(coordinator.readSessionReceipts(sessionId).map((item) => item.envelope.id), [envelope.id]);
 	await coordinator.removeSessionReceipt(receipt);
 	assert.equal(coordinator.readSessionReceipts(sessionId).length, 0);
+});
+
+function responseFixture() {
+	const target = presence({ requestResponseVersion: 1 });
+	const envelope = coordinator.createEnvelope({
+		roomId: target.roomId, targetRuntimeId: target.runtimeId, targetSessionId: target.sessionId,
+		sender: { runtimeId: crypto.randomUUID(), sessionId: crypto.randomUUID(), worktreeRoot: process.cwd() },
+		message: "private request body must not enter the ledger", requestResponse: true,
+	});
+	const binding: ResponseRequestBinding = { messageId: envelope.id, senderSessionId: envelope.sender.sessionId,
+		recipientSessionId: target.sessionId, expiresAt: envelope.expiresAt };
+	const ledgerPath = path.join(stateDir, "response-requests",
+		`session-${crypto.createHash("sha256").update(target.sessionId).digest("hex")}.json`);
+	const status = (now = Date.now()) => coordinator.readOutgoingMessageStatuses(binding.senderSessionId, binding.messageId, now)[0];
+	return { target, envelope, binding, ledgerPath, status };
+}
+
+async function childClaim(binding: ResponseRequestBinding) {
+	const sourceUrl = new URL("../extensions/session-coordinator/state.ts", import.meta.url).href;
+	const source = `
+		const state = await import(${JSON.stringify(sourceUrl)});
+		const binding = ${JSON.stringify(binding)};
+		const result = await state.claimRequestReply(binding);
+		process.stdout.write(JSON.stringify({result, pid:process.pid}));
+	`;
+	return new Promise<{ result: string | boolean; pid: number }>((resolve, reject) => {
+		const child = spawn(process.execPath, ["--no-warnings", "--input-type=module", "-e", source], {
+			env: { ...process.env, PI_SESSION_COORDINATOR_DIR: stateDir }, stdio: ["ignore", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (data) => { stdout += data; });
+		child.stderr.on("data", (data) => { stderr += data; });
+		child.on("error", reject);
+		child.on("close", (code) => {
+			if (code !== 0) return reject(new Error(`Response claim child exited ${code}: ${stderr}`));
+			try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+		});
+	});
+}
+
+test("response requests preserve protocol-v2 fields and reject invalid combinations", () => {
+	const { target, envelope } = responseFixture();
+	const normalized = coordinator.normalizePresence(target)!;
+	assert.equal(normalized.protocolVersion, 2);
+	assert.equal(normalized.requestResponseVersion, 1);
+	assert.deepEqual(normalized.capabilities, ["messages"]);
+	assert.equal(coordinator.normalizePresence({ ...target, requestResponseVersion: 2 }), undefined);
+	assert.equal(coordinator.normalizeEnvelope(envelope)?.requestResponse, true);
+	assert.equal(coordinator.createEnvelope({ ...envelope, requestResponse: false, targetSessionId: undefined }).requestResponse, undefined);
+	for (const overrides of [{ targetSessionId: undefined }, { targetSessionId: "" }, { hops: 1 },
+		{ inReplyTo: crypto.randomUUID() }, { requestResponse: "yes" }]) {
+		assert.equal(coordinator.normalizeEnvelope({ ...envelope, ...overrides }), undefined);
+		assert.throws(() => coordinator.createEnvelope({ ...envelope, ...overrides } as any));
+	}
+});
+
+test("response enqueue rechecks support and exact target under the inbox lock", async () => {
+	const { target, envelope } = responseFixture();
+	await coordinator.writePresence({ ...target, requestResponseVersion: undefined });
+	await assert.rejects(coordinator.enqueueMessage(envelope), /does not support response requests/);
+	await coordinator.enqueueMessage({ ...envelope, id: crypto.randomUUID(), requestResponse: undefined });
+	await coordinator.writePresence(target);
+	await coordinator.enqueueMessage(envelope);
+	assert.equal(coordinator.readInbox(target.roomId, target.runtimeId).length, 2);
+	await coordinator.writePresence({ ...target, sessionId: crypto.randomUUID() });
+	await assert.rejects(coordinator.enqueueMessage({ ...envelope, id: crypto.randomUUID() }), /changed Pi sessions/);
+	await coordinator.writePresence(target);
+
+	const lockPath = path.join(path.dirname(coordinator.inboxDir(target.roomId, target.runtimeId)), `${target.runtimeId}.lock`);
+	let enqueue: Promise<unknown>;
+	await withInterprocessLock(lockPath, async () => {
+		enqueue = coordinator.enqueueMessage({ ...envelope, id: crypto.randomUUID() }).then(() => "unexpected success", (error) => error);
+		await coordinator.writePresence({ ...target, requestResponseVersion: undefined });
+	});
+	assert.match(String(await enqueue!), /does not support response requests/);
+	assert.equal(coordinator.readInbox(target.roomId, target.runtimeId).length, 2);
+});
+
+test("reply claims are private, body-free, exact-bound, and consumed across reload", async () => {
+	const { binding, ledgerPath, envelope } = responseFixture();
+	assert.equal(await coordinator.claimRequestReply(binding), true);
+	assert.equal(fs.statSync(ledgerPath).mode & 0o777, 0o600);
+	assert.equal(fs.statSync(path.dirname(ledgerPath)).mode & 0o777, 0o700);
+	assert.equal(fs.readFileSync(ledgerPath, "utf8").includes(envelope.message), false);
+	const reloaded = await import(`../extensions/session-coordinator/state.ts?reload=${crypto.randomUUID()}`);
+	assert.equal(await reloaded.claimRequestReply(binding), false);
+	for (const changed of [{ senderSessionId: "wrong" }, { expiresAt: binding.expiresAt + 1 }]) {
+		await assert.rejects(coordinator.claimRequestReply({ ...binding, ...changed }), /binding mismatch/);
+		await assert.rejects(coordinator.markRequestReplyQueued({ ...binding, ...changed }), /binding mismatch/);
+	}
+	assert.equal(await coordinator.claimRequestReply({ ...binding, recipientSessionId: crypto.randomUUID() }), true);
+});
+
+test("independent processes cannot duplicate requested reply claims", async () => {
+	const { binding, envelope, status } = responseFixture();
+	await coordinator.persistOutgoingMessageStatus({ envelope, trackingSupported: true });
+	const replies = await Promise.all(Array.from({ length: 6 }, () => childClaim(binding)));
+	assert.equal(replies.filter((item) => item.result === true).length, 1);
+	assert.equal(replies.filter((item) => item.result === false).length, 5);
+	assert.equal(status().responseStatus, "unanswered", "unconfirmed publication is not answered");
+});
+
+test("response status uses ledger evidence rather than delivery rank and survives uncertain reply failure", async () => {
+	const { binding, envelope, status } = responseFixture();
+	const record = await coordinator.persistOutgoingMessageStatus({ envelope, trackingSupported: true });
+	assert.equal(record.responseRequested, true);
+	assert.equal(status().responseStatus, "pending");
+	assert.equal(coordinator.normalizeMessageStatusRecord({ ...record, responseRequested: "true" }), undefined);
+	assert.equal(coordinator.normalizeMessageStatusRecord({ ...record, targetSessionId: undefined }), undefined);
+	await coordinator.updateOutgoingMessageStatus(binding.senderSessionId, binding.messageId, "surfaced");
+	assert.equal(status(binding.expiresAt).effectiveStatus, "surfaced");
+	assert.equal(status(binding.expiresAt).responseStatus, "expired", "surfacing does not defeat request expiry");
+	await coordinator.updateOutgoingMessageStatus(binding.senderSessionId, binding.messageId, "replied");
+	assert.equal(status().responseStatus, "pending", "delivery rank alone cannot prove a response");
+	await assert.rejects(coordinator.markRequestReplyQueued(binding), /not claimed/);
+	assert.equal(await coordinator.claimRequestReply(binding), true);
+	assert.equal(status().responseStatus, "unanswered");
+	const reloaded = await import(`../extensions/session-coordinator/state.ts?replyReload=${crypto.randomUUID()}`);
+	assert.equal(await reloaded.claimRequestReply(binding), false, "uncertain enqueue failures are not retried");
+	await coordinator.markRequestReplyQueued(binding);
+	await coordinator.markRequestReplyQueued(binding);
+	assert.equal(status().responseStatus, "answered");
+	assert.equal(status(binding.expiresAt + 1).responseStatus, "answered", "confirmed replies retain their terminal outcome");
+});
+
+test("response ledger cap retains unexpired tombstones and reclaims only expired inactive records", async (t) => {
+	const now = Date.now();
+	t.mock.timers.enable({ apis: ["Date"], now });
+	const { binding, ledgerPath, envelope, status } = responseFixture();
+	await coordinator.persistOutgoingMessageStatus({ envelope, trackingSupported: true });
+	const bindings = [binding, ...Array.from({ length: coordinator.MAX_RESPONSE_REQUESTS - 1 }, () => ({ ...binding, messageId: crypto.randomUUID() }))];
+	for (const item of bindings) assert.equal(await coordinator.claimRequestReply(item), true);
+	await coordinator.markRequestReplyQueued(bindings[0]);
+	const extra = { ...binding, messageId: crypto.randomUUID(), expiresAt: binding.expiresAt + 1000 };
+	await assert.rejects(coordinator.claimRequestReply(extra), /ledger is full/);
+	assert.equal(await coordinator.claimRequestReply(bindings[0]), false, "answered tombstones are not evicted");
+	assert.equal(JSON.parse(fs.readFileSync(ledgerPath, "utf8")).requests.length, coordinator.MAX_RESPONSE_REQUESTS);
+	t.mock.timers.setTime(binding.expiresAt + 1);
+	assert.equal(await coordinator.claimRequestReply(extra), true);
+	assert.equal(JSON.parse(fs.readFileSync(ledgerPath, "utf8")).requests.length, 1);
+	assert.equal(status().responseStatus, "answered", "pruning an expired replay guard must not erase the sender's confirmed answer");
+	assert.equal(await coordinator.claimRequestReply(bindings[0]), false, "expired claims cannot be re-created after pruning");
+});
+
+test("malformed existing ledgers fail closed for every operation and status read", async () => {
+	const { binding, ledgerPath, envelope, status } = responseFixture();
+	await coordinator.persistOutgoingMessageStatus({ envelope, trackingSupported: true });
+	await coordinator.claimRequestReply(binding);
+	const valid = JSON.parse(fs.readFileSync(ledgerPath, "utf8"));
+	const corruptions = ["{", "null", "{}", JSON.stringify({ ...valid, version: 2 }),
+		JSON.stringify({ ...valid, recipientSessionId: "wrong-recipient" }),
+		JSON.stringify({ ...valid, requests: [valid.requests[0], valid.requests[0]] }),
+		JSON.stringify({ ...valid, requests: [{ ...valid.requests[0], replyAttempted: false }] }),
+		JSON.stringify({ ...valid, requests: [{ ...valid.requests[0], replyAttempted: undefined, replyQueued: true }] }),
+		JSON.stringify({ ...valid, requests: [{ ...binding }] }),
+		JSON.stringify({ ...valid, requests: Array(coordinator.MAX_RESPONSE_REQUESTS + 1).fill(valid.requests[0]) })];
+	for (const corrupt of corruptions) {
+		fs.writeFileSync(ledgerPath, corrupt);
+		await assert.rejects(coordinator.claimRequestReply(binding), /corrupt/i);
+		await assert.rejects(coordinator.markRequestReplyQueued(binding), /corrupt/i);
+		assert.throws(() => status(), /corrupt/i);
+		assert.equal(fs.readFileSync(ledgerPath, "utf8"), corrupt, "corruption is never reset to an empty ledger");
+	}
+	fs.writeFileSync(ledgerPath, JSON.stringify(valid));
+	assert.equal(await coordinator.claimRequestReply(binding), false);
 });
