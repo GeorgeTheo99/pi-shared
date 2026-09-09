@@ -84,9 +84,11 @@ The SDK fixture additionally passed with an inherited subagent depth of 1 after
 isolating its own depth/state, without spawning a child or making a model call.
 Test skip details were checked separately. No core patch was installed for unit 10.
 
-Changes intentionally remain uncommitted for user review. Local `.pi` configs and
-extension `node_modules` are ignored runtime setup, not shareable machine configuration.
-No repository commit, push, live reload, or upstream submission is implicit in these results.
+At the initial audit, changes were intentionally left uncommitted for user review.
+The user subsequently authorized committing and publishing the complete tooling
+changes. Local `.pi` configs and extension `node_modules` remain ignored runtime
+setup, not shareable machine configuration. The upstream core patch is still only
+a prepared artifact; publishing this repository does not install or submit it upstream.
 
 ## Live activation follow-up
 

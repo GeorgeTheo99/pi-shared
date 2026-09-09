@@ -7,7 +7,9 @@ out of this separate capability. Exit 2 + WARN: invalid configuration or a
 selected worker whose token/backend is unavailable.
 No browser tools are executed, no public pages fetched, and no state is written.
 Configuration matches extensions/pi-browser-capture/src/browser-worker.ts:
-BROWSER_WORKER_MCP_URL, BROWSER_WORKER_MCP_TOKEN_FILE. No proxies or redirects.
+Environment overrides BROWSER_WORKER_MCP_URL / BROWSER_WORKER_MCP_TOKEN_FILE,
+then browserWorkerMcpUrl / browserWorkerTokenFile in ~/.pi/research/config.json.
+No proxies or redirects.
 """
 
 import argparse
@@ -37,18 +39,19 @@ class BrowserError(ValueError):
 GUIDANCE = (
     "Configure BROWSER_WORKER_MCP_URL (default http://127.0.0.1:8890/mcp) and "
     "BROWSER_WORKER_MCP_TOKEN_FILE (default ~/srv/browser-worker/shared/tokens/pi-production) "
-    "for a separately managed browser-worker; obtain its token from the service operator. "
-    "Pi does not provision a worker or token. See pi-shared/extensions/pi-browser-capture/README.md; "
+    "for custom deployments, or install/repair browser-worker through pi-setup or browser-worker/install.sh. "
+    "The installer creates a local production token automatically; no external API key is needed. "
+    "See pi-shared/extensions/pi-browser-capture/README.md; "
     "restart Pi or /reload after setup. app_* and web_search/web_fetch are independent."
 )
 
 
-def worker_enabled():
+def worker_config():
     path = Path.home() / ".pi/research/config.json"
     try:
         config = read_json(path)
     except FileNotFoundError:
-        return True
+        return {}
     except (OSError, ValueError, RuntimeError):
         raise ValueError("Cannot read browser-worker selection from ~/.pi/research/config.json; fix the research configuration") from None
     if not isinstance(config, dict):
@@ -56,11 +59,14 @@ def worker_enabled():
     enabled = config.get("browserWorkerEnabled", True)
     if not isinstance(enabled, bool):
         raise ValueError("browserWorkerEnabled in research configuration must be true or false")
-    return enabled
+    for key in ("browserWorkerMcpUrl", "browserWorkerTokenFile"):
+        if key in config and (not isinstance(config[key], str) or not config[key].strip()):
+            raise ValueError(f"{key} in research configuration must be a non-empty string")
+    return config
 
 
-def endpoint():
-    raw = os.environ.get("BROWSER_WORKER_MCP_URL", "http://127.0.0.1:8890/mcp")
+def endpoint(config):
+    raw = os.environ.get("BROWSER_WORKER_MCP_URL", config.get("browserWorkerMcpUrl", "http://127.0.0.1:8890/mcp"))
     # Deliberately canonical, matching the TS client: no parser normalization,
     # userinfo, localhost DNS, query, fragment, or implicit/default HTTP port.
     match = re.fullmatch(r"http://(127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})/mcp", raw)
@@ -69,16 +75,17 @@ def endpoint():
     return raw
 
 
-def token_file():
-    return Path(os.environ.get("BROWSER_WORKER_MCP_TOKEN_FILE", str(
+def token_file(config):
+    return Path(os.environ.get("BROWSER_WORKER_MCP_TOKEN_FILE", config.get("browserWorkerTokenFile", str(
         Path.home() / "srv/browser-worker/shared/tokens/pi-production"
-    )))
+    ))))
 
 
-def check(timeout=3.0):
-    raw = endpoint()
+def check(timeout=3.0, config=None):
+    config = worker_config() if config is None else config
+    raw = endpoint(config)
     url = urllib.parse.urlsplit(raw)
-    token_path = token_file()
+    token_path = token_file(config)
     try:
         token = read_bytes(token_path, 16384).decode("utf-8").strip()
     except (OSError, UnicodeError, RuntimeError):
@@ -135,13 +142,14 @@ def main():
         row = capability("browser_worker", "static" if args.static else "authenticated_inventory", "not_checked", GUIDANCE,
                          execution="not_tested")
         try:
-            enabled = worker_enabled()
+            config = worker_config()
+            enabled = config.get("browserWorkerEnabled", True)
             row["selected"] = enabled
             if not enabled:
                 row.update(outcome="disabled", configured="no")
             else:
-                endpoint()  # Validate without emitting the URL or reading the token.
-                row["token_file_present"] = token_file().is_file()
+                endpoint(config)  # Validate without emitting the URL or reading the token.
+                row["token_file_present"] = token_file(config).is_file()
                 row["configured"] = "yes" if row["token_file_present"] else "no"
                 if args.static:
                     row["outcome"] = "not_checked" if row["token_file_present"] else "missing_token"
@@ -151,7 +159,7 @@ def main():
                     signal.signal(signal.SIGALRM, expired)
                     signal.setitimer(signal.ITIMER_REAL, args.timeout)
                     try:
-                        check(args.timeout)
+                        check(args.timeout, config)
                     finally:
                         signal.setitimer(signal.ITIMER_REAL, 0)
                     row.update(outcome="inventory_verified", inventory_verified=True)
@@ -162,10 +170,11 @@ def main():
               f"{row['outcome']}: {GUIDANCE}")
         return 0 if row["outcome"] in {"disabled", "not_checked", "inventory_verified"} else 2
     try:
-        if not worker_enabled():
+        config = worker_config()
+        if config.get("browserWorkerEnabled") is False:
             print("DISABLED: standalone browser-worker is not selected (browserWorkerEnabled=false); web_search/web_fetch and app_* are separate capabilities.")
             return 0
-        url = check(args.timeout)
+        url = check(args.timeout, config)
     except ValueError as error:
         print(f"WARN: optional browser-worker unavailable: {error}. {GUIDANCE}")
         return 2

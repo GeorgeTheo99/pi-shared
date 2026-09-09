@@ -19,11 +19,13 @@ BROWSER_WORKER_MCP_TOKEN_FILE=~/srv/browser-worker/shared/tokens/pi-production
 ```
 
 The token value is read from the owner-only file for each call and is never stored in Pi settings.
-The worker and token are **not provisioned by pi-setup**. Obtain an endpoint/token
-from the browser-worker service operator. At startup an authenticated, read-only
-`tools/list` check must identify exactly these two browser tools; otherwise they
-remain disabled and Pi reports an actionable warning. `app_*` is unaffected.
-After configuring the worker, check it and restart Pi or run `/reload`:
+The recommended `browser-worker` module in pi-setup provisions a local browser,
+service and distinct owner-only `pi-production` token automatically. No external
+API key is required, and credentials are never copied from another machine.
+At startup an authenticated, read-only `tools/list` check must identify exactly
+these two browser tools; otherwise they remain disabled and Pi reports an
+actionable warning. `app_*` is unaffected. After setup, check the worker and
+restart Pi or run `/reload`:
 
 ```bash
 python3 ~/local_code/pi-shared/bin/pi-browser-check
@@ -38,7 +40,13 @@ standalone browser tools are not loaded or probed, there is no unconfigured-work
 startup warning, and the checker reports `DISABLED:` (exit `0`), not `READY:`.
 This does not disable `web_search`/`web_fetch` or `app_*`, and does not imply that
 the alternative backend supports screenshots or interactive browser sessions.
-Omitting the setting, or setting it to `true`, preserves the generic default. URLs must be canonical,
+Omitting the setting, or setting it to `true`, preserves the generic default.
+
+The installer persists `browserWorkerMcpUrl` and `browserWorkerTokenFile` alongside
+that selection so custom ports/data directories work in a new shell. Environment
+variables shown above take precedence over these file values. The token **value**
+is only in the service's private token file. Research routing keys
+(`websearchMcpUrl`, `mcpUrl`) are independent and are not changed by worker setup. URLs must be canonical,
 uncredentialed loopback HTTP `/mcp` endpoints with an explicit port; proxies and
 redirects are not used. The Databricks websearch-shim uses port `8891` and is **not**
 a substitute browser backend.

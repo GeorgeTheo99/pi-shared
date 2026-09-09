@@ -110,6 +110,36 @@ test("worker selection is a boolean, and explicit true still checks prerequisite
   await assertDisabled(/token file/);
 });
 
+test("installer-persisted endpoint and token path work without environment variables", async () => {
+  const dir = join(root, ".pi", "research");
+  mkdirSync(dir, {recursive: true});
+  const url = "http://127.0.0.1:29890/mcp";
+  writeFileSync(join(dir, "config.json"), JSON.stringify({browserWorkerEnabled: true,
+    browserWorkerMcpUrl: url, browserWorkerTokenFile: tokenFile}));
+  delete process.env.BROWSER_WORKER_MCP_URL;
+  delete process.env.BROWSER_WORKER_MCP_TOKEN_FILE;
+  let calls = 0;
+  globalThis.fetch = async (input, init) => {
+    calls++;
+    assert.equal(String(input), url);
+    assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${marker}`);
+    return json(listPayload(init));
+  };
+  const h = harness();
+  await (await importFresh()).default(h.api);
+  assert.equal(calls, 1);
+  assert.deepEqual(h.tools.map(t => t.name), ["browser_fetch", "browser_inspect"]);
+});
+
+test("deselecting a worker stops calls from an already-loaded tool", async () => {
+  globalThis.fetch = async (_input, init) => json(listPayload(init));
+  const h = harness();
+  await (await importFresh()).default(h.api);
+  selectWorker(false);
+  globalThis.fetch = async () => { throw new Error("must not call network"); };
+  await assert.rejects(h.tools[0].execute("test", {url: "https://example.com"}), /deselected/);
+});
+
 test("import performs no network or token access, including invalid configuration", async () => {
   process.env.BROWSER_WORKER_MCP_URL = "not a URL";
   process.env.BROWSER_WORKER_MCP_TOKEN_FILE = join(root, "absent");
