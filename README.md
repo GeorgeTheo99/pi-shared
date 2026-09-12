@@ -167,9 +167,9 @@ machine name or gateway catalog. `pi-openai` uses the **current machine's**
 default Pi profile and ChatGPT subscription login (`/login` → OpenAI Codex),
 not the gateway or an OpenAI API key. It does not sign in or copy credentials.
 
-- Enable on an existing installation: `pi-regen --direct-launchers`, then
-  `source ~/.pi/generated/pi-launchers.zsh` (or open a new shell).
-- Disable: `pi-regen --no-direct-launchers`, then source the launcher again.
+- Enable on an existing installation: `pi-regen --direct-launchers`.
+- Disable: `pi-regen --no-direct-launchers`. New generated `pi-regen` functions
+  validate and reload their launcher in the current shell after success.
 - Both flags work with `pi-catalog` and `./install.sh`. When neither is given,
   generation preserves the selection in the existing recognized launcher;
   a fresh installation defaults to off. The installer also accepts
@@ -182,6 +182,36 @@ not the gateway or an OpenAI API key. It does not sign in or copy credentials.
   `--provider-name` explicitly overrides it. Multi-provider outputs require an
   explicit provider name. Launcher-only generation without `--models-out`
   cannot infer an existing model provider; pass `--provider-name` in that case.
+
+### Commands before model configuration
+
+```bash
+./install.sh --bootstrap-launchers --direct-launchers
+source ~/.pi/generated/pi-launchers.zsh
+pi-list
+```
+
+`--bootstrap-launchers` (`PI_SHARED_BOOTSTRAP_LAUNCHERS=1`) opts into management-only
+launchers when the alias catalog is missing or `{}`. It provides `pi-list`,
+`pi-regen`, `pi-shared-update`, and `pi-restart`, plus the two direct launchers
+when enabled. No placeholder alias file or models.json is created, and existing
+models.json files/symlinks are preserved. A missing catalog cannot replace an
+existing configured/custom launcher. Invalid catalogs still fail closed.
+`--no-catalog` remains an explicit generation opt-out; older installer clients
+keep their original missing-catalog behavior unless they request bootstrap.
+
+The renderer flag is `pi-catalog --allow-empty-catalog`. Generated `pi-regen`
+preserves that option, but refuses to erase configured launchers if a catalog
+later disappears. Once a real gateway alias export is configured at the shown
+path, `pi-regen` writes the models and reloads the model shortcuts. The installer
+prepares their profile in advance. Direct `/login` configuration alone does not
+create a gateway alias export. `pi-list` reports this unconfigured state without
+claiming gateway models are ready.
+
+Generated launchers append `~/.local/bin` to PATH once, preserving existing
+precedence, so module-owned operator commands are available. `pi-restart omlx`
+uses server-ci on managed hosts, otherwise the installed oMLX app/Homebrew CLI;
+it does not install or adopt a service.
 
 Keep each machine's alias input, gateway URL, profile/output paths, and login
 local. Generate independently on each host; do not copy generated launchers or

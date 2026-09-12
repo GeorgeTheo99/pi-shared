@@ -247,6 +247,160 @@ def test_existing_provider_is_read_through_models_symlink(machine):
     assert_state(machine, True, "ls99-models")
 
 
+@pytest.mark.parametrize("empty_file", [False, True])
+def test_management_bootstrap_never_creates_models_or_aliases(machine, empty_file):
+    home, aliases, env = machine
+    aliases.write_text("{}") if empty_file else aliases.unlink()
+    result = render(machine, "--allow-empty-catalog", "--direct-launchers")
+    assert result.returncode == 0, result.stderr
+    assert not paths(machine)[1].exists()
+    assert aliases.exists() is empty_file
+    text = paths(machine)[2].read_text()
+    assert "# Pi catalog state: unconfigured (management-only)." in text
+    result = run("zsh", "-f", "-c", f'''
+source {shlex.quote(str(paths(machine)[2]))}
+for name in pi-list pi-regen pi-shared-update pi-default pi-openai pi-restart; do
+  (( $+functions[$name] )) || exit 8
+done
+pi-list
+pi-regen --check
+''', env=env)
+    assert result.returncode == 0, result.stderr
+    assert "No gateway model launchers configured yet" in result.stdout
+    assert "pi-test" not in result.stdout
+    assert not paths(machine)[1].exists()
+
+
+def test_bootstrap_preserves_existing_models_symlink(machine):
+    assert render(machine).returncode == 0
+    aliases, models, launcher = paths(machine)
+    target = models.with_name("preserved.json")
+    models.rename(target)
+    models.symlink_to(target)
+    before = target.read_bytes()
+    aliases.unlink()
+    launcher.unlink()
+    assert render(machine, "--allow-empty-catalog").returncode == 0
+    assert models.is_symlink() and target.read_bytes() == before
+
+
+def test_missing_catalog_does_not_erase_configured_launchers(machine):
+    assert render(machine).returncode == 0
+    aliases, models, launcher = paths(machine)
+    before = (models.read_bytes(), launcher.read_bytes())
+    aliases.unlink()
+    result = render(machine, "--allow-empty-catalog")
+    assert result.returncode != 0
+    assert "refusing to replace" in result.stderr
+    assert (models.read_bytes(), launcher.read_bytes()) == before
+
+
+@pytest.mark.parametrize("empty_file", [False, True])
+@pytest.mark.parametrize("symlink", [False, True])
+def test_bootstrap_cannot_replace_configured_legacy_launcher(machine, empty_file, symlink):
+    assert render(machine, "--direct-launchers").returncode == 0
+    aliases, models, canonical = paths(machine)
+    legacy = machine[0] / ".pi/model-gateway/pi-launchers.zsh"
+    legacy.parent.mkdir(parents=True)
+    before_models, before_launcher = models.read_bytes(), canonical.read_bytes()
+    if symlink:
+        target = legacy.with_name("preserved.zsh")
+        canonical.rename(target)
+        legacy.symlink_to(target)
+    else:
+        canonical.rename(legacy)
+    aliases.write_text("{}") if empty_file else aliases.unlink()
+    result = install(machine, "--bootstrap-launchers")
+    assert result.returncode != 0
+    assert "refusing to replace" in result.stderr
+    assert not canonical.exists()
+    assert legacy.is_symlink() is symlink
+    assert legacy.read_bytes() == before_launcher
+    assert models.read_bytes() == before_models
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_bootstrap_preserves_custom_or_dangling_legacy_source(machine, dangling):
+    machine[1].unlink()
+    legacy = machine[0] / ".pi/model-gateway/pi-launchers.zsh"
+    legacy.parent.mkdir(parents=True)
+    if dangling:
+        legacy.symlink_to(legacy.with_name("missing.zsh"))
+    else:
+        legacy.write_text("# custom legacy config\npi-custom() { :; }\n")
+    result = install(machine, "--bootstrap-launchers")
+    assert result.returncode != 0
+    assert not paths(machine)[2].exists()
+    if dangling:
+        assert legacy.is_symlink() and not legacy.exists()
+    else:
+        assert "pi-custom" in legacy.read_text()
+
+
+@pytest.mark.parametrize("content", ["{bad json", "[]", "null"])
+def test_bootstrap_rejects_malformed_catalog_without_writes(machine, content):
+    machine[1].write_text(content)
+    assert render(machine, "--allow-empty-catalog").returncode != 0
+    assert not paths(machine)[1].exists() and not paths(machine)[2].exists()
+
+
+def test_bootstrap_installer_wires_profile_and_regen_loads_new_model_aliases(machine):
+    home, aliases, env = machine
+    aliases.unlink()
+    result = install(machine, "--bootstrap-launchers", "--direct-launchers")
+    assert result.returncode == 0, result.stderr
+    assert (home / ".pi-omlx/agent/settings.json").is_file()
+    assert not paths(machine)[1].exists()
+    incoming = home / "incoming.json"
+    incoming.write_text(json.dumps({"cloud:new": {"alias": "new", "name": "new", "provider_model_id": "new"}}))
+    result = run("zsh", "-f", "-c", f'''
+source {shlex.quote(str(paths(machine)[2]))}
+(( ! $+functions[pi-new] )) || exit 6
+cp {shlex.quote(str(incoming))} {shlex.quote(str(aliases))}
+pi-regen --quiet || exit
+(( $+functions[pi-new] )) || exit 7
+pi-list
+''', env=env)
+    assert result.returncode == 0, result.stderr
+    assert "pi-new" in result.stdout
+    assert "unconfigured (management-only)" not in paths(machine)[2].read_text()
+    assert json.loads(paths(machine)[1].read_text())["providers"]["model-gateway"]["models"][0]["id"] == "new"
+
+
+def test_legacy_installer_no_catalog_still_skips_unless_opted_in(machine):
+    machine[1].unlink()
+    assert install(machine).returncode == 0
+    assert not paths(machine)[2].exists()
+    assert install(machine, "--bootstrap-launchers", "--no-catalog").returncode == 0
+    assert not paths(machine)[2].exists()
+
+
+def test_generated_shell_exposes_module_bin_without_changing_existing_precedence(machine):
+    assert render(machine).returncode == 0
+    home, _, env = machine
+    result = run("zsh", "-f", "-c", f'''
+source {shlex.quote(str(paths(machine)[2]))}
+source {shlex.quote(str(paths(machine)[2]))}
+print -r -- "$PATH"
+''', env={**env, "PATH": "/usr/bin:/bin"})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().split(":") == ["/usr/bin", "/bin", str(home / ".local/bin")]
+
+
+def test_omlx_restart_uses_its_own_cli_when_no_server_ci_exists(machine):
+    assert render(machine).returncode == 0
+    home, _, env = machine
+    bindir = home / ".local/bin"
+    bindir.mkdir(parents=True)
+    executable = bindir / "omlx"
+    executable.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$HOME/omlx-call"\nexit 7\n')
+    executable.chmod(0o755)
+    result = run("zsh", "-f", "-c", f"source {shlex.quote(str(paths(machine)[2]))}; pi-restart omlx",
+                 env={**env, "PATH": "/usr/bin:/bin"})
+    assert result.returncode == 7
+    assert (home / "omlx-call").read_text().strip() == "restart"
+
+
 def test_python_keyword_compatibility_and_neutral_defaults():
     spec = importlib.util.spec_from_file_location("pi_catalog_options", MODULE)
     module = importlib.util.module_from_spec(spec)
