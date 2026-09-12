@@ -219,7 +219,33 @@ credentials between machines. Provider labels are just Pi identifiers, not
 hostnames: a legacy `ls99-models` label can still point at this machine's local
 gateway. There is no automatic renaming of saved Pi sessions or settings.
 
-The generated launcher bakes in a `pi-regen()` function (the same invocation) so it can refresh itself + `models.json` after a catalog change. It also provides `pi-shared-update`, which safely fast-forwards the generating `pi-shared` checkout, regenerates the machine-specific artifacts, validates the launcher, and sources it into the current shell. `pi-restart model-gw` auto-calls `pi-regen` — it delegates to the portable `model-gateway restart` command when available, falls back to `server-ci restart --model-gw` on ls99/dev-server installs, then refreshes the Pi artifacts. No Git or launchd watcher is needed.
+The generated launcher bakes in a `pi-regen()` function so it can refresh itself + `models.json` after a catalog change. In a managed pi-setup installation, `pi-shared-update` delegates to `pi-shared update`, which uses the saved selection and updates the owning CLI/runtime, selected modules and dependencies before checking and refreshing commands. Without that coordinator/receipt, it explicitly reports a resource-only update and retains the legacy fast-forward/regenerate/reload behavior. `pi-restart model-gw` auto-calls `pi-regen` — it delegates to the portable `model-gateway restart` command when available, falls back to `server-ci restart --model-gw` on ls99/dev-server installs, then refreshes the Pi artifacts. No Git or launchd watcher is needed.
+
+### Automatic prompt refresh
+
+Interactive generated launchers register one idempotent zsh `precmd` hook. The
+trusted `bin/pi-launchers-refresh` helper fingerprints bounded local inputs;
+unchanged inputs do not regenerate. The first prompt establishes the baseline.
+Changed catalog/launcher data regenerates and reloads commands, retiring only
+previously registered generated model functions. `pi-shared` is a reserved alias
+so a model shortcut cannot shadow the updater.
+
+The helper parses generated JSON argument metadata rather than evaluating old
+shell text. Only recognized options, matching installation/output identities and
+owned, non-shared-writable files/directories are accepted. It sends arguments to
+`pi-catalog --args-stdin` to avoid exposing stored gateway keys in process argv.
+Generated outputs are mode 0600. Automatic refresh is offline; minimal cached
+previously observed context/output/thinking hints are retained, not re-probed.
+`pi-catalog --offline` is also available explicitly.
+
+A generated model-output digest prevents automatic overwriting of manual model
+edits. Inspect/reconcile configuration before explicit regeneration in that case.
+Unchanged failures warn once, not at every prompt, and do not exit an errexit
+shell. Prompt refresh skips while a managed setup/update holds its lock. There
+are no background upgrades, Git fetches, service restarts, model downloads or
+provider/model calls. Source the new launcher or open a new shell once to load
+the hook into an older session. See pi-setup's `docs/updates.md` for the complete
+update and migration contract.
 
 For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databricks directly), point `--gateway-url` at the endpoint and `--provider-name` at the Pi provider, and feed a catalog alias file from whatever source is appropriate.
 

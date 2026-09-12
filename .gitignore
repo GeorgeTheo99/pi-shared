@@ -32,6 +32,7 @@ bin/*
 !bin/pi-vanilla
 !bin/pi-omlx-repair
 !bin/pi-catalog
+!bin/pi-launchers-refresh
 !bin/pi-shared-install
 !bin/pi-shared-check-deps
 !bin/pi-profile-check

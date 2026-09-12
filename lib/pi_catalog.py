@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -58,7 +59,7 @@ THINKING_VALUES = {"optional", "always"}
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 ANTHROPIC_PROVIDERS = {"anthropic"}
 _ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-_RESERVED_ALIASES = {"default", "list", "long", "openai", "regen", "restart", "shared-update"}
+_RESERVED_ALIASES = {"default", "list", "long", "openai", "regen", "restart", "shared", "shared-update"}
 
 # Default provider-level compat sent for an openai-completions provider. Per-model
 # `compat` (thinkingFormat etc.) is added by apply_reasoning.
@@ -617,6 +618,15 @@ def render_launchers(
         "unfunction pi-qwen35 pi-heretic pi-qwen35dense pi-qwen35tiny pi-qwen35tinyvl 2>/dev/null || true",
         "",
     ]
+    lines += [
+        '# Retire only model shortcuts registered by the previously loaded generated file.',
+        'typeset -ga _pi_generated_model_functions',
+        'if (( ${#_pi_generated_model_functions[@]} )); then',
+        '  unfunction -- "${_pi_generated_model_functions[@]}" 2>/dev/null || true',
+        'fi',
+        'typeset -ga _pi_generated_model_functions=(' + ' '.join(shlex.quote('pi-' + row[0]) for row in rows) + ')',
+        '',
+    ]
     if not direct_launchers:
         # Reloading after an explicit opt-out must remove previously sourced helpers.
         lines += ["unfunction pi-default pi-openai 2>/dev/null || true", ""]
@@ -693,7 +703,7 @@ def render_launchers(
     if models_out or launchers_out:
         lines += ['  echo "  pi-regen                       regenerate this launcher + models.json from the alias catalog"']
     if launchers_out and shared_dir:
-        lines += ['  echo "  pi-shared-update               pull pi-shared, regenerate artifacts, and reload this shell"']
+        lines += ['  echo "  pi-shared-update               update the saved Pi environment and reload commands"']
     lines += ['}', ""]
 
     # pi-regen: re-run pi-catalog with the same args used to generate this file.
@@ -723,6 +733,25 @@ def render_launchers(
     if direct_launchers:
         lines += ["", _render_pi_default(), "", _render_pi_openai()]
 
+    if launchers_out and shared_dir:
+        refresh = shlex.quote(str(Path(shared_dir) / "bin/pi-launchers-refresh"))
+        target = shlex.quote(launchers_out)
+        lines += [
+            "", "_pi_refresh_commands() {",
+            "  local stamp rc=0",
+            f'  stamp=$({refresh} --launcher {target} --poll "${{_pi_refresh_stamp-}}") || rc=$?',
+            '  if [ -n "$stamp" ]; then',
+            '    typeset -g _pi_refresh_stamp="$stamp"',
+            f'    if [ "$rc" -eq 0 ]; then source {target} || print -ru2 -- "Pi command reload failed; inspect setup."; fi',
+            "  fi",
+            "  return 0",
+            "}",
+            "if [[ -o interactive ]]; then",
+            "  autoload -Uz add-zsh-hook",
+            "  add-zsh-hook -d precmd _pi_refresh_commands 2>/dev/null || true",
+            "  add-zsh-hook precmd _pi_refresh_commands",
+            "fi",
+        ]
     return "\n".join(lines) + "\n"
 
 
@@ -752,6 +781,7 @@ def _render_pi_regen(*, aliases_path, models_out, launchers_out, provider_name, 
     cmd_str = " ".join(shlex.quote(c) for c in cmd)
     regen_message = f"Regenerating Pi artifacts from {aliases_path or 'the alias catalog'}..."
     return [
+        "# pi-catalog-args: " + json.dumps(cmd[1:]),
         "pi-regen() {",
         "  # Regenerate this launcher + models.json from the alias catalog.",
         "  # (model-gateway writes the alias file; pi-catalog renders Pi artifacts.)",
@@ -775,6 +805,12 @@ def _render_pi_shared_update(*, launchers_out: str, shared_dir: str) -> list[str
     catalog = shlex.quote(str(Path(shared_dir) / "bin" / "pi-catalog"))
     return [
         "pi-shared-update() {",
+        '  if [ -f "$HOME/.config/pi-shared/setup.json" ] && command -v pi-shared >/dev/null 2>&1; then',
+        '    command pi-shared update "$@" || return $?',
+        f'    zsh -n {launcher} && source {launcher}',
+        '    return $?',
+        '  fi',
+        '  echo "No managed setup found: updating shared resources only (not packaged runtime/services)."',
         f"  local repo_dir={repo} catalog_bin={catalog} dirty actual_repo",
         '  actual_repo="$(git -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null)"',
         '  if [ -z "$actual_repo" ] || [ "$actual_repo" != "$repo_dir" ] || [ ! -x "$catalog_bin" ]; then',
@@ -1059,7 +1095,19 @@ def _existing_direct_launchers(path: Path | None) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None and sys.argv[1:2] == ["--args-stdin"]:
+        raw = sys.stdin.read(524289)
+        if len(raw) > 524288:
+            sys.exit("pi-catalog: argument data exceeds limit")
+        try:
+            supplied = json.loads(raw)
+            if not isinstance(supplied, list) or len(supplied) > 64 or any(not isinstance(v, str) or len(v) > 8192 for v in supplied):
+                raise ValueError
+        except ValueError:
+            sys.exit("pi-catalog: invalid argument data")
+        argv = supplied + sys.argv[2:]
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--args-stdin", action="store_true", help="use as first option to read JSON arguments privately from stdin")
     parser.add_argument("--aliases", type=Path, required=True, help="path to model-aliases.json (gateway catalog contract)")
     parser.add_argument("--models-out", type=Path, default=None, help="write Pi models.json here")
     parser.add_argument("--launchers-out", type=Path, default=None, help="write pi-launchers.zsh here")
@@ -1078,9 +1126,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="bootstrap management launchers for missing/empty aliases; never write models.json in this state")
     parser.add_argument("--legacy-launchers", type=Path,
                         help="installer migration source to protect when bootstrapping without a catalog")
+    parser.add_argument("--offline", action="store_true", help="use catalog/file metadata only; never query status URLs")
+    parser.add_argument("--status-cache", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--check", action="store_true", help="drift check only; exit 1 when stale")
     parser.add_argument("--quiet", action="store_true", help="suppress per-file write messages (used by pi-regen)")
     args = parser.parse_args(argv)
+    if args.args_stdin:
+        parser.error("--args-stdin must be the first option and cannot be nested")
 
     if not args.aliases.exists() and not args.allow_empty_catalog:
         sys.exit(f"pi-catalog: aliases file not found: {args.aliases}")
@@ -1115,15 +1167,16 @@ def main(argv: list[str] | None = None) -> int:
     if has_local:
         if omlx_status_path:
             omlx_status = _load_omlx_status(omlx_status_path, None)
-        elif args.omlx_status_url:
-            omlx_status = _load_omlx_status(None, args.omlx_status_url)
-        else:
-            omlx_status = _load_omlx_status(None, "http://localhost:9110/v1/models/status")
+        elif args.offline and args.status_cache:
+            omlx_status = _load_omlx_status(args.status_cache, None)
+        elif not args.offline:
+            omlx_status = _load_omlx_status(None, args.omlx_status_url or "http://localhost:9110/v1/models/status")
 
     pi_agent_dir = str(Path(args.pi_agent_dir).expanduser().resolve()) if args.pi_agent_dir else None
     shared_dir = str(args.shared_dir.expanduser().resolve())
 
     renders: list[tuple[Path, str, str]] = []
+    models_digest = "unmanaged"
     if args.models_out and aliases:
         models = render_models(
             aliases,
@@ -1132,7 +1185,9 @@ def main(argv: list[str] | None = None) -> int:
             gateway_api_key=args.gateway_api_key,
             omlx_status=omlx_status,
         )
-        renders.append((args.models_out, _dump(models), "pi models.json"))
+        content = _dump(models)
+        models_digest = hashlib.sha256(content.encode()).hexdigest()
+        renders.append((args.models_out, content, "pi models.json"))
     if args.launchers_out:
         launchers = render_launchers(
             aliases,
@@ -1149,6 +1204,14 @@ def main(argv: list[str] | None = None) -> int:
             omlx_status_path=str(omlx_status_path) if omlx_status_path else None,
             omlx_status_url=args.omlx_status_url,
         )
+        # Preserve only the previously observed hints used by render_models.
+        # Automatic refresh can reuse them without a live status request.
+        hints = {key: {name: value for name, value in row.items()
+                       if name in {"max_context_window", "max_tokens", "thinking_default"}
+                       and isinstance(value, (bool, int, str))}
+                 for key, row in omlx_status.items() if key in aliases and isinstance(row, dict)}
+        launchers += "# pi-catalog-status: " + json.dumps(hints, sort_keys=True) + "\n"
+        launchers += "# pi-catalog-models-sha256: " + models_digest + "\n"
         renders.append((args.launchers_out, launchers, "pi-launchers.zsh"))
 
     if args.check:
@@ -1163,8 +1226,20 @@ def main(argv: list[str] | None = None) -> int:
         target = _resolve_write_target(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(f"{target.suffix}.tmp.{os.getpid()}")
-        tmp.write_text(content)
-        tmp.replace(target)
+        created = None
+        try:
+            with open(tmp, "x", encoding="utf-8", opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
+                info = os.fstat(stream.fileno())
+                created = (info.st_dev, info.st_ino)
+                stream.write(content)
+            tmp.replace(target)
+        finally:
+            try:
+                info = tmp.lstat()
+                if created == (info.st_dev, info.st_ino):
+                    tmp.unlink()
+            except OSError:
+                pass
         if not args.quiet:
             shown = path if path == target else f"{path} → {target}"
             print(f"pi-catalog: wrote {label} → {shown}")
