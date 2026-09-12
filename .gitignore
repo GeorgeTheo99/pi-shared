@@ -43,6 +43,7 @@ bin/*
 .pi/
 __pycache__/
 
-# Copyrighted book PDFs are never committed; kb_search indexes markdown only.
+# Private book originals, recovery records, and extracted text never ship in Git.
 knowledge/software-engineering/corpus/pdf-downloads/
+knowledge/software-engineering/private/
 *.pdf

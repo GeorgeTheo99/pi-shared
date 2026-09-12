@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadPrivateCorpus, type PrivateCorpus } from "./corpus.ts";
 
 interface SourceRecord {
 	id: string;
@@ -36,6 +37,10 @@ interface Chunk {
 	tags: string[];
 	licenseStatus?: string;
 	ingestPolicy?: string;
+	kind: "metadata" | "source_card" | "document_page";
+	page?: number;
+	method?: string;
+	note?: string;
 }
 
 const STOP_WORDS = new Set([
@@ -79,24 +84,20 @@ const kbRoot = join(packageRoot, "knowledge/software-engineering");
 const corpusRoot = join(kbRoot, "corpus");
 const sourcesPath = join(kbRoot, "sources.json");
 
-let cachedManifest: SourceManifest | undefined;
-let cachedChunks: Chunk[] | undefined;
-
 function readManifest(): SourceManifest {
-	if (cachedManifest) return cachedManifest;
-	const parsed = JSON.parse(readFileSync(sourcesPath, "utf8")) as SourceManifest;
-	cachedManifest = parsed;
-	return parsed;
+	return JSON.parse(readFileSync(sourcesPath, "utf8")) as SourceManifest;
 }
 
 function walkMarkdown(dir: string): string[] {
 	if (!existsSync(dir)) return [];
 	const out: string[] = [];
 	for (const name of readdirSync(dir)) {
+		// Recovery README/PDFs are not editorial cards or extracted passages.
+		if (name === "pdf-downloads") continue;
 		const fullPath = join(dir, name);
 		const stat = statSync(fullPath);
 		if (stat.isDirectory()) out.push(...walkMarkdown(fullPath));
-		else if (stat.isFile() && (name.endsWith(".md") || name.endsWith(".pdf"))) out.push(fullPath);
+		else if (stat.isFile() && name.endsWith(".md")) out.push(fullPath);
 	}
 	return out.sort();
 }
@@ -168,6 +169,7 @@ function sourceToChunk(source: SourceRecord): Chunk {
 
 	return {
 		id: `source:${source.id}`,
+		kind: "metadata",
 		sourceId: source.id,
 		sourceTitle: source.title,
 		title: `${source.title} source metadata`,
@@ -180,8 +182,7 @@ function sourceToChunk(source: SourceRecord): Chunk {
 	};
 }
 
-function buildChunks(): Chunk[] {
-	if (cachedChunks) return cachedChunks;
+function buildChunks(privateCorpus: PrivateCorpus): Chunk[] {
 	const manifest = readManifest();
 	const sourcesById = new Map(manifest.sources.map((source) => [source.id, source]));
 	const chunks: Chunk[] = manifest.sources.map(sourceToChunk);
@@ -195,6 +196,7 @@ function buildChunks(): Chunk[] {
 		for (const section of sectionChunks(body)) {
 			chunks.push({
 				id: `${sourceId}:${slugify(section.title) || index}:${index}`,
+				kind: "source_card",
 				sourceId,
 				sourceTitle: source?.title ?? sourceId,
 				title: section.title,
@@ -209,13 +211,28 @@ function buildChunks(): Chunk[] {
 			index++;
 		}
 	}
-	cachedChunks = chunks;
+	for (const doc of privateCorpus.documents) {
+		if (doc.status !== "indexed") continue;
+		const source = sourcesById.get(doc.source_id)!;
+		for (const page of doc.pages) {
+			chunks.push({
+				id: `${doc.file}:page:${page.page}`, kind: "document_page",
+				sourceId: doc.source_id, sourceTitle: source.title, title: `PDF page ${page.page}`,
+				text: page.text.replace(/\s+/g, " ").trim(),
+				path: relative(packageRoot, join(corpusRoot, "pdf-downloads", doc.file)),
+				page: page.page, method: doc.method, note: doc.note,
+				access: "private_local_text", tags: source.tags ?? [], licenseStatus: source.license_status,
+				ingestPolicy: "Private local copy; completeness, edition, and redistribution rights unverified.",
+			});
+		}
+	}
 	return chunks;
 }
 
 function scoreChunk(chunk: Chunk, query: string, mode: "auto" | "keyword" | "exact") {
-	const haystack = `${chunk.sourceTitle}\n${chunk.title}\n${chunk.tags.join(" ")}\n${chunk.text}`.toLowerCase();
-	const phrase = query.toLowerCase().trim();
+	// Book title/tag matches alone must not make every page look like evidence.
+	const haystack = (chunk.kind === "document_page" ? chunk.text : `${chunk.sourceTitle}\n${chunk.title}\n${chunk.tags.join(" ")}\n${chunk.text}`).toLowerCase();
+	const phrase = query.toLowerCase().replace(/\s+/g, " ").trim();
 	if (!phrase) return 0;
 
 	const exactHit = haystack.includes(phrase);
@@ -233,8 +250,10 @@ function scoreChunk(chunk: Chunk, query: string, mode: "auto" | "keyword" | "exa
 		const matches = haystack.match(re)?.length ?? 0;
 		if (matches > 0) covered++;
 		score += Math.min(matches, 8);
-		if (titleHaystack.includes(term)) score += 6;
-		if (tagHaystack.includes(term)) score += 4;
+		if (chunk.kind !== "document_page") {
+			if (titleHaystack.includes(term)) score += 6;
+			if (tagHaystack.includes(term)) score += 4;
+		}
 	}
 	score += (covered / terms.length) * 20;
 	return score;
@@ -243,10 +262,12 @@ function scoreChunk(chunk: Chunk, query: string, mode: "auto" | "keyword" | "exa
 function makeSnippet(text: string, query: string, maxLength: number) {
 	const terms = tokenize(query);
 	const lower = text.toLowerCase();
-	let pos = -1;
-	for (const term of terms) {
-		pos = lower.indexOf(term.toLowerCase());
-		if (pos !== -1) break;
+	let pos = lower.indexOf(query.toLowerCase().replace(/\s+/g, " ").trim());
+	if (pos === -1) {
+		for (const term of terms) {
+			pos = lower.indexOf(term.toLowerCase());
+			if (pos !== -1) break;
+		}
 	}
 	if (pos === -1) pos = 0;
 	const start = Math.max(0, pos - Math.floor(maxLength / 3));
@@ -264,7 +285,9 @@ function formatSearchResults(results: Array<{ chunk: Chunk; score: number }>, qu
 		.map(({ chunk, score }, index) => {
 			const fields = [
 				`${index + 1}. ${chunk.sourceTitle} — ${chunk.title}`,
-				`   score: ${score.toFixed(1)} | source_id: ${chunk.sourceId} | access: ${chunk.access ?? "unknown"}`,
+				`   score: ${score.toFixed(1)} | source_id: ${chunk.sourceId} | kind: ${chunk.kind} | access: ${chunk.access ?? "unknown"}`,
+				chunk.page ? `   PDF page: ${chunk.page} | extraction: ${chunk.method} | completeness: unverified` : undefined,
+				chunk.note ? `   note: ${chunk.note}` : undefined,
 				chunk.path ? `   path: ${chunk.path}` : undefined,
 				chunk.url ? `   url: ${chunk.url}` : undefined,
 				chunk.licenseStatus ? `   license: ${chunk.licenseStatus}` : undefined,
@@ -275,19 +298,30 @@ function formatSearchResults(results: Array<{ chunk: Chunk; score: number }>, qu
 		.join("\n\n");
 }
 
+function documentStatus(corpus: PrivateCorpus) {
+	return corpus.documents.map(({ pages, ...doc }) => ({ ...doc, indexed_pages: pages.length }));
+}
+
+function privateStatus(corpus: PrivateCorpus) {
+	const indexed = corpus.documents.filter((doc) => doc.status === "indexed");
+	const issues = corpus.documents.filter((doc) => doc.status !== "indexed").map((doc) => `${doc.file}: ${doc.status}`);
+	return `Private index: ${corpus.state}; ${indexed.length} documents, ${indexed.reduce((sum, doc) => sum + doc.pages.length, 0)} nonempty PDF pages searchable. Completeness/edition/rights unverified.${corpus.warning ? ` ${corpus.warning}` : ""}${issues.length ? ` Issues: ${issues.join("; ")}` : ""}`;
+}
+
 export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "kb_search",
 		label: "Software KB Search",
-		description: "Search the local curated software-engineering classics corpus and source catalog. Returns cited passages/metadata for RAG-style answers.",
+		description: "Search software-engineering source cards/catalog and available private extracted book pages. Returns source IDs, PDF page citations, content kind, and local-index status; availability is not completeness.",
 		promptSnippet: "Search curated software-engineering classic texts, source cards, and metadata.",
 		promptGuidelines: [
 			"Use kb_search when answering questions about classic software engineering texts, design principles, reliability, architecture, refactoring, testing, delivery, or software project practice.",
-			"When kb_search returns metadata-only sources, cite them as pointers and do not imply the local corpus contains the copyrighted book text.",
+			"For kb_search, metadata/source_card results are pointers or editorial summaries, not book quotations. document_page results are private extracted passages; cite source_id and physical PDF page. OCR may contain errors; completeness/edition/redistribution rights are unverified. Use kb_read for surrounding page text.",
 		],
 		parameters: Type.Object({
-			query: Type.String({ description: "Search query, concept, phrase, or question." }),
-			limit: Type.Optional(Type.Number({ description: "Maximum results to return. Default 5, max 20." })),
+			query: Type.String({ minLength: 1, maxLength: 2000, description: "Search query, concept, phrase, or question." }),
+			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "Maximum results to return. Default 5, max 20." })),
+			content_only: Type.Optional(Type.Boolean({ description: "Return only extracted document passages, excluding metadata/editorial cards." })),
 			mode: Type.Optional(
 				Type.Union([Type.Literal("auto"), Type.Literal("keyword"), Type.Literal("exact")], {
 					description: "Search mode. exact requires an exact phrase match; keyword/auto use lexical scoring.",
@@ -299,7 +333,9 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 			const limit = Math.max(1, Math.min(Number(params.limit ?? 5), 20));
 			const mode = (params.mode ?? "auto") as "auto" | "keyword" | "exact";
 			const sourceId = params.source_id?.trim();
-			const chunks = buildChunks().filter((chunk) => !sourceId || chunk.sourceId === sourceId);
+			if (!params.query.trim()) throw new Error("Search query must not be blank");
+			const privateCorpus = loadPrivateCorpus(kbRoot);
+			const chunks = buildChunks(privateCorpus).filter((chunk) => (!sourceId || chunk.sourceId === sourceId) && (!params.content_only || chunk.kind === "document_page"));
 			const results = chunks
 				.map((chunk) => ({ chunk, score: scoreChunk(chunk, params.query, mode) }))
 				.filter((result) => result.score > 0)
@@ -307,14 +343,18 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 				.slice(0, limit);
 
 			return {
-				content: [{ type: "text", text: formatSearchResults(results, params.query) }],
+				content: [{ type: "text", text: `${privateStatus(privateCorpus)}\n\n${formatSearchResults(results, params.query)}` }],
 				details: {
 					query: params.query,
+					private_index: privateCorpus.state,
+					warning: privateCorpus.warning,
+					local_documents: documentStatus(privateCorpus),
 					mode,
 					source_id: sourceId,
 					count: results.length,
 					results: results.map(({ chunk, score }) => ({
 						score,
+						kind: chunk.kind, page: chunk.page, method: chunk.method, note: chunk.note,
 						source_id: chunk.sourceId,
 						source_title: chunk.sourceTitle,
 						title: chunk.title,
@@ -331,9 +371,39 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
+		name: "kb_read",
+		label: "Software KB Page",
+		description: "Read one privately indexed software-book page found by kb_search. Page numbers are physical PDF pages, not printed book labels. Never implies complete books or verified editions.",
+		promptSnippet: "Read a cited private software-KB page after kb_search.",
+		parameters: Type.Object({
+			source_id: Type.String({ minLength: 1, maxLength: 200, description: "Source id from kb_search." }),
+			page: Type.Integer({ minimum: 1, maximum: 10000, description: "Physical PDF page number from kb_search." }),
+			file: Type.Optional(Type.String({ maxLength: 255, description: "PDF filename, needed only if multiple indexed copies share the source id." })),
+			max_chars: Type.Optional(Type.Integer({ minimum: 200, maximum: 12000, description: "Maximum page text characters; default 6000." })),
+		}),
+		async execute(_id, params) {
+			const corpus = loadPrivateCorpus(kbRoot);
+			const matches = corpus.documents.filter((doc) => doc.status === "indexed" && doc.source_id === params.source_id && (!params.file || doc.file === params.file));
+			if (matches.length !== 1) throw new Error(matches.length ? "Multiple indexed copies; specify file from kb_search." : `No current indexed copy for this source. ${privateStatus(corpus)}`);
+			const doc = matches[0];
+			const page = doc.pages.find((value) => value.page === params.page);
+			if (!page) throw new Error("Page has no indexed text or is outside this PDF. Use kb_sources to inspect local coverage.");
+			const limit = Math.min(12000, Math.max(200, params.max_chars ?? 6000));
+			const text = page.text.slice(0, limit);
+			const path = relative(packageRoot, join(corpusRoot, "pdf-downloads", doc.file));
+			const truncated = text.length < page.text.length;
+			return {
+				content: [{ type: "text", text: `${doc.source_id} — PDF page ${page.page}\npath: ${path}\nextraction: ${doc.method}; private local text; completeness/edition/rights unverified.${doc.note ? ` ${doc.note}` : ""}\n\n${text}${truncated ? "\n[Page text truncated; raise max_chars, up to 12000.]" : ""}` }],
+				details: { kind: "document_page", source_id: doc.source_id, page: page.page, path, method: doc.method,
+					note: doc.note, access: "private_local_text", truncated, total_chars: page.text.length, text },
+			};
+		},
+	});
+
+	pi.registerTool({
 		name: "kb_sources",
 		label: "Software KB Sources",
-		description: "List curated software-engineering classics sources and their access/ingest status.",
+		description: "List software-engineering sources, catalog access policies, and actual private local indexing status. Online availability and local page counts never establish book completeness.",
 		promptSnippet: "List software KB source catalog and access status.",
 		promptGuidelines: ["Use kb_sources to inspect which software-engineering classics are full-text/public-web versus metadata-only."],
 		parameters: Type.Object({
@@ -342,6 +412,7 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params) {
 			const manifest = readManifest();
+			const privateCorpus = loadPrivateCorpus(kbRoot);
 			const access = params.access?.trim().toLowerCase();
 			const tag = params.tag?.trim().toLowerCase();
 			const sources = manifest.sources.filter((source) => {
@@ -351,6 +422,7 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 			});
 			const text = [
 				`Software KB sources (${sources.length}/${manifest.sources.length})`,
+				privateStatus(privateCorpus),
 				manifest.selection_method ? `Selection: ${manifest.selection_method}` : undefined,
 				manifest.runtime_policy ? `Policy: ${manifest.runtime_policy}` : undefined,
 				"",
@@ -358,7 +430,9 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 					[
 						`${index + 1}. ${source.title} (${source.id})`,
 						`   authors: ${(source.authors ?? []).join(", ")}`,
-						`   access: ${source.access ?? "unknown"}`,
+						`   catalog access: ${source.access ?? "unknown"}`,
+						...privateCorpus.documents.filter((doc) => doc.source_id === source.id).map((doc) =>
+							`   local: ${doc.file} | ${doc.status} | ${doc.pages.length}/${doc.page_count} PDF pages indexed | ${doc.method ?? "no extraction"}${doc.note ? ` | ${doc.note}` : ""}${doc.error ? ` | ${doc.error}` : ""}`),
 						`   ingest: ${source.ingest_policy ?? "unknown"}`,
 						`   license: ${source.license_status ?? "unknown"}`,
 						`   tags: ${(source.tags ?? []).join(", ")}`,
@@ -373,7 +447,8 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 
 			return {
 				content: [{ type: "text", text }],
-				details: { sources },
+				details: { private_index: privateCorpus.state, warning: privateCorpus.warning,
+					sources: sources.map((source) => ({ ...source, local_documents: documentStatus(privateCorpus).filter((doc) => doc.source_id === source.id) })) },
 			};
 		},
 	});

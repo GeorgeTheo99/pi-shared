@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "policy": "Private local indexing only. Filenames do not establish edition, completeness, or redistribution rights.",
+  "documents": [
+    {"file": "01_Mythical_Man_Month.pdf", "source_id": "mythical-man-month"},
+    {"file": "02_Pragmatic_Programmer_20th.pdf", "source_id": "pragmatic-programmer"},
+    {"file": "03_Code_Complete_2nd_Edition.pdf", "source_id": "code-complete"},
+    {"file": "04_Design_Patterns_GoF.pdf", "source_id": "design-patterns-gof"},
+    {"file": "05_Refactoring_2nd_Ed.pdf", "source_id": "refactoring", "note": "Filename claims second edition, but opening pages indicate an older edition; edition unverified."},
+    {"file": "06_Clean_Code_Uncle_Bob.pdf", "source_id": "clean-code"},
+    {"file": "07_Legacy_Code_Feathers.pdf", "source_id": "working-effectively-with-legacy-code"},
+    {"file": "08_DDD_Eric_Evans.pdf", "source_id": "domain-driven-design", "note": "Opening pages identify a final manuscript dated April 15, 2003, not a verified published edition."},
+    {"file": "09_PoEAA_Fowler.pdf", "source_id": "poeaa"},
+    {"file": "10_Peopleware_DeMarco_Lister.pdf", "source_id": "peopleware"},
+    {"file": "11_Continuous_Delivery_Humble_Farley.pdf", "source_id": "continuous-delivery"},
+    {"file": "12_Release_It_Nygard.pdf", "source_id": "release-it", "note": "Historical failed download; retained for recovery completeness, not a valid PDF."},
+    {"file": "12_Release_It_Nygard_FULL.pdf", "source_id": "release-it"},
+    {"file": "13_DDIA_Kleppmann.pdf", "source_id": "ddia"},
+    {"file": "14_Accelerate_Forsgren_Humble_Kim.pdf", "source_id": "accelerate"},
+    {"file": "15_Philosophy_Design_Ousterhout.pdf", "source_id": "philosophy-of-software-design", "note": "20-page author-hosted extract according to the recovered download record; NOT the full book. OCR text may contain errors."},
+    {"file": "16_TDD_By_Example_Beck.pdf", "source_id": "tdd-by-example", "note": "Opening pages identify a March 2002 reviewer draft; not a verified final edition."}
+  ]
+}
