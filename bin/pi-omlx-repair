@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Repair the dedicated oMLX Pi profile so it uses shared Pi resources and so
-# local OpenAI-compatible models that report zero token usage still get a sane
-# estimated context percentage.
+# Repair the dedicated oMLX/cloud Pi profile's shared-resource wiring only.
+# Pi and provider runtime code remain owned by their package manager. Do not
+# patch global npm packages, Homebrew kegs, SDK files, or bundled CLI chunks.
 
 _self="${BASH_SOURCE[0]:-$0}"
 if command -v readlink >/dev/null 2>&1 && readlink -f "$_self" >/dev/null 2>&1; then
@@ -23,19 +23,6 @@ _DEFAULT_PI_SHARED_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
 PI_OMLX_AGENT_DIR="${PI_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
 PI_SHARED_DIR="${PI_SHARED_DIR:-$_DEFAULT_PI_SHARED_DIR}"
 PI_DATABRICKS_DIR="${PI_DATABRICKS_DIR:-$(dirname "$PI_SHARED_DIR")/pi-databricks}"
-if [[ -z "${PI_INSTALL_DIR:-}" ]]; then
-  for _pi_install_candidate in \
-    "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent" \
-    "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent" \
-    "/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent" \
-    "/usr/local/lib/node_modules/@mariozechner/pi-coding-agent"; do
-    if [[ -f "$_pi_install_candidate/dist/core/compaction/compaction.js" ]]; then
-      PI_INSTALL_DIR="$_pi_install_candidate"
-      break
-    fi
-  done
-  PI_INSTALL_DIR="${PI_INSTALL_DIR:-/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent}"
-fi
 
 mkdir -p "$PI_OMLX_AGENT_DIR"
 
@@ -63,8 +50,7 @@ def rel_from_settings(target: Path) -> str:
         return str(target)
 
 # pi-databricks is loaded as a full package (extensions + skills + skills-das),
-# so no separate top-level "extensions"/"skills" entries are needed. Re-adding
-# them (e.g. "~/.codex/skills") causes duplicate-name skill/extension collisions.
+# so no separate top-level resource entries are needed.
 packages = settings.get("packages", [])
 if not isinstance(packages, list):
     raise SystemExit(f"Expected packages array in {path}")
@@ -84,311 +70,12 @@ if settings.get("extensions") == ["../../local_code/pi-databricks/extensions"]:
 if settings.get("skills") == ["~/.codex/skills"]:
     settings.pop("skills", None)
 settings["enableSkillCommands"] = True
-# Default thinking on for reasoning models in this profile. Pi clamps this
-# preference to each model's supported levels (for example, max-only Kimi K3
-# clamps upward), while local boolean-thinking models expose high as their on
-# state. Override per-session with /thinking off when the model permits it.
+# Pi clamps this preference to each model's supported levels. Explicit choices
+# remain untouched; override per-session with /thinking when supported.
 settings.setdefault("defaultThinkingLevel", "high")
 
 path.write_text(json.dumps(settings, indent=2) + "\n")
 PY
 
 ln -sfn "$PI_SHARED_DIR/AGENTS.md" "$PI_OMLX_AGENT_DIR/AGENTS.md"
-
-COMPACTION_JS="$PI_INSTALL_DIR/dist/core/compaction/compaction.js"
-if [[ -f "$COMPACTION_JS" ]]; then
-  if ! python3 - "$COMPACTION_JS" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text()
-# Pi >= 0.80.0 upstreamed the zero-usage guard directly into getAssistantUsage.
-# If the guard is already present (upstream or from a prior run), nothing to do.
-if "calculateContextTokens(assistantMsg.usage) > 0" in text:
-    raise SystemExit(0)
-old = '''function getAssistantUsage(msg) {
-    if (msg.role === "assistant" && "usage" in msg) {
-        const assistantMsg = msg;
-        if (assistantMsg.stopReason !== "aborted" && assistantMsg.stopReason !== "error" && assistantMsg.usage) {
-            return assistantMsg.usage;
-        }
-    }
-    return undefined;
-}
-'''
-new = '''function getAssistantUsage(msg) {
-    if (msg.role === "assistant" && "usage" in msg) {
-        const assistantMsg = msg;
-        if (assistantMsg.stopReason !== "aborted" && assistantMsg.stopReason !== "error" && assistantMsg.usage) {
-            const contextTokens = calculateContextTokens(assistantMsg.usage);
-            if (contextTokens > 0) {
-                return assistantMsg.usage;
-            }
-        }
-    }
-    return undefined;
-}
-'''
-if new in text:
-    raise SystemExit(0)
-if old not in text:
-    raise SystemExit(f"Expected getAssistantUsage block not found in {path}; Pi version may have changed")
-backup = path.with_suffix(path.suffix + ".pre-zero-usage-fallback.bak")
-if not backup.exists():
-    backup.write_text(text)
-path.write_text(text.replace(old, new))
-PY
-  then
-    echo "warning: compaction zero-usage patch did not apply (Pi version may have changed); skipping" >&2
-  fi
-else
-  echo "warning: Pi compaction file not found: $COMPACTION_JS" >&2
-fi
-
-# Keep recovered transport errors on abandoned session branches, remove them
-# from the retrying TUI, and avoid naming Anthropic when only its wire format is
-# in use. Fail closed when Pi's runtime layout changes so updates cannot silently
-# restore the misleading behavior.
-if ! python3 "$PI_SHARED_DIR/lib/patch_pi_retry_ux.py" "$PI_INSTALL_DIR"; then
-  echo "error: Pi recovered-stream retry UX patch did not apply (Pi version may have changed)" >&2
-  exit 1
-fi
-
-# pi-ai 0.80.0+ restructured dist: providers moved from dist/providers/ to
-# dist/api/. Resolve across both layouts so the DSML filter patch survives updates.
-OPENAI_COMPLETIONS_JS=""
-for candidate in \
-  "$PI_INSTALL_DIR/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js" \
-  "$PI_INSTALL_DIR/node_modules/@earendil-works/pi-ai/dist/providers/openai-completions.js" \
-  "$PI_INSTALL_DIR/../../node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js" \
-  "$PI_INSTALL_DIR/../../node_modules/@earendil-works/pi-ai/dist/providers/openai-completions.js"; do
-  if [[ -f "$candidate" ]]; then
-    # Canonicalize so ".." segments through the npm symlink resolve correctly
-    # for downstream tooling that normalizes paths textually.
-    OPENAI_COMPLETIONS_JS="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$candidate")"
-    break
-  fi
-done
-if [[ -n "$OPENAI_COMPLETIONS_JS" ]]; then
-  if ! python3 - "$OPENAI_COMPLETIONS_JS" <<'PY'
-from pathlib import Path
-import os
-import shutil
-import subprocess
-import sys
-import tempfile
-
-path = Path(sys.argv[1])
-text = path.read_text()
-original = text
-
-filter_marker = '''function isTextContentBlock(block) {
-'''
-filter_impl = '''function createDsmlToolMarkupFilter(enabled) {
-    let pending = "";
-    let suppressing = false;
-    const markers = ["<｜DSML｜", "</｜DSML｜"];
-    const keepChars = 16;
-    const findMarker = (text) => {
-        let index = -1;
-        for (const marker of markers) {
-            const found = text.indexOf(marker);
-            if (found !== -1 && (index === -1 || found < index)) {
-                index = found;
-            }
-        }
-        return index;
-    };
-    return {
-        filter(delta) {
-            if (!enabled || !delta) {
-                return delta || "";
-            }
-            if (suppressing) {
-                return "";
-            }
-            const combined = pending + delta;
-            const markerIndex = findMarker(combined);
-            if (markerIndex !== -1) {
-                suppressing = true;
-                pending = "";
-                return combined.slice(0, markerIndex);
-            }
-            if (combined.length <= keepChars) {
-                pending = combined;
-                return "";
-            }
-            pending = combined.slice(-keepChars);
-            return combined.slice(0, -keepChars);
-        },
-        flush() {
-            if (!enabled || suppressing) {
-                pending = "";
-                return "";
-            }
-            const text = pending;
-            pending = "";
-            return text;
-        },
-    };
-}
-'''
-if "function createDsmlToolMarkupFilter" not in text:
-    if filter_marker not in text:
-        raise SystemExit(f"Expected text-content helper not found in {path}")
-    text = text.replace(filter_marker, filter_impl + filter_marker, 1)
-
-old2 = '''            const ensureTextBlock = () => {
-                if (!textBlock) {
-                    textBlock = { type: "text", text: "" };
-                    blocks.push(textBlock);
-                    stream.push({ type: "text_start", contentIndex: getContentIndex(textBlock), partial: output });
-                }
-                return textBlock;
-            };
-'''
-new2 = '''            const ensureTextBlock = () => {
-                if (!textBlock) {
-                    textBlock = { type: "text", text: "" };
-                    blocks.push(textBlock);
-                    stream.push({ type: "text_start", contentIndex: getContentIndex(textBlock), partial: output });
-                }
-                return textBlock;
-            };
-            const dsmlTextFilter = createDsmlToolMarkupFilter(!!compat.stripDsmlToolMarkup);
-'''
-if "const dsmlTextFilter = createDsmlToolMarkupFilter" not in text:
-    if old2 not in text:
-        raise SystemExit(f"Expected ensureTextBlock block not found in {path}")
-    text = text.replace(old2, new2, 1)
-
-old3 = '''                    if (choice.delta.content !== null &&
-                        choice.delta.content !== undefined &&
-                        choice.delta.content.length > 0) {
-                        const block = ensureTextBlock();
-                        block.text += choice.delta.content;
-                        stream.push({
-                            type: "text_delta",
-                            contentIndex: getContentIndex(block),
-                            delta: choice.delta.content,
-                            partial: output,
-                        });
-                    }
-'''
-new3 = '''                    let contentDelta = choice.delta.content;
-                    if (contentDelta !== null &&
-                        contentDelta !== undefined &&
-                        contentDelta.length > 0) {
-                        contentDelta = dsmlTextFilter.filter(contentDelta);
-                        if (contentDelta.length > 0) {
-                            const block = ensureTextBlock();
-                            block.text += contentDelta;
-                            stream.push({
-                                type: "text_delta",
-                                contentIndex: getContentIndex(block),
-                                delta: contentDelta,
-                                partial: output,
-                            });
-                        }
-                    }
-'''
-if "let contentDelta = choice.delta.content;" not in text:
-    if old3 not in text:
-        raise SystemExit(f"Expected content delta block not found in {path}")
-    text = text.replace(old3, new3, 1)
-
-old4 = '''            for (const block of blocks) {
-                finishBlock(block);
-            }
-            if (options?.signal?.aborted) {
-'''
-new4 = '''            {
-                const flushDelta = dsmlTextFilter.flush();
-                if (flushDelta) {
-                    const block = ensureTextBlock();
-                    block.text += flushDelta;
-                    stream.push({
-                        type: "text_delta",
-                        contentIndex: getContentIndex(block),
-                        delta: flushDelta,
-                        partial: output,
-                    });
-                }
-            }
-            for (const block of blocks) {
-                finishBlock(block);
-            }
-            if (options?.signal?.aborted) {
-'''
-if "const flushDelta = dsmlTextFilter.flush();" not in text:
-    if old4 not in text:
-        raise SystemExit(f"Expected final finalize loop not found in {path}")
-    text = text.replace(old4, new4, 1)
-
-compat_marker = '''        supportsLongCacheRetention: model.compat.supportsLongCacheRetention ?? detected.supportsLongCacheRetention,
-'''
-if "stripDsmlToolMarkup: model.compat.stripDsmlToolMarkup" not in text:
-    if compat_marker not in text:
-        raise SystemExit(f"Expected getCompat tail block not found in {path}")
-    text = text.replace(
-        compat_marker,
-        compat_marker + "        stripDsmlToolMarkup: model.compat.stripDsmlToolMarkup ?? false,\n",
-        1,
-    )
-
-required_markers = [
-    "function createDsmlToolMarkupFilter(enabled)",
-    "const dsmlTextFilter = createDsmlToolMarkupFilter(!!compat.stripDsmlToolMarkup);",
-    "let contentDelta = choice.delta.content;",
-    "const flushDelta = dsmlTextFilter.flush();",
-    "stripDsmlToolMarkup: model.compat.stripDsmlToolMarkup ?? false,",
-]
-for marker in required_markers:
-    count = text.count(marker)
-    if count != 1:
-        raise SystemExit(f"Invalid DSML patch state in {path}: expected one {marker!r}, found {count}")
-
-node = shutil.which("node")
-if not node:
-    raise SystemExit("node is required to syntax-check the patched Pi provider")
-
-if text == original:
-    checked = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
-    if checked.returncode != 0:
-        raise SystemExit(f"Patched Pi provider is invalid: {checked.stderr.strip()}")
-else:
-    backup = path.with_suffix(path.suffix + ".pre-dsml-filter.bak")
-    if not backup.exists():
-        backup.write_text(original)
-
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".js", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        os.fchmod(fd, path.stat().st_mode & 0o777)
-        with os.fdopen(fd, "w") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        checked = subprocess.run([node, "--check", str(temporary)], capture_output=True, text=True)
-        if checked.returncode != 0:
-            raise SystemExit(f"Refusing invalid patched Pi provider: {checked.stderr.strip()}")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-PY
-  then
-    echo "error: openai-completions DSML filter patch did not apply (Pi version may have changed)" >&2
-    exit 1
-  fi
-else
-  echo "error: Pi OpenAI completions provider not found in dist/api/ or dist/providers/" >&2
-  exit 1
-fi
-
-# GLM-5.2 support now ships upstream in oMLX as the `omlx.patches.glm_moe_dsa`
-# framework (with optional bundled native kernels). Do not re-copy the retired
-# pi-shared `patches/glm_5_2` monkey patch here; uv-tool reinstalls should use
-# upstream oMLX's model-loading dispatch unchanged.
-
-printf 'Repaired oMLX Pi profile at %s\n' "$PI_OMLX_AGENT_DIR"
+printf 'Repaired oMLX Pi profile at %s (runtime unchanged)\n' "$PI_OMLX_AGENT_DIR"

@@ -50,7 +50,7 @@ Current launcher/profile split:
 | Launcher | Profile | `pi-shared` behavior |
 |---|---|---|
 | `pi` | `~/.pi/agent` | Loads `pi-shared` through `settings.json`; `~/.pi/agent/AGENTS.md` should symlink to `pi-shared/AGENTS.md`. |
-| generated `pi-*` model functions | `~/.pi-omlx/agent` | Must call `bin/pi-omlx-repair` before launch/reload so the profile loads `pi-shared`, local extensions, shared `AGENTS.md`, and the zero-usage context fallback. |
+| generated `pi-*` model functions | `~/.pi-omlx/agent` | Must call `bin/pi-omlx-repair` before launch/reload so the profile loads `pi-shared`, optional overlays, and shared `AGENTS.md`. Runtime code remains stock. |
 | `pi-vanilla` | `~/.pi/vanilla-agent` | Intentionally bypasses packages, extensions, skills, prompts, themes, and context files for recovery. Do not wire `pi-shared` into it. |
 
 Future Pi launchers should follow one of two rules:
@@ -116,13 +116,23 @@ Requirements and behavior:
 - writes `settings.json` so this `pi-shared` repo is loaded as a package
 - includes the optional sibling `pi-databricks` package when present and removes its obsolete standalone resource entries
 - symlinks `~/.pi-omlx/agent/AGENTS.md` to this repo's `AGENTS.md`
-- preserves the installed Pi zero-usage context fallback and the local DSML output filter across Pi updates
-- keeps superseded auto-retry failures out of restored model context and the visible transcript while preserving append-only audit/cost records, and uses protocol-neutral premature-stream wording
+- leaves Pi/provider runtime files, models, and credentials untouched
+
+Runtime patching is retired. The zero-usage context guard is upstream in modern
+Pi; custom retry-UI and DSML patches are no longer applied. The old patcher targeted
+unbundled SDK files, not the bundled CLI, so those patches were not a reliable CLI
+behavior guarantee. Use the stock packaged runtime and report upstream behavior
+as such. `PI_INSTALL_DIR` is no longer used by this profile-wiring command (it
+remains a supported SDK-location override for `pi-profile-check`).
+
+An already patched installation is not restored by this helper. Reinstall it
+through its package manager, or migrate to a fresh public Homebrew installation;
+do not copy old patched runtime files into the new installation.
 
 Run manually if needed:
 
 ```bash
-~/local_code/pi-shared/bin/pi-omlx-repair
+~/.local/bin/pi-omlx-repair
 ```
 
 Current generated `pi-*` shell launchers call this automatically before writing models or launching Pi. Future launchers that set `PI_CODING_AGENT_DIR=~/.pi-omlx/agent` should do the same.
@@ -541,9 +551,40 @@ Then restart Pi from any working directory, or run in an existing session:
 
 ## Updating on either machine
 
+### Public managed installation
+
+Keep development checkouts separate from the installed resources. With the
+public [Homebrew pi-shared package](https://github.com/GeorgeTheo99/homebrew-tap),
+production resources normally live under `~/.local/share/pi-shared/modules`,
+while `~/local_code/pi-shared` remains a development checkout.
+
+1. Develop and test in the source checkout, using feature branches or a separate
+   worktree/profile for staging. Do not point production profiles at that worktree.
+2. Review and push approved changes to the **public GitHub remote**. Pushing only
+   to a machine-local bare repository does not publish an update.
+3. Run `pi-shared update --plan`, then `pi-shared update` on the consuming machine.
+   This installs published changes, refreshes dependencies/launchers and verifies
+   the saved selection. Do not edit the installed module checkout or Homebrew keg.
+4. Start a new shell and restart Pi after runtime/Node upgrades. `/reload` can
+   refresh resources but cannot replace a running process's Node/Pi runtime.
+
+The current setup manifest follows public `main` for shared resources; a staging
+branch is not consumed until approved changes reach that ref. Changing the pinned
+Pi runtime or orchestrator requires a new pi-setup release and tap pin, not merely
+a shared-resource commit. See the [managed update contract](https://github.com/GeorgeTheo99/pi-setup/blob/main/docs/updates.md).
+
+Existing independently managed services can remain outside this installation's
+saved selection. They retain their own release/deployment workflows; a shared-only
+setup does not take ownership of them. Migration must replace old profile package
+paths and helper/skill symlinks rather than load both development and installed
+copies. Review command conflicts before linking Homebrew; never blindly overwrite
+an existing `pi` binary.
+
+### Source-only installation
+
 If shared skills/extensions change on either machine, make the change in this repo, commit it here, push it, pull it on the other machine, and then run `/reload`.
 
-Use the generated updater on either machine:
+Use the generated updater on a source-only installation:
 
 ```bash
 pi-shared-update
