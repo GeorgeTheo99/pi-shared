@@ -70,6 +70,14 @@ test("installed Pi finalizes failed waits/subagents as errors, and safe_edit use
 		const messages=await core.runAgentLoop([{role:"user",content:"local fixture",timestamp:Date.now()}],{systemPrompt:"test",messages:[],tools:[tool]}, {model,convertToLlm:(m:any)=>m,shouldStopAfterTurn:()=>true},()=>{},undefined,streamFn);
 		return messages.find((m:any)=>m.role==="toolResult");
 	}
+	const badStatus=await finalized({action:"status",id:"cmd_00000000-0000-0000-0000-000000000000",max_bytes:8192},"command_job");
+	assert.equal(badStatus?.isError,true);
+	assert.match(badStatus.content[0].text,/action=status: "max_bytes"/);
+	assert.match(badStatus.content[0].text,/Allowed fields: action, id\./);
+	assert.match(badStatus.content[0].text,/Use action=logs/);
+	const correctedList=await finalized({action:"list"},"command_job");
+	assert.equal(correctedList?.isError,false);
+	assert.deepEqual(correctedList.details,[]);
 	const missing=await finalized({jobs:["cmd_00000000-0000-0000-0000-000000000000"],timeout:2});
 	assert.equal(missing?.isError,true); assert.match(missing.content[0].text,/Unknown/);
 	const failed=await invoke("command_job",{action:"start",command:process.execPath,args:["-e","process.exit(7)"],timeout_seconds:2});

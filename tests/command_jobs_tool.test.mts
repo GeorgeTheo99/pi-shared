@@ -40,6 +40,46 @@ test("command tool validates action, trust, and scopes cwd to caller", async t =
 	assert.equal(log.details.text, path.join(f.dir, "nested"));
 });
 
+test("action field errors identify the repair without exposing values or starting jobs", async t => {
+	const f = setup(t);
+	for (const [action, extra, allowed] of [
+		["start", { id: "private-value" }, "action, command, args, cwd, timeout_seconds, label, readiness"],
+		["status", { max_bytes: 8192, stream: "stderr" }, "action, id"],
+		["list", { command: "private-value" }, "action"],
+		["logs", { timeout_seconds: 30 }, "action, id, stream, cursor, max_bytes"],
+		["cancel", { command: "private-value" }, "action, id"],
+	] as const) {
+		await assert.rejects(f.call("command_job", { action, ...extra }), (error: Error) => {
+			assert.ok(error.message.startsWith(`Invalid fields for command_job action=${action}:`));
+			for (const key of Object.keys(extra)) assert.ok(error.message.includes(JSON.stringify(key)));
+			assert.ok(error.message.includes(`Allowed fields: ${allowed}.`));
+			assert.match(error.message, /Omit fields for other actions/);
+			assert.doesNotMatch(error.message, /private-value/);
+			if (action === "status") assert.match(error.message, /Use action=logs/);
+			return true;
+		});
+	}
+	assert.equal(fs.existsSync(path.join(f.dir, "state")), false);
+});
+
+test("action validation rejects unknown actions and bounds diagnostic field names", async t => {
+	const f = setup(t);
+	for (const action of ["unknown", "constructor", "toString", "__proto__"]) {
+		await assert.rejects(f.call("command_job", { action }), /Invalid command_job action\. Use start, status, list, logs, or cancel\./);
+	}
+	const extras = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`${i}${"x".repeat(200)}`, "private-value"]));
+	await assert.rejects(f.call("command_job", { action: "list", ...extras }), (error: Error) => {
+		assert.ok(error.message.length < 1200);
+		assert.match(error.message, /, \.\.\./);
+		assert.doesNotMatch(error.message, /private-value/);
+		return true;
+	});
+	// Omitted/undefined fields stay absent; explicit null does not bypass validation.
+	await assert.rejects(f.call("command_job", { action: "list", command: null }), /"command"/);
+	const listed = await f.call("command_job", { action: "list", command: undefined });
+	assert.deepEqual(listed.details, []);
+});
+
 test("missing and impossible job waits wake with errors", async t => {
 	const f = setup(t);
 	await assert.rejects(f.call("wait_for", { jobs: ["cmd_00000000-0000-0000-0000-000000000000"], timeout: 5 }), /Unknown/);

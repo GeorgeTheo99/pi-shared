@@ -13,8 +13,21 @@ command_job({action:"logs", id:"cmd_<uuid>", stream:"stderr", max_bytes:8192})
 command_job({action:"cancel", id:"cmd_<uuid>"})
 ```
 
-Actions: `start`, `status`, `list`, `logs`, `cancel`. Fields not applicable to the
-action are rejected. `start` requires `command` and `timeout_seconds` (up to 24h).
+Actions: `start`, `status`, `list`, `logs`, `cancel`. Send only fields for the
+selected action; do not carry arguments over from a previous call.
+
+| Action | Required fields (besides `action`) | Optional fields |
+| --- | --- | --- |
+| `start` | `command`, `timeout_seconds` | `args`, `cwd`, `label`, `readiness` |
+| `status`, `cancel` | `id` | None |
+| `list` | None | None |
+| `logs` | `id` | `stream`, `cursor`, `max_bytes` |
+
+Fields not applicable to the action are rejected before any command starts.
+Errors identify the offending field names and allowed fields, without including
+argument values. For example, `status` with `max_bytes` must use `logs` instead
+if the intent is to read output. `timeout_seconds` is start-only; use `wait_for`
+to wait for completion. `start` requires `command` and `timeout_seconds` (up to 24h).
 Optional `args`, `cwd` relative to caller workspace, non-sensitive `label`, and
 `readiness` are supported. For explicitly intended shell syntax use `command:"sh"`
 and `args:["-c", script]`; there is no implicit shell expansion. Commands inherit
