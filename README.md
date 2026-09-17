@@ -508,6 +508,27 @@ sets `browserWorkerEnabled=false`; see the browser extension README. Successful
 local checks are not proof that remote credentials, model calls, or browser
 execution work.
 
+## Optional Omnigent compatibility
+
+Use Omnigent's native Pi terminal with the normal `~/.pi/agent` profile:
+`omnigent pi --provider <pi-provider> --model <pi-model-id>`.
+`pi-shared` loads as an ordinary Pi package; no Omnigent-specific extension,
+profile rewrite, runtime patch, or change to normal `pi-*` launchers is required
+for this narrow path. Providers must already be configured and reachable on the
+harness host. When `pi-databricks` is installed, keep it before `pi-shared` in
+`packages`.
+
+The compatibility scope covers native launch and package/model selection;
+basic agent-operation claims require a separate inference test. Browser/mobile
+parity and advanced `/self-handoff`, goal, or delegation workflows are not
+initially certified. See pi-setup's
+[compatibility contract](https://github.com/GeorgeTheo99/pi-setup/blob/main/docs/omnigent-compatibility.md)
+for opt-in prerequisite checks and the isolated, non-inference launch smoke.
+The public Homebrew path exposes this through
+`pi-shared setup --mode cloud --with-omnigent` (0.1.4+; inspect `--plan` first).
+Omnigent remains optional and is not added to plain module installation.
+Normal Pi use is unchanged when Omnigent is absent.
+
 ## Setup on another machine
 
 1. Install Pi separately, plus Python 3 and Node/npm. Clone this repo anywhere; use a reviewed release/revision for reproducibility. `~/local_code` is only a suggested location.
