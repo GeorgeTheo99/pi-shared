@@ -30,9 +30,11 @@ wait_for({
 
 | param | type | description |
 |-------|------|-------------|
-| `condition` | string (optional) | Shell command run with `sh -c` in the session cwd. Exit 0 = met (resume); non‑zero = not yet. Mutually exclusive with `jobs`. |
-| `jobs` | string[] (optional) | Background subagent job ids (from `spawn_subagent` with `background:true`) to wait for. Mutually exclusive with `condition`. Polls the spawn‑subagent job store. |
-| `job_mode` | string (optional) | With `jobs`: `all` (default), `any`, `any_success`, `any_failure`. Only valid with `jobs`. |
+| `condition` | string (optional) | Read-only predicate run with `sh -c` in the session cwd. Exit 0 = met; configured `failure_exit_codes` = fatal; other nonzero = not yet. Mutually exclusive with `jobs`. |
+| `jobs` | string[] (optional) | 1–64 nonempty command/subagent job IDs. Mutually exclusive with `condition`; omit rather than passing an empty array. |
+| `job_mode` | enum (optional) | With `jobs`: `all` (default), `any`, `any_success`, `any_failure`. Omit for shell waits; redundant `all` is accepted and ignored, other modes are rejected with repair instructions. |
+| `failure_exit_codes` | integer[] (optional) | Condition-only fatal exit codes, 1–255. Default `[126,127]` (not executable/not found). Overrides the default; `[]` retries all nonzero exits. |
+| `readiness` | boolean (optional) | Command jobs with `job_mode:"all"` only: wait for every configured readiness probe while processes remain running. |
 | `timeout` | number (required) | Max seconds to wait. Hard cap 86400 (24h). For longer tasks, chain calls or use launchd + handoff. |
 | `poll_interval` | number (optional) | Seconds between checks. Default 10, clamped to [1, 3600]. |
 | `progress` | string (optional) | Shell command whose stdout shows as live progress on each poll. Ignored in `jobs` mode (which shows per‑job status). |
@@ -41,13 +43,30 @@ wait_for({
 
 - Evaluates `condition` immediately; returns at once if already met.
 - Otherwise loops: run condition → (optional) run `progress` → stream a TUI update → sleep `poll_interval` → repeat.
-- Returns success when the condition exits 0, an error result on timeout, and a clean "aborted" result if the user interrupts.
-- Each condition/progress eval is itself capped at 30s so a hung command can't stall the wait.
+- Returns success only when the condition exits 0 without forced termination before the overall deadline; fatal exit codes or shell startup errors fail promptly. Timeout is an error; interruption returns an explicit "aborted" result.
+- Each condition/progress eval is capped at 30s and the remaining overall deadline. No new evaluation starts after the deadline; termination/cleanup adds bounded grace. A timed-out shell cannot signal success even if its TERM handler exits 0.
+- Condition/progress process groups are cleaned up even after a natural shell exit. Do not launch background work from a predicate; start it separately with `command_job`. Descendants that escape the original process group are outside cleanup coverage.
+- Timeout errors retain bounded excerpts of the last **nonempty** stdout/stderr and progress, which may come from an earlier check. Empty checks do not erase useful diagnostics.
 - Runs in `executionMode: "sequential"` so it gates the turn.
 
 ## Choosing the condition
 
 `pgrep -f aria2c` is **true while the process is running**, so to wait for *completion* either invert it (`! pgrep -f aria2c >/dev/null 2>&1`) or — preferably — watch a completion marker your long task writes (e.g. `grep -q '^DONE ' file.download.log`).
+
+### Remote deployment predicates
+
+A successful status query means the query worked, **not** that deployment succeeded. Query the exact deployment and inspect its structured status. Use an explicit predicate contract, for example:
+
+```
+wait_for({
+  condition: "./scripts/check-deployment.sh", // your own read-only status predicate
+  failure_exit_codes: [2, 126, 127],
+  timeout: 600,
+  poll_interval: 10,
+})
+```
+
+That script should exit **0** only on verified success, **1** while pending, and **2** on terminal deployment failure or unrecoverable authentication/configuration errors (write the reason to stderr). Choose which transport errors are retryable deliberately. `failure_exit_codes` replaces the default list, so retain 126/127 if desired. A pipeline can mask an upstream CLI failure: capture/check the query's exit status before parsing its JSON; do not rely on the last pipeline command alone. `wait_for` cannot infer remote state or authentication failure from arbitrary CLI output.
 
 ## Waiting for background subagent jobs
 
@@ -85,7 +104,7 @@ Terminal statuses are `completed`, `failed`, `canceled`; `awaiting_answer` is ac
 
 `jobs` also accepts `cmd_…` IDs from `command_job`, alone or mixed with subagent
 IDs. Completion means terminal, not necessarily successful: inspect the returned
-command status and exact exit code. Unknown IDs and impossible `any_success` or
+command status and exact exit code. The result headline counts unsuccessful jobs and pending questions; those outcomes render as warnings rather than a green "Jobs ready" success. Unknown IDs and impossible `any_success` or
 `any_failure` outcomes fail promptly. Wait interruption leaves jobs running.
 
 For configured local server probes use `readiness:true` with command IDs and

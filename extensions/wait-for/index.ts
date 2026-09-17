@@ -17,8 +17,7 @@
  * (download, build, deploy, training) after any parallel prep work is done.
  *
  *   wait_for({
- *     condition: "pgrep -f 'aria2c.*GLM-5.2-mxfp4' >/dev/null 2>&1 || ! pgrep -f aria2c >/dev/null 2>&1",
- *     // simpler: watch the DONE marker the download script already writes:
+ *     // Watch the DONE marker the download script already writes:
  *     condition: "grep -q '^DONE ' ~/models/mlx/GLM-5.2-mxfp4.download.log 2>/dev/null",
  *     timeout: 3600,
  *     poll_interval: 15,
@@ -26,10 +25,11 @@
  *   })
  *
  * The condition is a shell command run with `sh -c` in the session cwd; exit
- * code 0 means "condition met" (stop waiting), any non-zero means "not yet".
+ * code 0 means "condition met"; configured failure_exit_codes stop with an
+ * error (default 126/127: not executable/not found); other non-zero means "not yet".
  */
 
-import { Type } from "@mariozechner/pi-ai";
+import { StringEnum, Type } from "@mariozechner/pi-ai";
 import { defineTool, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { runShellProcess } from "../_shared/shell-process.ts";
@@ -112,6 +112,8 @@ interface WaitForDetails {
 	lastStdout: string;
 	lastStderr: string;
 	lastProgress: string;
+	failedJobs?: number;
+	awaitingJobs?: number;
 	error?: string;
 }
 
@@ -180,12 +182,12 @@ const waitForTool = defineTool({
 	label: "Wait For",
 	executionMode: "sequential",
 	description:
-		"Block the agent loop until either a shell `condition` is true or a background subagent job becomes actionable (`awaiting_answer`) or terminal, then resume — without burning tokens while waiting. `condition` is a shell command run with `sh -c` (exit code 0 = met, non-zero = not yet). `jobs` are command_job cmd_ IDs or background subagent job ids; pass `job_mode` to control terminal completion. Use readiness=true only for command jobs with configured probes, to wait for all to become ready rather than complete. Any `awaiting_answer` job always wakes the wait so the parent can answer without deadlock. `condition` and `jobs` are mutually exclusive. Always set a `timeout`. The call is abortable (Esc/Ctrl-C).",
+		"Block the agent loop until either a shell `condition` is true or a background subagent job becomes actionable (`awaiting_answer`) or terminal, then resume — without burning tokens while waiting. `condition` is a shell command run with `sh -c` (exit code 0 = met, failure_exit_codes = fatal, other non-zero = not yet). `jobs` are command_job cmd_ IDs or background subagent job ids; pass `job_mode` to control terminal completion. Use readiness=true only for command jobs with configured probes, to wait for all to become ready rather than complete. Any `awaiting_answer` job always wakes the wait so the parent can answer without deadlock. `condition` and `jobs` are mutually exclusive. Always set a `timeout`. The call is abortable (Esc/Ctrl-C).",
 	promptSnippet:
 		"wait_for to block the agent loop (zero tokens) until a shell condition is true or background subagent jobs finish, instead of polling",
 	promptGuidelines: [
 		"Use wait_for to pause for a long-running detached task (download, build, deploy, training) to finish, or for fanned-out background subagent jobs to finish, instead of polling with repeated bash calls. While wait_for runs, the agent loop is paused and consumes zero tokens.",
-		"`condition` is a shell command: exit code 0 means condition met (resume), any non-zero means not yet. Examples: `pgrep -f aria2c >/dev/null 2>&1` is wrong (true while running) — to wait for completion watch a DONE marker: `grep -q '^DONE ' file.download.log 2>/dev/null`, or invert: `! pgrep -f aria2c >/dev/null 2>&1`, or a file: `test -f /path/to/done.flag`.",
+		"`condition` must test the actual outcome, not just whether a status query succeeded. Exit 0 means met, failure_exit_codes means fatal (default 126/127), other non-zero means not yet. Map terminal deployment/auth failures to a configured failure code instead of waiting until timeout. Examples: `pgrep -f aria2c >/dev/null 2>&1` is wrong (true while running) — to wait for completion watch a DONE marker: `grep -q '^DONE ' file.download.log 2>/dev/null`, or invert: `! pgrep -f aria2c >/dev/null 2>&1`, or a file: `test -f /path/to/done.flag`.",
 		"`jobs` waits for background subagent job ids returned by `spawn_subagent({..., background:true})`. Any `awaiting_answer` job wakes immediately regardless of `job_mode`; answer it with `spawn_subagent({jobAction:'answer', jobId, questionId, answer})`. Otherwise `job_mode` defaults to `all` terminal, with `any`, `any_success`, or `any_failure` alternatives. `condition` and `jobs` are mutually exclusive.",
 		"Always provide a `timeout` (seconds, capped at 24h). For longer tasks, chain another wait_for or use the launchd + handoff resume pattern.",
 		"Provide a `progress` command (e.g. `du -sh /path | cut -f1`) so the wait shows live progress in the TUI (ignored in `jobs` mode, which shows per-job status instead).",
@@ -195,20 +197,28 @@ const waitForTool = defineTool({
 		condition: Type.Optional(
 			Type.String({
 				description:
-					"Shell command run with `sh -c` in the session cwd. Exit code 0 = condition met (stop waiting and resume); non-zero = not yet. e.g. `grep -q '^DONE ' file.download.log 2>/dev/null`, `! pgrep -f aria2c >/dev/null 2>&1`, `test -f /path/done.flag`. Mutually exclusive with `jobs`.",
+					"Read-only predicate run with `sh -c` in the session cwd. Exit 0 = actual condition met; failure_exit_codes = fatal; other non-zero = not yet. A successful status query alone does not prove deployment/job success. e.g. `grep -q '^DONE ' file.download.log 2>/dev/null`, `! pgrep -f aria2c >/dev/null 2>&1`, `test -f /path/done.flag`. Mutually exclusive with `jobs`.",
 			}),
 		),
 		jobs: Type.Optional(
 			Type.Array(Type.String(), {
+				minItems: 1,
+				maxItems: 64,
 				description:
 					"Background subagent job ids to wait for instead of a shell condition. Mutually exclusive with `condition`. Resumes immediately for `awaiting_answer`, or when `job_mode` is satisfied by terminal statuses (`completed`, `failed`, `canceled`).",
 			}),
 		),
 		readiness: Type.Optional(Type.Boolean({ description: "With command jobs and job_mode=all only: wait for every configured readiness probe. Service readiness is separate from successful completion." })),
 		job_mode: Type.Optional(
-			Type.String({
+			StringEnum(["all", "any", "any_success", "any_failure"] as const, {
 				description:
-					"When `jobs` is set: `all` (default, resume when all jobs are terminal), `any` (first terminal), `any_success` (first completed), `any_failure` (first failed/canceled). Only valid with `jobs`.",
+					"With jobs: all (default, all terminal, NOT necessarily successful), any (first terminal), any_success (first completed), any_failure (first failed/canceled). Omit for condition waits; redundant all is accepted and ignored.",
+			}),
+		),
+		failure_exit_codes: Type.Optional(
+			Type.Array(Type.Integer({ minimum: 1, maximum: 255 }), {
+				maxItems: 255,
+				description: "Condition waits only: exit codes that stop immediately with an error. Default [126,127] (not executable/not found). Overrides the default; [] retries all nonzero exits. Configure a distinct code for terminal deployment/auth failures; exit 1 normally means pending.",
 			}),
 		),
 		timeout: Type.Number({
@@ -231,11 +241,14 @@ const waitForTool = defineTool({
 	async execute(_toolCallId, params, signal, onUpdate, ctx) {
 		if (!Number.isFinite(params.timeout) || params.timeout <= 0 || (params.poll_interval !== undefined && !Number.isFinite(params.poll_interval))) throw new Error("timeout/poll_interval must be finite and timeout positive");
 		if (params.job_mode !== undefined && !isJobWaitMode(params.job_mode)) throw new Error("Invalid job_mode");
-		if (params.jobs && (params.jobs.length > 64 || params.jobs.some(id => !id.trim()))) throw new Error("Provide 1–64 nonempty job IDs");
+		if (params.jobs && (params.jobs.length === 0 || params.jobs.length > 64 || params.jobs.some(id => !id.trim()))) throw new Error("Provide 1–64 nonempty job IDs, or omit jobs for a condition wait.");
+		if (params.failure_exit_codes && (params.failure_exit_codes.length > 255 || params.failure_exit_codes.some(code => !Number.isInteger(code) || code < 1 || code > 255))) throw new Error("failure_exit_codes must contain integer exit codes from 1 to 255.");
 		const condition = params.condition?.trim();
 		const jobIds = (params.jobs ?? []).map((s) => s.trim()).filter(Boolean);
 		const jobMode: JobWaitMode = isJobWaitMode(params.job_mode) ? params.job_mode : "all";
 		const useJobs = jobIds.length > 0;
+		if (useJobs && params.failure_exit_codes !== undefined) throw new Error("failure_exit_codes is only valid with condition. Omit it when using jobs.");
+		const failureExitCodes = new Set(params.failure_exit_codes ?? [126, 127]);
 		if (params.readiness && (!useJobs || jobMode !== "all" || jobIds.some(id => !id.startsWith("cmd_")))) throw new Error("readiness requires command job IDs and job_mode=all");
 		const timeout = clamp(Math.floor(params.timeout), 1, MAX_TIMEOUT);
 		const pollInterval = clamp(
@@ -274,8 +287,8 @@ const waitForTool = defineTool({
 				error: "one required",
 			});
 		}
-		if (!useJobs && params.job_mode !== undefined) {
-			return errorResult("Error: `job_mode` is only valid with `jobs`.", {
+		if (!useJobs && params.job_mode !== undefined && params.job_mode !== "all") {
+			return errorResult("Error: omit `job_mode` for a `condition` wait (redundant `all` is accepted). Use `jobs` for other job modes.", {
 				...baseDetails,
 				error: "job_mode without jobs",
 			});
@@ -288,6 +301,18 @@ const waitForTool = defineTool({
 		let lastStdout = "";
 		let lastStderr = "";
 		let lastProgress = "";
+		let failedJobs = 0;
+		let awaitingJobs = 0;
+		const diagnostics = () => [
+			lastStdout ? `last nonempty stdout: ${truncate(lastStdout, 1000)}` : "",
+			lastStderr ? `last nonempty stderr: ${truncate(lastStderr, 1000)}` : "",
+		].filter(Boolean).join("\n");
+		const timeoutResult = () => errorResult(
+			`Timed out after ${formatDuration(Date.now() - startedAt)} (${checks} check${checks === 1 ? "" : "s"}). ${useJobs ? "Job wait condition not met." : "Condition not met."}\n` +
+			`${useJobs ? `jobs (${jobMode}): ${jobIds.join(", ")}` : `condition: ${condition}`}\n` +
+			(lastProgress ? `last progress: ${truncate(lastProgress, 200)}\n` : "") + diagnostics(),
+			{ ...baseDetails, timedOut: true, checks, elapsedMs: Date.now() - startedAt, lastStdout, lastStderr, lastProgress },
+		);
 
 		const emitProgress = (note?: string) => {
 			if (!onUpdate) return;
@@ -318,6 +343,8 @@ const waitForTool = defineTool({
 		try {
 			for (;;) {
 				if (signal?.aborted) throw new AbortError();
+				// Never start another evaluation after sleeping to the deadline.
+				if (Date.now() >= deadline) return timeoutResult();
 
 				let done = false;
 				let reason = "";
@@ -337,23 +364,27 @@ const waitForTool = defineTool({
 					const termCount = jobIds.filter(
 						(id) => snapshots.has(id) && TERMINAL_JOB_STATUS.has(snapshots.get(id)!.status),
 					).length;
-					const awaitingCount = jobIds.filter((id) => snapshots.get(id)?.status === "awaiting_answer").length;
-					lastProgress = `${termCount}/${jobIds.length} terminal${awaitingCount ? ` • ${awaitingCount} awaiting answer` : ""}`;
+					awaitingJobs = jobIds.filter((id) => snapshots.get(id)?.status === "awaiting_answer").length;
+					failedJobs = jobIds.filter((id) => TERMINAL_JOB_STATUS.has(snapshots.get(id)!.status) && snapshots.get(id)!.status !== "completed").length;
+					lastProgress = `${termCount}/${jobIds.length} terminal • ${failedJobs} unsuccessful${awaitingJobs ? ` • ${awaitingJobs} awaiting answer` : ""}`;
 					lastStdout = summarizeJobs(jobIds, snapshots);
 					lastStderr = "";
 				} else {
 					const cond = await runShellProcess(condition!, cwd, Math.max(1, Math.min(MAX_CONDITION_TIMEOUT * 1000, deadline - Date.now())), signal);
 					if (cond.aborted || signal?.aborted) throw new AbortError();
-					lastStdout = cond.stdout;
-					lastStderr = cond.stderr;
-					done = cond.code === 0 && Date.now() <= deadline;
+					if (cond.stdout.trim()) lastStdout = cond.stdout;
+					if (cond.stderr.trim()) lastStderr = cond.stderr;
+					if (cond.terminationReason === "spawn_error" || cond.terminationReason === "output_limit" || (!cond.terminationReason && failureExitCodes.has(cond.code))) {
+						throw new Error(`Condition evaluation failed (${cond.terminationReason ?? `exit ${cond.code}`}).\n${diagnostics()}`);
+					}
+					done = !cond.terminationReason && cond.code === 0 && Date.now() <= deadline;
 				}
 				checks += 1;
 
 				if (done) {
 					const elapsedMs = Date.now() - startedAt;
 					const head = useJobs
-						? `Jobs ready after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}).`
+						? `Job wait condition reached after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}); ${failedJobs} unsuccessful, ${awaitingJobs} awaiting answer. ${params.readiness ? "Readiness is not completion." : "Terminal does not imply successful."}`
 						: `Condition met after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}). Resuming.`;
 					const tail = useJobs
 						? `\n${reason}\n${lastStdout}\n\nInspect cmd_ IDs with command_job({action:"status",id:"<id>"}); inspect subagents with spawn_subagent({jobAction:"status",jobId:"<id>"}). Answer awaiting_answer with the correlated questionId.`
@@ -361,6 +392,8 @@ const waitForTool = defineTool({
 					return textResult(head + tail, {
 						...baseDetails,
 						met: true,
+						failedJobs,
+						awaitingJobs,
 						checks,
 						elapsedMs,
 						lastStdout,
@@ -373,27 +406,14 @@ const waitForTool = defineTool({
 				if (!useJobs && progress && Date.now() < deadline) {
 					const prog = await runShellProcess(progress, cwd, Math.max(1, Math.min(MAX_CONDITION_TIMEOUT * 1000, deadline - Date.now())), signal);
 					if (prog.aborted || signal?.aborted) throw new AbortError();
-					lastProgress = prog.stdout;
+					if (prog.stdout.trim()) lastProgress = prog.stdout;
 				}
 				emitProgress();
 
 				// Respect the deadline.
 				const now = Date.now();
 				const remainingMs = deadline - now;
-				if (remainingMs <= 0) {
-					const elapsedMs = Date.now() - startedAt;
-					const subject = useJobs ? `jobs (${jobMode}): ${jobIds.join(", ")}` : `condition: ${condition}`;
-					return errorResult(
-						`Timed out after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}). ${
-							useJobs ? "Jobs not ready." : "Condition not met."
-						}\n` +
-							`${subject}\n` +
-							(lastProgress ? `last progress: ${truncate(lastProgress, 200)}\n` : "") +
-							(lastStdout && useJobs ? `\n${truncate(lastStdout, 400)}\n` : "") +
-							(lastStderr ? `last stderr: ${truncate(lastStderr, 200)}` : ""),
-						{ ...baseDetails, timedOut: true, checks, elapsedMs, lastStdout, lastStderr, lastProgress },
-					);
-				}
+				if (remainingMs <= 0) return timeoutResult();
 
 				// Sleep for the poll interval (or until the deadline, whichever is sooner), abortable.
 				const sleepMs = Math.min(pollInterval * 1000, remainingMs);
@@ -404,7 +424,7 @@ const waitForTool = defineTool({
 			const elapsedMs = Date.now() - startedAt;
 			if (aborted) {
 				return textResult(
-					`Wait aborted after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}).${useJobs ? " Background jobs continue; cancel explicitly with command_job action=cancel or spawn_subagent jobAction=cancel." : " Active condition/progress processes were terminated."}`,
+					`Wait aborted after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}).${useJobs ? " Background jobs continue; cancel explicitly with command_job action=cancel or spawn_subagent jobAction=cancel." : " Termination was requested for the active condition/progress process group; escaped descendants are not covered."}`,
 					{ ...baseDetails, aborted: true, checks, elapsedMs, lastStdout, lastStderr, lastProgress },
 				);
 			}
@@ -436,6 +456,8 @@ const waitForTool = defineTool({
 		} else {
 			const cond = truncate(String(args.condition ?? ""), 80);
 			lines.push(theme.fg("dim", `  until: ${cond}`));
+			if (args.job_mode !== undefined) lines.push(theme.fg("dim", `  job_mode: ${args.job_mode}${args.job_mode === "all" ? " (ignored for condition)" : " (omit for condition)"}`));
+			if (args.failure_exit_codes !== undefined) lines.push(theme.fg("dim", `  fatal exit codes: ${args.failure_exit_codes.join(", ") || "none"}`));
 		}
 		if (args.progress) lines.push(theme.fg("dim", `  progress: ${truncate(String(args.progress), 80)}`));
 		return new Text(lines.join("\n"), 0, 0);
@@ -449,6 +471,7 @@ const waitForTool = defineTool({
 		if (details.error && !details.timedOut) return new Text(theme.fg("error", text), 0, 0);
 		if (details.timedOut) return new Text(theme.fg("warning", `⏱ ${text.split("\n")[0]}`), 0, 0);
 		if (details.aborted) return new Text(theme.fg("warning", `■ ${text}`), 0, 0);
+		if (details.met && (details.failedJobs || details.awaitingJobs)) return new Text(theme.fg("warning", `! ${text}`), 0, 0);
 		if (details.met) return new Text(theme.fg("success", `✓ ${text}`), 0, 0);
 		return new Text(text, 0, 0);
 	},
