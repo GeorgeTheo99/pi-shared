@@ -66,6 +66,7 @@ INSTALL_DEPS=1
 NPM_BIN="${PI_SHARED_NPM:-npm}"
 DIRECT_LAUNCHERS="${PI_SHARED_DIRECT_LAUNCHERS-${PI_SHARED_LS99_EXTRAS-}}"
 declare -a OVERLAY_DIRS=()
+declare -a CATALOG_OVERRIDES=()
 
 if [ -t 1 ]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'
@@ -98,14 +99,14 @@ while [ $# -gt 0 ]; do
     --no-catalog) GENERATE_CATALOG=0 ;;
     --bootstrap-launchers) BOOTSTRAP_LAUNCHERS=1 ;;
     --no-deps) INSTALL_DEPS=0 ;;
-    --aliases) shift; [ $# -gt 0 ] || die "--aliases requires a path"; ALIASES_PATH="$(expand_path "$1")" ;;
-    --models-out) shift; [ $# -gt 0 ] || die "--models-out requires a path"; MODELS_OUT="$(expand_path "$1")" ;;
+    --aliases) shift; [ $# -gt 0 ] || die "--aliases requires a path"; ALIASES_PATH="$(expand_path "$1")"; CATALOG_OVERRIDES+=(--aliases "$ALIASES_PATH") ;;
+    --models-out) shift; [ $# -gt 0 ] || die "--models-out requires a path"; MODELS_OUT="$(expand_path "$1")"; CATALOG_OVERRIDES+=(--models-out "$MODELS_OUT") ;;
     --launchers-out) shift; [ $# -gt 0 ] || die "--launchers-out requires a path"; LAUNCHERS_OUT="$(expand_path "$1")" ;;
     --cli-out) shift; [ $# -gt 0 ] || die "--cli-out requires a path"; CLI_OUT="$(expand_path "$1")" ;;
-    --pi-agent-dir) shift; [ $# -gt 0 ] || die "--pi-agent-dir requires a path (or '' for the default Pi profile)"; CATALOG_PI_AGENT_DIR="$([ -n "$1" ] && expand_path "$1" || true)" ;;
-    --provider-name) shift; [ $# -gt 0 ] || die "--provider-name requires a name"; PROVIDER_NAME="$1" ;;
-    --direct-launchers|--ls99-extras) DIRECT_LAUNCHERS=1 ;;
-    --no-direct-launchers) DIRECT_LAUNCHERS=0 ;;
+    --pi-agent-dir) shift; [ $# -gt 0 ] || die "--pi-agent-dir requires a path (or '' for the default Pi profile)"; CATALOG_PI_AGENT_DIR="$([ -n "$1" ] && expand_path "$1" || true)"; CATALOG_OVERRIDES+=(--pi-agent-dir "$CATALOG_PI_AGENT_DIR") ;;
+    --provider-name) shift; [ $# -gt 0 ] || die "--provider-name requires a name"; PROVIDER_NAME="$1"; CATALOG_OVERRIDES+=(--provider-name "$1") ;;
+    --direct-launchers|--ls99-extras) DIRECT_LAUNCHERS=1; CATALOG_OVERRIDES+=(--direct-launchers) ;;
+    --no-direct-launchers) DIRECT_LAUNCHERS=0; CATALOG_OVERRIDES+=(--no-direct-launchers) ;;
     --overlay) shift; [ $# -gt 0 ] || die "--overlay requires a package directory"; OVERLAY_DIRS+=("$(expand_path "$1")") ;;
     -h|--help|help) usage ;;
     *) die "unknown argument: $1" ;;
@@ -295,6 +296,15 @@ generate_catalog() {
     if [ -e "$CLI_OUT" ]; then
       PI_LAUNCHER_CONFIG="$CLI_OUT" "$ROOT_DIR/bin/pi-launch" --launcher-refresh \
         || die "CLI routing refresh failed; inspect generated model edits before retrying"
+      if [ "${#CATALOG_OVERRIDES[@]}" -gt 0 ]; then
+        python3 -B - "$ROOT_DIR" "$CLI_OUT" "${CATALOG_OVERRIDES[@]}" <<'PY' || die "CLI configuration update failed"
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / 'lib'))
+from pi_cli import configure
+configure(Path(sys.argv[2]), sys.argv[3:])
+PY
+      fi
       CATALOG_PI_AGENT_DIR="$(python3 - "$CLI_OUT" <<'PY'
 import json, sys
 args = json.load(open(sys.argv[1]))['generation']['args']

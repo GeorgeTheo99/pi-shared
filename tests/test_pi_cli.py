@@ -385,6 +385,21 @@ def test_cli_installer_generates_no_shell_and_preserves_saved_defaults_on_rerun(
     assert json.loads(machine["config"].read_text())["defaultProfile"] == before
 
 
+def test_cli_installer_explicit_overlay_aliases_replace_bootstrap_input(machine):
+    original = machine["aliases"]
+    original.unlink()
+    assert render(machine, "--allow-empty-catalog", "--direct-launchers").returncode == 0
+    machine["aliases"] = machine["home"] / ".pi/enterprise-aliases.json"
+    machine["aliases"].write_text(json.dumps(ALIASES))
+    result = install_cli(machine)
+    assert result.returncode == 0, result.stderr
+    config = json.loads(machine["config"].read_text())
+    assert "test" in config["routes"] and "openai" in config["routes"]
+    assert str(machine["aliases"]) in config["generation"]["args"]
+    assert str(original) not in config["generation"]["args"]
+    assert launch(machine, "--launcher-check", upstream=False).returncode == 0
+
+
 def test_cli_installer_migrates_legacy_without_rewriting_or_executing_shell(machine):
     assert render(machine, "--no-direct-launchers", cli_out=False, launchers=True, provider="original-provider").returncode == 0
     legacy = machine["home"] / ".pi/generated/pi-launchers.zsh"

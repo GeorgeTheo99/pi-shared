@@ -254,6 +254,42 @@ def refresh(path, config, check=False):
     return updated
 
 
+def configure(path, overrides):
+    """Apply explicitly requested installer route changes, retaining other metadata."""
+    from pi_catalog import main as render
+    config = refresh(path, load_config(path))  # protect any manual model edits
+    values = generation_values(config["generation"]["args"])
+    original_models = values.get("--models-out")
+    i = 0
+    while i < len(overrides):
+        flag = overrides[i]
+        i += 1
+        if flag in {"--direct-launchers", "--no-direct-launchers"}:
+            values.pop("--direct-launchers", None)
+            values.pop("--no-direct-launchers", None)
+            values[flag] = True
+        elif flag in {"--aliases", "--models-out", "--provider-name", "--pi-agent-dir"} and i < len(overrides):
+            value = overrides[i]
+            i += 1
+            if flag == "--pi-agent-dir" and not value:
+                values.pop(flag, None)
+            else:
+                values[flag] = value
+        else:
+            raise ValueError("Unsupported installer routing override")
+    args = [part for flag, value in values.items() for part in ([flag] if value is True else [flag, value])]
+    generation_values(args)
+    output = values.get("--models-out")
+    if output and (not original_models or Path(output).resolve() != Path(original_models).resolve()) and Path(output).exists():
+        raise ValueError("Refusing to adopt an existing different models output; reconcile it with pi-catalog explicitly")
+    with tempfile.TemporaryDirectory(prefix="pi-cli-configure-") as directory:
+        cache = Path(directory) / "status.json"
+        cache.write_text(json.dumps({"models": [{"id": key, **row} for key, row in config["generation"]["status"].items()]}))
+        result = render([*args, "--cli-out", str(path), "--offline", "--status-cache", str(cache), "--quiet"])
+    if result:
+        raise ValueError("CLI configuration rendering failed")
+
+
 # Inspect only actual option tokens, not option values or literal prompts.
 STOCK_VALUES = {"--provider", "--model", "--models", "--mode", "--api-key", "--thinking", "--session",
                 "--fork", "--session-id", "--session-dir", "--name", "-n", "--tools", "-t", "--exclude-tools", "-xt",
@@ -284,7 +320,7 @@ def upstream():
     # directly (never a PATH lookup), so a `pi` shim on PATH cannot recurse.
     # The only remaining risk is a misconfigured value pointing back at this
     # launcher; reject that explicitly. No environment guard is exported on the
-    # exec, so spawned subagents/bash tools inherit a clean environment.
+    # exec, so spawned subagents/bash tools inherit no recursion guard.
     if path.resolve() == (ROOT / "bin/pi-launch").resolve():
         raise ValueError("Recursive Pi launcher target")
     return str(path)
