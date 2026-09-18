@@ -102,9 +102,7 @@ def test_installer_wires_both_profiles_without_user_bin_on_path(tmp_path):
     assert "pi-omlx-repair >/dev/null 2>&1 || true" not in launcher.read_text()
 
 
-@pytest.mark.skipif(not shutil.which("node"), reason="requires Node")
-def test_explicit_sdk_directory_does_not_require_pi_executable(tmp_path):
-    sdk = tmp_path / "sdk"
+def _stub_sdk(sdk: Path) -> None:
     sdk.mkdir()
     (sdk / "package.json").write_text(json.dumps({"name": "@earendil-works/pi-coding-agent", "main": "index.mjs"}))
     (sdk / "index.mjs").write_text('''
@@ -114,6 +112,36 @@ export class DefaultResourceLoader {
   getExtensions() { return {errors: [], extensions: []}; }
 }
 ''')
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="requires Node")
+@pytest.mark.parametrize("via", ["sibling", "env"])
+def test_sdk_discovery_follows_pi_upstream_not_the_shared_launcher(tmp_path, via):
+    # Packaging wires `pi` to the shared launcher; the stock SDK is reached via a
+    # sibling `pi-upstream` symlink (→ cli.js) or PI_UPSTREAM_BIN, never by
+    # walking up from the launcher (which lands in pi-shared, not the SDK).
+    sdk = tmp_path / "sdk"
+    _stub_sdk(sdk)
+    cli = sdk / "index.mjs"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "node").symlink_to(Path(shutil.which("node")).resolve())
+    (bin_dir / "python3").symlink_to(Path(shutil.which("python3")).resolve())
+    # `pi` resolves to the real shared launcher; walking up from it must fail.
+    (bin_dir / "pi").symlink_to((ROOT / "bin/pi-launch").resolve())
+    env_extra = {"PATH": str(bin_dir) + ":/usr/bin:/bin"}
+    if via == "sibling":
+        (bin_dir / "pi-upstream").symlink_to(cli)
+    else:
+        env_extra["PI_UPSTREAM_BIN"] = str(cli)
+    result = invoke(tmp_path, env_extra=env_extra)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="requires Node")
+def test_explicit_sdk_directory_does_not_require_pi_executable(tmp_path):
+    sdk = tmp_path / "sdk"
+    _stub_sdk(sdk)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "node").symlink_to(Path(shutil.which("node")).resolve())

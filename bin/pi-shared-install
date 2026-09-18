@@ -8,9 +8,13 @@
 #
 # Usage:
 #   pi-shared-install [--force] [--no-catalog] [--bootstrap-launchers] [--no-deps] [--aliases PATH]
-#                     [--models-out PATH] [--launchers-out PATH]
+#                     [--models-out PATH] [--launchers-out PATH] [--cli-out PATH]
 #                     [--pi-agent-dir PATH|''] [--provider-name NAME]
 #                     [--direct-launchers|--no-direct-launchers] [--overlay PACKAGE_DIR ...]
+#
+# --cli-out PATH (or PI_SHARED_CLI_OUT) selects JSON routing instead of zsh.
+# The legacy default remains available for older setup orchestrators. Existing
+# JSON or recognized legacy generation metadata is preserved during upgrades.
 #
 # --ls99-extras remains a deprecated alias for --direct-launchers.
 # PI_SHARED_DIRECT_LAUNCHERS=1/0 enables/disables them; when unset, preserve
@@ -49,6 +53,9 @@ PI_OMLX_AGENT_DIR="${PI_SHARED_OMLX_AGENT_DIR:-$HOME/.pi-omlx/agent}"
 ALIASES_PATH="${PI_SHARED_ALIASES:-$HOME/.pi/model-aliases.json}"
 MODELS_OUT="${PI_SHARED_MODELS_OUT:-$PI_OMLX_AGENT_DIR/models.json}"
 LAUNCHERS_OUT="${PI_SHARED_LAUNCHERS_OUT:-$HOME/.pi/generated/pi-launchers.zsh}"
+# Unified pi-launch CLI config (JSON). Opt-in: empty by default so the stock
+# install keeps rendering only the zsh launchers.
+CLI_OUT="${PI_SHARED_CLI_OUT:-}"
 # Launcher Pi profile: default = the oMLX profile; empty = Pi default profile.
 CATALOG_PI_AGENT_DIR="${PI_SHARED_CATALOG_PI_AGENT_DIR-$PI_OMLX_AGENT_DIR}"
 PROVIDER_NAME="${PI_SHARED_PROVIDER_NAME:-}"
@@ -94,6 +101,7 @@ while [ $# -gt 0 ]; do
     --aliases) shift; [ $# -gt 0 ] || die "--aliases requires a path"; ALIASES_PATH="$(expand_path "$1")" ;;
     --models-out) shift; [ $# -gt 0 ] || die "--models-out requires a path"; MODELS_OUT="$(expand_path "$1")" ;;
     --launchers-out) shift; [ $# -gt 0 ] || die "--launchers-out requires a path"; LAUNCHERS_OUT="$(expand_path "$1")" ;;
+    --cli-out) shift; [ $# -gt 0 ] || die "--cli-out requires a path"; CLI_OUT="$(expand_path "$1")" ;;
     --pi-agent-dir) shift; [ $# -gt 0 ] || die "--pi-agent-dir requires a path (or '' for the default Pi profile)"; CATALOG_PI_AGENT_DIR="$([ -n "$1" ] && expand_path "$1" || true)" ;;
     --provider-name) shift; [ $# -gt 0 ] || die "--provider-name requires a name"; PROVIDER_NAME="$1" ;;
     --direct-launchers|--ls99-extras) DIRECT_LAUNCHERS=1 ;;
@@ -117,6 +125,7 @@ esac
 
 MODELS_OUT="$(expand_path "$MODELS_OUT")"
 LAUNCHERS_OUT="$(expand_path "$LAUNCHERS_OUT")"
+[ -n "$CLI_OUT" ] && CLI_OUT="$(expand_path "$CLI_OUT")"
 PI_AGENT_DIR="$(expand_path "$PI_AGENT_DIR")"
 PI_OMLX_AGENT_DIR="$(expand_path "$PI_OMLX_AGENT_DIR")"
 ALIASES_PATH="$(expand_path "$ALIASES_PATH")"
@@ -272,6 +281,29 @@ generate_catalog() {
     warn "Skipping pi-catalog generation (--no-catalog)"
     return 0
   fi
+  if [ -n "$CLI_OUT" ]; then
+    if [ ! -e "$CLI_OUT" ]; then
+      local source
+      for source in "$LAUNCHERS_OUT" "$HOME/.pi/model-gateway/pi-launchers.zsh"; do
+        if [ -e "$source" ] || [ -L "$source" ]; then
+          PI_LAUNCHER_CONFIG="$CLI_OUT" "$ROOT_DIR/bin/pi-launch" --launcher-migrate "$source" \
+            || die "Cannot safely migrate launcher metadata; legacy file was not changed"
+          break
+        fi
+      done
+    fi
+    if [ -e "$CLI_OUT" ]; then
+      PI_LAUNCHER_CONFIG="$CLI_OUT" "$ROOT_DIR/bin/pi-launch" --launcher-refresh \
+        || die "CLI routing refresh failed; inspect generated model edits before retrying"
+      CATALOG_PI_AGENT_DIR="$(python3 - "$CLI_OUT" <<'PY'
+import json, sys
+args = json.load(open(sys.argv[1]))['generation']['args']
+print(args[args.index('--pi-agent-dir') + 1] if '--pi-agent-dir' in args else '')
+PY
+)"
+      return 0
+    fi
+  fi
   if [ ! -f "$ALIASES_PATH" ]; then
     if [ "$BOOTSTRAP_LAUNCHERS" -eq 0 ]; then
       warn "No alias catalog at $ALIASES_PATH; skipping generation (use --bootstrap-launchers for management commands)."
@@ -294,10 +326,15 @@ print(int(catalog["_existing_direct_launchers"](Path(sys.argv[2]))))
 PY
 )" || die "Cannot inspect legacy launcher preferences: $legacy"
   fi
-  mkdir -p "$(dirname "$MODELS_OUT")" "$(dirname "$LAUNCHERS_OUT")"
-  local cmd=("$ROOT_DIR/bin/pi-catalog" --aliases "$ALIASES_PATH" --models-out "$MODELS_OUT" --launchers-out "$LAUNCHERS_OUT")
+  mkdir -p "$(dirname "$MODELS_OUT")" "$(dirname "${CLI_OUT:-$LAUNCHERS_OUT}")"
+  local cmd=("$ROOT_DIR/bin/pi-catalog" --aliases "$ALIASES_PATH" --models-out "$MODELS_OUT")
+  if [ -n "$CLI_OUT" ]; then
+    cmd+=(--cli-out "$CLI_OUT")
+  else
+    cmd+=(--launchers-out "$LAUNCHERS_OUT")
+  fi
   [ "$BOOTSTRAP_LAUNCHERS" -eq 0 ] || cmd+=(--allow-empty-catalog)
-  if [ "$LAUNCHERS_OUT" = "$HOME/.pi/generated/pi-launchers.zsh" ]; then
+  if [ -z "$CLI_OUT" ] && [ "$LAUNCHERS_OUT" = "$HOME/.pi/generated/pi-launchers.zsh" ]; then
     cmd+=(--legacy-launchers "$legacy")
   fi
   if [ -n "$CATALOG_PI_AGENT_DIR" ]; then
@@ -312,7 +349,7 @@ PY
   esac
   log "Rendering Pi catalog artifacts"
   "${cmd[@]}"
-  ok "Rendered $LAUNCHERS_OUT (models.json changes depend on a configured catalog)"
+  ok "Rendered ${CLI_OUT:-$LAUNCHERS_OUT} (models.json changes depend on a configured catalog)"
 }
 
 migrate_legacy_launcher_path() {
@@ -348,15 +385,15 @@ main() {
   generate_catalog
   # Wire the gateway profile even for management-only launchers, so pi-regen
   # can add a catalog later without a runtime-patching repair at shell startup.
-  if [ "$GENERATE_CATALOG" -eq 1 ] && [ -s "$LAUNCHERS_OUT" ] && [ -n "$CATALOG_PI_AGENT_DIR" ]; then
+  if [ "$GENERATE_CATALOG" -eq 1 ] && [ -s "${CLI_OUT:-$LAUNCHERS_OUT}" ] && [ -n "$CATALOG_PI_AGENT_DIR" ]; then
     wire_settings "$CATALOG_PI_AGENT_DIR"
     for overlay in "${OVERLAY_DIRS[@]:-}"; do
       [ -z "$overlay" ] || wire_settings "$CATALOG_PI_AGENT_DIR" "$overlay"
     done
     wire_agents_md "$CATALOG_PI_AGENT_DIR"
   fi
-  migrate_legacy_launcher_path
-  if [ -s "$LAUNCHERS_OUT" ] && ! grep -qsF 'pi-launchers.zsh' "$HOME/.zshrc"; then
+  if [ -z "$CLI_OUT" ]; then migrate_legacy_launcher_path; fi
+  if [ -z "$CLI_OUT" ] && [ -s "$LAUNCHERS_OUT" ] && ! grep -qsF 'pi-launchers.zsh' "$HOME/.zshrc"; then
     printf '\nNext step: source the generated launchers so pi-list is available (add this to your shell startup file if desired):\n'
     printf '  [ -f %q ] && source %q\n' "$LAUNCHERS_OUT" "$LAUNCHERS_OUT"
   fi

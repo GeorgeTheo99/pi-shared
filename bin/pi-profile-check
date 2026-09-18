@@ -70,7 +70,30 @@ def sdk_path() -> Path:
     executable = shutil.which("pi")
     if not override and not executable:
         raise RuntimeError("Pi is not on PATH; install Pi, then rerun this check")
-    candidates = [Path(override).expanduser()] if override else list(Path(executable).resolve().parents)[:5]
+    if override:
+        candidates = [Path(override).expanduser()]
+    else:
+        # When packaging wires `pi` to the shared launcher, walking up from the
+        # launcher lands in pi-shared, not the stock SDK. The packaged runtime
+        # therefore exposes the real stock executable via PI_UPSTREAM_BIN and a
+        # sibling `pi-upstream` symlink (→ cli.js). Prefer either so SDK
+        # discovery follows the stock package, never the launcher.
+        entry = Path(executable)
+        starts = []
+        env_upstream = os.environ.get("PI_UPSTREAM_BIN")
+        if env_upstream:
+            starts.append(Path(env_upstream).expanduser())
+        sibling = entry.with_name("pi-upstream")
+        if sibling.exists() or sibling.is_symlink():
+            starts.append(sibling)
+        starts.append(entry)
+        candidates = []
+        seen = set()
+        for start in starts:
+            for parent in list(start.resolve().parents)[:5]:
+                if parent not in seen:
+                    seen.add(parent)
+                    candidates.append(parent)
     for candidate in candidates:
         manifest = candidate / "package.json"
         if not manifest.is_file():

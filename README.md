@@ -16,9 +16,11 @@ Shared pi instructions and explicitly shareable pi resources.
 - [Development tooling roadmap](docs/plans/development-tooling-roadmap.md) — proposed implementation sequence, tool contracts, acceptance criteria, and first delivery slice.
 - `bin/pi-vanilla` — recovery launcher for a vanilla Pi session when shared/local harness resources break normal startup.
 - `bin/pi-omlx-repair` — repair/wiring script for the dedicated `~/.pi-omlx/agent` Pi profile used by local oMLX/cloud model launchers.
-- `bin/pi-catalog` — render Pi CLI artifacts (`models.json` + `pi-launchers.zsh`) from a `model-aliases.json` catalog (the model-gateway public contract). The Pi-side of the model-gateway/Pi separation: the gateway owns the generic catalog, pi-catalog owns Pi-specific rendering. Install per-machine via a `~/.local/bin` symlink.
-- `bin/pi-shared-install` / `install.sh` — portable installer that symlinks shared helper scripts into `~/.local/bin`, wires this repo into `~/.pi/agent/settings.json`, and optionally renders initial Pi catalog artifacts.
+- `bin/pi-catalog` — render Pi CLI artifacts (`models.json` + `pi-launchers.zsh`, and optionally the unified `pi-launch` CLI config via `--cli-out`) from a `model-aliases.json` catalog (the model-gateway public contract). The Pi-side of the model-gateway/Pi separation: the gateway owns the generic catalog, pi-catalog owns Pi-specific rendering. Install per-machine via a `~/.local/bin` symlink.
+- `bin/pi-launch` — unified `pi` launcher. Packaging points `pi` at this script (passing ORDINARY Pi argv, no transport `--`) and supplies the absolute stock executable via `PI_UPSTREAM_BIN` plus a sibling `pi-upstream` real symlink. It routes exact aliases to the gateway, offers a `pi <alias> --default` save, a ChatGPT-subscription `openai` preset, and offline `--launcher-check|--launcher-list|--launcher-refresh|--launcher-help|--launcher-migrate` interfaces. Its data-only config lives at `~/.pi/launcher.json` (`PI_LAUNCHER_CONFIG`).
+- `bin/pi-shared-install` / `install.sh` — portable installer that symlinks shared helper scripts into `~/.local/bin`, wires this repo into `~/.pi/agent/settings.json`, and optionally renders initial Pi catalog artifacts (add `--cli-out PATH` / `PI_SHARED_CLI_OUT` to select JSON routing instead of zsh generation).
 - `lib/pi_catalog.py` — the importable module behind `bin/pi-catalog` (render functions + CLI).
+- `lib/pi_cli.py` — the importable module behind `bin/pi-launch` (config schema, offline resolution, and the shared `--cli-out` schema source of truth).
 - `tests/test_pi_catalog.py` — tests for the catalog renderer (`python3 -m pytest tests/`).
 
 ## Development tools
@@ -147,6 +149,50 @@ It reads the alias file and emits:
 - `pi-launchers.zsh` — `pi-<alias>()` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai` via `--direct-launchers`). `pi-list` groups catalog launchers into local and cloud sections from the catalog's canonical `cloud:` key namespace, with direct Pi and management commands shown separately. No `claude-*`/`codex-*` — standardize on `pi`.
 
 The model id in the launcher always matches the id in `models.json` (local = alias key / omlx_id, cloud = provider_model_id), so the two can never drift.
+
+### Unified `pi` launcher (`bin/pi-launch` + `--cli-out`)
+
+Instead of sourced zsh functions, `pi-catalog --cli-out PATH` renders a
+data-only JSON config (`version`, `routes`, `defaultProfile`, and a `generation`
+digest block) consumed by `bin/pi-launch`. The launcher and the generator share
+one schema (`lib/pi_cli.py.make_config`), so the CLI and zsh paths never drift.
+
+Contract:
+
+- Packaging invokes `pi-launch <ordinary Pi argv>` (no extra transport `--`) and
+  provides the absolute stock executable via `PI_UPSTREAM_BIN`, plus a sibling
+  `pi-upstream` real symlink to the stock `cli.js` for SDK discovery. `pi-launch`
+  execs that absolute path directly (never a PATH lookup), so a `pi` shim cannot
+  recurse and no `PI_LAUNCH_ACTIVE` guard is exported into spawned subagents.
+- `pi <exact-alias> [Pi options]` injects `--provider/--model` (and the route's
+  profile) before the user's args; an explicit `--provider`/`--model` wins and
+  suppresses the implicit profile switch. `pi <alias> --default` saves
+  `defaultProvider`/`defaultModel` into the profile's `settings.json` and exits.
+  `pi openai` is the ChatGPT-subscription preset (when direct routes are enabled)
+  and clears `OPENAI_API_KEY`/`OPENAI_BASE_URL`. Unknown positional prompts and
+  stock commands (`list`, `help`, `version`) pass through untouched, and
+  `pi -- <literal>` bypasses alias resolution entirely.
+- Config path is `~/.pi/launcher.json`, overridable with `PI_LAUNCHER_CONFIG`.
+  Explicit `PI_CODING_AGENT_DIR` and upstream `--resume/--continue/--session/--fork`
+  args are respected without an implicit default-profile switch. A saved
+  `defaultProfile` selects the profile for plain `pi` and print/JSON/RPC runs.
+- Management interfaces need no `PI_UPSTREAM_BIN` and run offline with no provider
+  or service effects: `--launcher-check` (drift check; used by tooling directly),
+  `--launcher-list`, `--launcher-refresh` (explicit offline regen with manual
+  `models.json` edit protection), `--launcher-help`, and one-time
+  `--launcher-migrate <legacy pi-launchers.zsh>` which reconstructs the config
+  from the legacy launcher's recognized JSON metadata (source, provider, profile,
+  endpoint, direct opt-out) without evaluating any shell and never clobbering an
+  existing config. Missing configuration fails checks explicitly; `--launcher-help`
+  remains available before configuration.
+
+Homebrew setup 0.1.5+ selects CLI mode automatically. The standalone shared
+installer retains its legacy default for older orchestrators during upgrades.
+Pass `--cli-out PATH` to `pi-catalog`/`pi-shared-install`, or set
+`PI_SHARED_CLI_OUT`, to render JSON routing without shell generation. Existing
+recognized legacy metadata is migrated without executing it; subsequent installer
+runs preserve routing choices and saved defaults. Use `pi-catalog` explicitly
+when deliberately changing generation inputs.
 
 Prompt caching uses Pi's default short retention. The generated launchers do not
 select provider-specific long retention or send session-affinity identifiers for

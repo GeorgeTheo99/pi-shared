@@ -1094,6 +1094,68 @@ def _existing_direct_launchers(path: Path | None) -> bool:
     )
 
 
+def _cli_generation_args(*, aliases, provider_name, direct_launchers, pi_agent_dir,
+                         shared_dir, aliases_path, models_out, omlx_status_path,
+                         gateway_url, gateway_api_key, allow_empty_catalog) -> list[str]:
+    """Build the data-only generation args embedded in the pi-launch CLI config.
+
+    These are consumed (and re-validated) by lib/pi_cli.py; they describe how the
+    config was produced so an offline `--launcher-refresh` can reproduce it
+    without re-running this renderer. They are metadata only — pi_cli never runs
+    shell or a provider from them.
+    """
+    args = ["--aliases", aliases_path, "--shared-dir", shared_dir,
+            "--provider-name", provider_name,
+            "--gateway-url", gateway_url, "--gateway-api-key", gateway_api_key]
+    # Keep the future output path even before aliases exist. The unmanaged
+    # digest prevents refresh from adopting an existing foreign models file.
+    if models_out:
+        args += ["--models-out", models_out]
+    if pi_agent_dir:
+        args += ["--pi-agent-dir", pi_agent_dir]
+    if omlx_status_path:
+        args += ["--omlx-status", omlx_status_path]
+    if allow_empty_catalog:
+        args += ["--allow-empty-catalog"]
+    args += ["--direct-launchers" if direct_launchers else "--no-direct-launchers"]
+    return args
+
+
+def _render_cli_config(aliases, *, args, provider_name, direct_launchers, pi_agent_dir,
+                       shared_dir, models_out, omlx_status_path, omlx_status, models_digest) -> str:
+    """Render the unified pi-launch config JSON consumed by lib/pi_cli.py.
+
+    Delegates schema construction/validation to pi_cli.make_config so the
+    generator and the launcher share a single source of truth for the schema.
+    """
+    import pi_cli  # local import: pi_cli imports pi_catalog helpers at call time
+
+    raw = args.aliases.read_bytes() if args.aliases.exists() else b""
+    hints = {key: {name: value for name, value in row.items()
+                   if name in {"max_context_window", "max_tokens", "thinking_default"}
+                   and isinstance(value, (bool, int, str))}
+             for key, row in (omlx_status or {}).items()
+             if key in aliases and isinstance(row, dict)}
+    gen_args = _cli_generation_args(
+        aliases=aliases, provider_name=provider_name, direct_launchers=direct_launchers,
+        pi_agent_dir=pi_agent_dir, shared_dir=shared_dir,
+        aliases_path=str(args.aliases.expanduser().resolve()),
+        models_out=models_out, omlx_status_path=omlx_status_path,
+        gateway_url=args.gateway_url, gateway_api_key=args.gateway_api_key,
+        allow_empty_catalog=args.allow_empty_catalog,
+    )
+    default_profile = None
+    if args.cli_out.exists():
+        previous = pi_cli.load_config(args.cli_out)
+        default_profile = previous.get("defaultProfile")
+        if not aliases and any(route["gateway"] for route in previous["routes"].values()):
+            raise ValueError("refusing to replace configured CLI routes with an empty catalog")
+    config = pi_cli.make_config(aliases, gen_args, hints, models_digest, hashlib.sha256(raw).hexdigest(), default_profile)
+    # Use pi_cli's dumper so the on-disk bytes match what pi_cli itself writes
+    # on --launcher-refresh (keeps `pi-catalog --check --cli-out` stable).
+    return pi_cli.dump(config)
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None and sys.argv[1:2] == ["--args-stdin"]:
         raw = sys.stdin.read(524289)
@@ -1111,6 +1173,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--aliases", type=Path, required=True, help="path to model-aliases.json (gateway catalog contract)")
     parser.add_argument("--models-out", type=Path, default=None, help="write Pi models.json here")
     parser.add_argument("--launchers-out", type=Path, default=None, help="write pi-launchers.zsh here")
+    parser.add_argument("--cli-out", type=Path, default=None, help="write the unified pi-launch CLI config (JSON) here; data-only routes/status digest consumed by lib/pi_cli.py")
     parser.add_argument("--provider-name", help="Pi provider name (default: preserve existing models output, or model-gateway for new configs)")
     parser.add_argument("--gateway-url", default="http://localhost:9111", help="endpoint Pi providers point at")
     parser.add_argument("--gateway-api-key", default="cloud", help="apiKey for the Pi provider")
@@ -1136,8 +1199,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.aliases.exists() and not args.allow_empty_catalog:
         sys.exit(f"pi-catalog: aliases file not found: {args.aliases}")
-    if not args.models_out and not args.launchers_out:
-        sys.exit("pi-catalog: nothing to do (pass --models-out and/or --launchers-out)")
+    if not args.models_out and not args.launchers_out and not args.cli_out:
+        sys.exit("pi-catalog: nothing to do (pass --models-out and/or --launchers-out and/or --cli-out)")
 
     try:
         aliases = json.loads(args.aliases.read_text()) if args.aliases.exists() else {}
@@ -1146,8 +1209,8 @@ def main(argv: list[str] | None = None) -> int:
         if not aliases:
             if not args.allow_empty_catalog:
                 raise ValueError("refusing to render an empty catalog (alias file has no entries)")
-            if not args.launchers_out:
-                raise ValueError("unconfigured catalogs require --launchers-out; models.json is never changed")
+            if not args.launchers_out and not args.cli_out:
+                raise ValueError("unconfigured catalogs require --launchers-out and/or --cli-out; models.json is never changed")
             # The installer may replace a legacy file with a canonical symlink
             # after rendering. Protect that migration source as well as output.
             for existing in (args.launchers_out, args.legacy_launchers):
@@ -1157,6 +1220,9 @@ def main(argv: list[str] | None = None) -> int:
                         raise ValueError(f"refusing to replace existing configured/custom launchers with an unconfigured catalog: {existing}")
         provider_name = args.provider_name if args.provider_name is not None else _existing_provider_name(args.models_out)
         direct_launchers = args.direct_launchers if args.direct_launchers is not None else _existing_direct_launchers(args.launchers_out)
+        if args.direct_launchers is None and args.cli_out and args.cli_out.exists():
+            import pi_cli
+            direct_launchers = "--direct-launchers" in pi_cli.load_config(args.cli_out)["generation"]["args"]
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
 
@@ -1213,6 +1279,19 @@ def main(argv: list[str] | None = None) -> int:
         launchers += "# pi-catalog-status: " + json.dumps(hints, sort_keys=True) + "\n"
         launchers += "# pi-catalog-models-sha256: " + models_digest + "\n"
         renders.append((args.launchers_out, launchers, "pi-launchers.zsh"))
+    if args.cli_out:
+        renders.append((args.cli_out, _render_cli_config(
+            aliases,
+            args=args,
+            provider_name=provider_name,
+            direct_launchers=direct_launchers,
+            pi_agent_dir=pi_agent_dir,
+            shared_dir=shared_dir,
+            models_out=str(args.models_out.expanduser().resolve()) if args.models_out else None,
+            omlx_status_path=str(omlx_status_path) if omlx_status_path else None,
+            omlx_status=omlx_status,
+            models_digest=models_digest,
+        ), "pi launcher config"))
 
     if args.check:
         ok = all(_check_one(path, content, label) for path, content, label in renders)
