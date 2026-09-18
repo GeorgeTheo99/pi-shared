@@ -53,6 +53,7 @@ export interface PeerPresence {
 	capabilities: ["messages"];
 	protocolVersion?: 2;
 	requestResponseVersion?: 1;
+	ephemeral?: true;
 	workspaceChanges?: string[];
 	workspaceChangesOmitted?: number;
 }
@@ -418,6 +419,8 @@ export function normalizePresence(value: unknown): PeerPresence | undefined {
 		value.capabilities[0] !== "messages" ||
 		(value.protocolVersion !== undefined && value.protocolVersion !== 2) ||
 		(value.requestResponseVersion !== undefined && value.requestResponseVersion !== 1) ||
+		(value.ephemeral !== undefined && value.ephemeral !== true) ||
+		(value.ephemeral === true && value.requestResponseVersion !== undefined) ||
 		(value.workspaceChangesOmitted !== undefined &&
 			(!Number.isInteger(value.workspaceChangesOmitted) || Number(value.workspaceChangesOmitted) < 0))
 	) {
@@ -441,6 +444,7 @@ export function normalizePresence(value: unknown): PeerPresence | undefined {
 		capabilities: ["messages"],
 		protocolVersion: value.protocolVersion === 2 ? 2 : undefined,
 		requestResponseVersion: value.requestResponseVersion === 1 ? 1 : undefined,
+		ephemeral: value.ephemeral === true ? true : undefined,
 		workspaceChanges: normalizeWorkspaceChanges(value.workspaceChanges),
 		workspaceChangesOmitted:
 			typeof value.workspaceChangesOmitted === "number" ? value.workspaceChangesOmitted : undefined,
@@ -634,15 +638,20 @@ export async function markRequestReplyQueued(binding: ResponseRequestBinding): P
 	}, { timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 });
 }
 
-function requestResponseStatus(record: PeerMessageStatusRecord, now: number): PeerMessageStatusView["responseStatus"] {
-	if (record.responseAnsweredAt !== undefined) return "answered";
-	const binding: ResponseRequestBinding = { messageId: record.messageId, senderSessionId: record.senderSessionId,
-		recipientSessionId: record.targetSessionId!, expiresAt: record.expiresAt };
+/** Read-only recipient-side outcome; never claims a reply or trusts delivery rank. */
+export function readResponseRequestStatus(binding: ResponseRequestBinding, now = Date.now()): NonNullable<PeerMessageStatusView["responseStatus"]> {
+	if (!validResponseBinding(binding)) throw new Error("Invalid response request binding");
 	const request = boundResponseRequest(readResponseLedger(binding.recipientSessionId), binding);
 	if (request?.replyQueued) return "answered";
 	if (binding.expiresAt <= now) return "expired";
 	if (request?.replyAttempted) return "unanswered";
 	return "pending";
+}
+
+function requestResponseStatus(record: PeerMessageStatusRecord, now: number): PeerMessageStatusView["responseStatus"] {
+	if (record.responseAnsweredAt !== undefined) return "answered";
+	return readResponseRequestStatus({ messageId: record.messageId, senderSessionId: record.senderSessionId,
+		recipientSessionId: record.targetSessionId!, expiresAt: record.expiresAt }, now);
 }
 
 const MESSAGE_STATUS_RANK: Record<PersistedMessageStatus, number> = {

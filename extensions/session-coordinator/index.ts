@@ -21,6 +21,7 @@ import {
 	pruneSessionReceipts,
 	readInbox,
 	readOutgoingMessageStatuses,
+	readResponseRequestStatus,
 	readSessionReceipts,
 	removeInboxItem,
 	removeOutgoingMessageStatus,
@@ -41,6 +42,7 @@ const STATUS_STATE_TYPE = "pi-session-coordinator-status";
 const INBOUND_MESSAGE_TYPE = "pi-peer-message";
 const OUTBOUND_ENTRY_TYPE = "pi-peer-message-sent";
 const RESPONSE_WIDGET = "pi-peer-responses";
+const INCOMING_RESPONSE_WIDGET = "pi-peer-incoming-responses";
 const SEND_RATE_LIMIT = 5;
 const SEND_RATE_WINDOW_MS = 60_000;
 const MAX_RENDERED_PEERS = 25;
@@ -60,6 +62,7 @@ type PeerSummary = Pick<
 	| "sessionName"
 	| "sessionId"
 	| "requestResponseVersion"
+	| "ephemeral"
 	| "activity"
 	| "status"
 	| "branch"
@@ -386,6 +389,7 @@ export function summarizePeers(peers: PeerPresence[], currentRoomId?: string): {
 			runtimeId: peer.runtimeId,
 			sessionId: peer.sessionId,
 			requestResponseVersion: peer.requestResponseVersion,
+			ephemeral: peer.ephemeral,
 			sessionName: peer.sessionName ? safeMetadata(peer.sessionName, 120, "") || undefined : undefined,
 			activity: peer.activity,
 			status: peer.status ? safeMetadata(peer.status, 200, "") || undefined : undefined,
@@ -443,6 +447,7 @@ export function formatPeers(
 				? `${peer.sessionName} (${peer.runtimeId.slice(0, 12)})`
 				: peer.runtimeId.slice(0, 12);
 			lines.push(`- ${identity} [${peer.activity}] — ${peer.status ?? "No status"}`);
+			if (peer.ephemeral) lines.push("  short-lived / non-persistent peer — response requests unavailable; coordinate with its parent instead");
 			const cwd = peer.cwd === peer.worktreeRoot ? "" : ` cwd=${peer.cwd}`;
 			lines.push(
 				`  branch=${peer.branch ?? "n/a"} worktree=${peer.worktreeRoot}${cwd} heartbeat=${formatAge(peer.heartbeatAt)}`,
@@ -563,6 +568,7 @@ function textResult(text: string, details: PeerToolDetails = {}) {
 }
 
 export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
+	const isSubagent = Number(process.env.PI_SUBAGENT_DEPTH ?? 0) > 0;
 	pi.registerMessageRenderer(INBOUND_MESSAGE_TYPE, (message, { expanded, outputPad }, theme) => {
 		const display = inboundPeerDisplay(message);
 		const title = display.inReplyTo ? "PEER REPLY RECEIVED" : "PEER MESSAGE RECEIVED";
@@ -624,11 +630,14 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 	let pendingMessages = new Map<string, InboxItem>();
 	let receivedMessages = new Map<string, ReceivedMessage>();
 	let responseWidgetText = "";
+	let incomingResponseWidgetText = "";
+	let notifiedResponseRequests = new Set<string>();
 	const recentSends: number[] = [];
 
 	function currentPresence(ctx: ExtensionContext): PeerPresence {
 		if (!scope) throw new Error("Session coordinator has not started.");
 		const now = Date.now();
+		const ephemeral = isSubagent || !ctx.sessionManager.getSessionFile();
 		return {
 			version: 1,
 			roomId: scope.roomId,
@@ -646,7 +655,8 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 			leaseExpiresAt: now + config.leaseMs,
 			capabilities: ["messages"],
 			protocolVersion: 2,
-			requestResponseVersion: 1,
+			requestResponseVersion: ephemeral ? undefined : 1,
+			ephemeral: ephemeral ? true : undefined,
 			workspaceChanges: scope.workspaceChanges,
 			workspaceChangesOmitted: scope.workspaceChangesOmitted,
 		};
@@ -699,6 +709,47 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 		if (text === responseWidgetText) return;
 		responseWidgetText = text;
 		ctx.ui.setWidget(RESPONSE_WIDGET, text ? text.split("\n") : undefined);
+	}
+
+	function refreshIncomingResponseWidget(ctx: ExtensionContext): void {
+		if (ctx.mode !== "tui") return;
+		try {
+			const pending: string[] = [];
+			const rows: string[] = [];
+			for (const [id, received] of receivedMessages) {
+				if (!received.requestResponse || received.hops !== 0 ||
+					received.recipientSessionId !== ctx.sessionManager.getSessionId() ||
+					!received.expiresAt || received.expiresAt <= Date.now()) continue;
+				const status = readResponseRequestStatus(responseBinding(id, received));
+				if (status === "answered" || status === "expired") continue;
+				if (status === "pending") pending.push(id);
+				rows.push(`${id.slice(0, 8)} · ${status === "pending"
+					? "response requested — waiting for your next turn; no automatic wake"
+					: "reply attempt failed or uncertain; automatic retry unavailable"}`);
+			}
+			const visible = rows.slice(0, 5);
+			if (rows.length > 5) visible.push(`${rows.length - 5} more incoming requests`);
+			const text = visible.length ? ["Incoming peer responses", ...visible].join("\n") : "";
+			if (text !== incomingResponseWidgetText) {
+				ctx.ui.setWidget(INCOMING_RESPONSE_WIDGET, text ? text.split("\n") : undefined);
+				incomingResponseWidgetText = text;
+			}
+			if (ctx.isIdle() && pending.some((id) => !notifiedResponseRequests.has(id))) {
+				notifiedResponseRequests = new Set(pending);
+				try {
+					ctx.ui.notify("Peer response requested — waiting for your next turn. No reply is sent automatically.", "info");
+				} catch { /* A failed toast must not cause repeated alerts or hide valid status. */ }
+			} else {
+				notifiedResponseRequests = new Set(pending.filter((id) => notifiedResponseRequests.has(id)));
+			}
+		} catch {
+			// UI/ledger failures must not block delivery or manufacture an answer.
+			try {
+				const text = "Incoming peer responses — status unavailable.";
+				if (incomingResponseWidgetText !== text) ctx.ui.setWidget(INCOMING_RESPONSE_WIDGET, [text]);
+				incomingResponseWidgetText = text;
+			} catch { /* Best-effort UI only. */ }
+		}
 	}
 
 	function processInbox(): Promise<void> {
@@ -785,7 +836,10 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 			}
 		})().finally(() => {
 			inboxWork = undefined;
-			if (!stopped) refreshResponseWidget(activeCtx);
+			if (!stopped) {
+				refreshIncomingResponseWidget(activeCtx);
+				refreshResponseWidget(activeCtx);
+			}
 		});
 		return inboxWork;
 	}
@@ -841,8 +895,14 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 		heartbeatTimer = undefined;
 		inboxTimer = undefined;
 		await Promise.all([writeTail.catch(() => undefined), inboxWork?.catch(() => undefined)]);
-		if (currentCtx?.hasUI) currentCtx.ui.setWidget(RESPONSE_WIDGET, undefined);
+		if (currentCtx?.hasUI) {
+			for (const widget of [RESPONSE_WIDGET, INCOMING_RESPONSE_WIDGET]) {
+				try { currentCtx.ui.setWidget(widget, undefined); } catch { /* Never skip inbox cleanup for a UI failure. */ }
+			}
+		}
 		responseWidgetText = "";
+		incomingResponseWidgetText = "";
+		notifiedResponseRequests.clear();
 		if (scope && currentCtx) {
 			await removeRuntimeState(scope.roomId, runtimeId, (envelope) => persistReceipt(currentCtx!, envelope)).catch(
 				() => undefined,
@@ -1031,7 +1091,9 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 				throw new Error("The target peer does not advertise acknowledgment-receipt support.");
 			}
 			if (params.requestResponse && target.requestResponseVersion !== 1) {
-				throw new Error("The target peer does not support response requests. Reload both sessions or send a notification instead.");
+				throw new Error(target.ephemeral
+					? "The target peer is short-lived/non-persistent and cannot accept response requests. Coordinate with its parent session instead."
+					: "The target peer does not support response requests. Reload both sessions or send a notification instead.");
 			}
 			let requestedReply: ResponseRequestBinding | undefined;
 			let hops: 0 | 1 = 0;

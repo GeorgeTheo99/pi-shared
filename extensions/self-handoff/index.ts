@@ -45,6 +45,7 @@ import {
 	WORK_PLAN_STATE_TYPE,
 	withSelfHandoffLock,
 } from "./state.ts";
+import { inspectPeerRequests, peerRequestWarning } from "./peer-requests.ts";
 
 const MAX_FOCUS_CHARS = 4_000;
 const MAX_KICKOFF_CHARS = 100_000;
@@ -1376,9 +1377,12 @@ export default function selfHandoffExtension(pi: ExtensionAPI) {
 					return;
 				}
 
+				const peerSnapshot = inspectPeerRequests(sessionId, () => ctx.sessionManager.getEntries());
+				const peerWarning = peerRequestWarning(peerSnapshot);
+				if (peerWarning) notify(ctx, peerWarning, "warning");
 				const reviewed = await ctx.ui.editor(
 					"Review self-handoff continuation (submit to proceed)",
-					generated.prompt,
+					peerWarning ? `${peerWarning}\n\n${generated.prompt}` : generated.prompt,
 				);
 				if (reviewed === undefined) {
 					notify(ctx, "Self-handoff cancelled.", "info");
@@ -1414,6 +1418,13 @@ export default function selfHandoffExtension(pi: ExtensionAPI) {
 					return;
 				}
 
+				// Do not silently change the reviewed checkpoint if peer state changed.
+				const refreshedPeers = inspectPeerRequests(sessionId, () => ctx.sessionManager.getEntries());
+				if (JSON.stringify(refreshedPeers) !== JSON.stringify(peerSnapshot)) {
+					notify(ctx, "Peer requests changed during review. No replacement occurred; run /self-handoff again to review the current warning.", "warning");
+					return;
+				}
+
 				const parentSession = originSessionFile;
 				request = {
 					version: 1,
@@ -1426,7 +1437,7 @@ export default function selfHandoffExtension(pi: ExtensionAPI) {
 					goalId: transfer.goal?.id,
 					workPlanTransferred: transfer.workPlan !== undefined,
 				};
-				const kickoff = buildKickoffPrompt(reviewedPrompt, request);
+				const kickoff = buildKickoffPrompt(reviewedPrompt, request, peerWarning);
 				if (kickoff.length > MAX_KICKOFF_CHARS) {
 					notify(
 						ctx,
@@ -1651,6 +1662,9 @@ export default function selfHandoffExtension(pi: ExtensionAPI) {
 								"error",
 							);
 							return;
+						}
+						if (peerWarning) {
+							try { replacementCtx.ui.notify(peerWarning, "warning"); } catch { /* The fixed kickoff warning remains available if the UI fails. */ }
 						}
 						try {
 							await replacementCtx.sendUserMessage(kickoff);

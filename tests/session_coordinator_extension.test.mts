@@ -13,6 +13,8 @@ process.env.PI_SESSION_COORDINATOR_DIR = stateDir;
 process.env.PI_SESSION_COORDINATOR_HEARTBEAT_MS = "100";
 process.env.PI_SESSION_COORDINATOR_POLL_MS = "50";
 process.env.PI_SESSION_COORDINATOR_LEASE_MS = "1000";
+const originalDepth = process.env.PI_SUBAGENT_DEPTH;
+process.env.PI_SUBAGENT_DEPTH = "0";
 
 const state = await import("../extensions/session-coordinator/state.ts");
 const {
@@ -25,6 +27,8 @@ const {
 	summarizePeers,
 } = await import("../extensions/session-coordinator/index.ts");
 after(() => {
+	if (originalDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+	else process.env.PI_SUBAGENT_DEPTH = originalDepth;
 	fs.rmSync(stateDir, { recursive: true, force: true });
 	fs.rmSync(workspace, { recursive: true, force: true });
 	fs.rmSync(otherWorkspace, { recursive: true, force: true });
@@ -47,6 +51,8 @@ function createHarness(
 		persistMessage?: (entry: any) => void;
 		onSendMessage?: () => void;
 		failAppendEntry?: boolean;
+		ephemeral?: boolean;
+		mode?: "tui" | "rpc";
 	} = {},
 ) {
 	const handlers = new Map<string, Array<(event: any, ctx: any) => Promise<void> | void>>();
@@ -63,12 +69,13 @@ function createHarness(
 	let idle = options.idle ?? true;
 	const ctx = {
 		cwd: workspace,
+		mode: options.mode ?? "tui",
 		hasUI: true,
 		isIdle: () => idle,
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getSessionName: () => "Coordinator test",
-			getSessionFile: () => options.sessionFile,
+			getSessionFile: () => options.ephemeral ? undefined : options.sessionFile ?? path.join(workspace, `${sessionId}.jsonl`),
 			getEntries: () => entries,
 			getBranch: () => entries,
 		},
@@ -254,6 +261,158 @@ test("a response widget failure does not misreport a successfully queued request
 		assert.match(result.content[0].text, /status widget could not be updated; the message is still queued/);
 		assert.equal(result.details.message.requestResponse, true);
 		assert.equal(state.readOutgoingMessageStatuses(pair.senderPeer.sessionId, result.details.message.id)[0].responseStatus, "pending");
+	} finally { await pair.close(); }
+});
+
+for (const kind of ["non-persistent", "subagent"] as const) {
+	test(`${kind} peers cannot advertise or receive response requests, but remain visible`, async () => {
+		const sender = createHarness();
+		if (kind === "subagent") process.env.PI_SUBAGENT_DEPTH = "1";
+		const recipient = createHarness({ ephemeral: kind === "non-persistent" });
+		process.env.PI_SUBAGENT_DEPTH = "0";
+		await emit(sender, "session_start");
+		await emit(recipient, "session_start");
+		try {
+			const peer = state.listAllActivePeers().find((item) => item.sessionId === recipient.ctx.sessionManager.getSessionId())!;
+			assert.equal(peer.ephemeral, true);
+			assert.equal(peer.requestResponseVersion, undefined);
+			assert.match(formatPeers([peer]), /short-lived.*response requests unavailable/);
+			assert.equal(summarizePeers([peer]).peers[0].ephemeral, true);
+			await assert.rejects(sender.tools.get("peer_send").execute("request", {
+				target: peer.runtimeId, message: "Please reply", requestResponse: true,
+			}, undefined, undefined, sender.ctx), /short-lived\/non-persistent/);
+			assert.equal(state.readOutgoingMessageStatuses(sender.ctx.sessionManager.getSessionId()).length, 0);
+			const notification = await sender.tools.get("peer_send").execute("notification", {
+				target: peer.runtimeId, message: "FYI only",
+			}, undefined, undefined, sender.ctx);
+			assert.equal(notification.details.message.requestResponse, undefined);
+		} finally {
+			await emit(recipient, "session_shutdown");
+			await emit(sender, "session_shutdown");
+		}
+	});
+}
+
+test("incoming requests notify once, survive reload, and clear after a confirmed reply", async () => {
+	const pair = await responsePair();
+	let successor: ReturnType<typeof createHarness> | undefined;
+	try {
+		const result = await pair.request();
+		await waitUntil(() => state.readOutgoingMessageStatuses(pair.senderPeer.sessionId, result.details.message.id)[0]?.effectiveStatus === "delivered");
+		assert.equal(pair.recipient.notifications.length, 0, "busy recipients are not prompted");
+		pair.recipient.setIdle(true);
+		await emit(pair.recipient, "agent_settled");
+		assert.match(pair.recipient.widgets.get("pi-peer-incoming-responses")!.join("\n"), /waiting for your next turn/);
+		assert.equal(pair.recipient.notifications.length, 1);
+		await emit(pair.recipient, "agent_settled");
+		assert.equal(pair.recipient.notifications.length, 1, "polling must not repeat the toast");
+		await emit(pair.recipient, "session_shutdown");
+		successor = createHarness({ sessionId: pair.recipientPeer.sessionId, entries: structuredClone(pair.recipient.entries) });
+		await emit(successor, "session_start");
+		assert.match(successor.widgets.get("pi-peer-incoming-responses")!.join("\n"), /waiting for your next turn/);
+		await successor.tools.get("peer_send").execute("reply", {
+			target: pair.senderPeer.runtimeId, inReplyTo: result.details.message.id, message: "No overlap",
+		}, undefined, undefined, successor.ctx);
+		await emit(successor, "agent_settled");
+		assert.equal(successor.widgets.has("pi-peer-incoming-responses"), false);
+		assert.equal(responseWakes(successor).length, 0);
+	} finally {
+		if (successor) await emit(successor, "session_shutdown");
+		await pair.close();
+	}
+});
+
+test("incoming reply UI excludes forks, expired requests and notifications; failed claims are not pending", async () => {
+	const pair = await responsePair();
+	let fork: ReturnType<typeof createHarness> | undefined;
+	try {
+		const result = await pair.request();
+		pair.recipient.setIdle(true);
+		await emit(pair.recipient, "agent_settled");
+		const entries = structuredClone(pair.recipient.entries);
+		fork = createHarness({ entries });
+		await emit(fork, "session_start");
+		assert.equal(fork.widgets.has("pi-peer-incoming-responses"), false);
+		assert.equal(fork.notifications.length, 0);
+		await state.claimRequestReply({ messageId: result.details.message.id, senderSessionId: pair.senderPeer.sessionId,
+			recipientSessionId: pair.recipientPeer.sessionId, expiresAt: result.details.message.expiresAt });
+		await emit(pair.recipient, "agent_settled");
+		assert.match(pair.recipient.widgets.get("pi-peer-incoming-responses")!.join("\n"), /failed or uncertain/);
+		assert.doesNotMatch(pair.recipient.widgets.get("pi-peer-incoming-responses")!.join("\n"), /waiting for your next turn/);
+		await emit(fork, "session_shutdown");
+		for (const entry of entries) if (entry.details?.requestResponse) {
+			entry.details.recipientSessionId = "expired-ui-session";
+			entry.details.expiresAt = Date.now() - 1;
+		}
+		fork = createHarness({ entries, sessionId: "expired-ui-session" });
+		await emit(fork, "session_start");
+		assert.equal(fork.widgets.has("pi-peer-incoming-responses"), false);
+		assert.equal(fork.notifications.length, 0);
+	} finally {
+		if (fork) await emit(fork, "session_shutdown");
+		await pair.close();
+	}
+});
+
+test("incoming UI failures do not block delivery and RPC sessions receive no TUI prompts", async () => {
+	for (const mode of ["tui", "rpc"] as const) {
+		const pair = await responsePair();
+		try {
+			pair.recipient.ctx.mode = mode;
+			const setWidget = pair.recipient.ctx.ui.setWidget;
+			pair.recipient.ctx.ui.setWidget = (key, lines) => {
+				if (key === "pi-peer-incoming-responses") throw new Error("UI unavailable");
+				setWidget(key, lines);
+			};
+			const result = await pair.request();
+			pair.recipient.setIdle(true);
+			await emit(pair.recipient, "agent_settled");
+			assert.equal(state.readOutgoingMessageStatuses(pair.senderPeer.sessionId, result.details.message.id)[0].effectiveStatus, "surfaced");
+			assert.equal(pair.recipient.notifications.length, 0);
+			assert.equal(responseWakes(pair.recipient).length, 0);
+		} finally { await pair.close(); }
+	}
+});
+
+test("a throwing incoming notification cannot prevent durable receipt cleanup", async () => {
+	const sender = createHarness();
+	const sessionId = crypto.randomUUID();
+	const sessionFile = path.join(workspace, `${sessionId}.jsonl`);
+	fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: sessionId })}\n`);
+	const recipient = createHarness({ sessionId, sessionFile, idle: false });
+	await emit(sender, "session_start");
+	await emit(recipient, "session_start");
+	try {
+		const peer = state.listAllActivePeers().find((item) => item.sessionId === sessionId)!;
+		let notificationAttempts = 0;
+		recipient.ctx.ui.notify = () => { notificationAttempts++; throw new Error("notification unavailable"); };
+		const result = await sender.tools.get("peer_send").execute("request", {
+			target: peer.runtimeId, message: "Please coordinate", requestResponse: true,
+		}, undefined, undefined, sender.ctx);
+		recipient.setIdle(true);
+		await emit(recipient, "agent_settled");
+		assert.equal(state.readSessionReceipts(sessionId).length, 0);
+		await emit(recipient, "agent_settled");
+		assert.equal(notificationAttempts, 1);
+		assert.match(recipient.widgets.get("pi-peer-incoming-responses")!.join("\n"), /waiting for your next turn/);
+		assert.equal(state.readOutgoingMessageStatuses(sender.ctx.sessionManager.getSessionId(), result.details.message.id)[0].effectiveStatus, "surfaced");
+		assert.equal(responseWakes(recipient).length, 0);
+	} finally {
+		await emit(recipient, "session_shutdown");
+		await emit(sender, "session_shutdown");
+		fs.rmSync(sessionFile, { force: true });
+	}
+});
+
+test("throwing shutdown widget cleanup still withdraws presence and drains the busy inbox", async () => {
+	const pair = await responsePair();
+	try {
+		const result = await pair.request();
+		pair.recipient.ctx.ui.setWidget = () => { throw new Error("UI teardown failed"); };
+		await emit(pair.recipient, "session_shutdown");
+		assert.equal(state.listAllActivePeers().some((peer) => peer.runtimeId === pair.recipientPeer.runtimeId), false);
+		assert.equal(state.readInbox(pair.recipientPeer.roomId, pair.recipientPeer.runtimeId).length, 0);
+		assert.ok(state.readSessionReceipts(pair.recipientPeer.sessionId).some((receipt) => receipt.envelope.id === result.details.message.id));
 	} finally { await pair.close(); }
 });
 

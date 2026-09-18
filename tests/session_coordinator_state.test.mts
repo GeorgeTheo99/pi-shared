@@ -687,6 +687,32 @@ test("response requests preserve protocol-v2 fields and reject invalid combinati
 	}
 });
 
+test("ephemeral presence preserves its label and rejects contradictory reply support", async () => {
+	const { target, envelope } = responseFixture();
+	const ephemeral = { ...target, ephemeral: true as const, requestResponseVersion: undefined };
+	assert.equal(coordinator.normalizePresence(ephemeral)?.ephemeral, true);
+	assert.equal(coordinator.normalizePresence({ ...target, ephemeral: true }), undefined);
+	assert.equal(coordinator.normalizePresence({ ...ephemeral, ephemeral: "true" }), undefined);
+	assert.equal(coordinator.normalizePresence({ ...ephemeral, requestResponseVersion: 0 }), undefined);
+	await coordinator.writePresence(ephemeral);
+	await assert.rejects(coordinator.enqueueMessage(envelope), /does not support response requests/);
+});
+
+test("recipient response status reads are exact-bound, read-only and reflect consumed attempts", async () => {
+	const { binding, ledgerPath } = responseFixture();
+	assert.equal(coordinator.readResponseRequestStatus(binding), "pending");
+	assert.equal(fs.existsSync(ledgerPath), false, "reading must not claim or create ledger state");
+	assert.equal(coordinator.readResponseRequestStatus(binding, binding.expiresAt), "expired");
+	assert.throws(() => coordinator.readResponseRequestStatus({ ...binding, messageId: "invalid" }), /Invalid/);
+	await coordinator.claimRequestReply(binding);
+	assert.equal(coordinator.readResponseRequestStatus(binding), "unanswered");
+	assert.throws(() => coordinator.readResponseRequestStatus({ ...binding, senderSessionId: "other" }), /binding mismatch/);
+	await coordinator.markRequestReplyQueued(binding);
+	assert.equal(coordinator.readResponseRequestStatus(binding), "answered");
+	fs.writeFileSync(ledgerPath, "{");
+	assert.throws(() => coordinator.readResponseRequestStatus(binding), /corrupt/);
+});
+
 test("response enqueue rechecks support and exact target under the inbox lock", async () => {
 	const { target, envelope } = responseFixture();
 	await coordinator.writePresence({ ...target, requestResponseVersion: undefined });

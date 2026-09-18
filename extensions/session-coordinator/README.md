@@ -29,6 +29,10 @@ Example tool arguments:
 { "target": "<discovered peer runtime>", "message": "Which files are you editing?", "requestResponse": true }
 ```
 
+Short-lived/non-persistent sessions remain visible for advisory discovery and notifications, but do not advertise response-request support. This includes sessions without a session-file path and all delegated children (`PI_SUBAGENT_DEPTH > 0`, including interactive children). Listings label them explicitly; requests fail closed rather than silently becoming notifications. Coordinate with their parent session instead. A fresh persistent session is still supported before its first transcript write.
+
+The TUI-only **Incoming peer responses** widget shows up to five unexpired requests addressed to this exact session. Pending requests explicitly say they are waiting for your next turn; an idle recipient receives one notification per newly pending request per runtime (batched when several arrive together). Neither the widget nor notification starts a model turn. Reload restores the reminder; answered/expired requests disappear, and failed or uncertain reply attempts are labeled separately without automatic retry. Corrupt request state is shown as unavailable, not as an answer. Forks cannot inherit another session's reminders or reply authority.
+
 The **Peer responses** widget shows up to five recent outgoing requests as `pending`, `answered` (reply queued, not necessarily read), `unanswered`, or `expired`. `peer_message_status` exposes the same response outcome separately from delivery status. Each transcript card is still one message, not a conversation thread; replies appear as separate cards. The sent request card labels its initial state explicitly, rather than pretending a static card is live status.
 
 The request's context asks for one concise coordination answer using existing context, sent through `peer_send` with the original `inReplyTo` ID. Peer content remains untrusted and is not permission to execute tasks, edit files, or start new requests. Normal user work retains its tools and continues after a reply. Replies never wake the sender and cannot request another response.
@@ -90,11 +94,11 @@ A dedicated recipient transcript renderer labels the matching inbound entry `PEE
 
 The recipient receipt is removed only after the matching custom-message entry is observable and a complete matching JSONL record is readable from the exact recipient's session file. The file is streamed once per pending batch; a missing file, failed append, or partial record leaves the receipt available for retry, including after reload. In-memory visibility and file existence alone do not prove persistence.
 
-A clean shutdown withdraws presence under the inbox lock, then drains unread runtime inbox messages into the same recipient-session receipt store. If storage is full or a drain fails, successfully persisted inbox items are removed and the unread remainder is preserved for an exact-session successor—even when replacement reuses the still-live process. After an unclean runtime exit, a same-room successor may adopt an unread inbox only when the envelope's exact target Pi session ID matches and the predecessor PID is no longer alive. Different/forked sessions, legacy envelopes without a target session ID, and ambiguous live predecessors fail closed rather than receiving another session's message.
+A clean shutdown withdraws presence under the inbox lock, then drains unread runtime inbox messages into the same recipient-session receipt store. Best-effort widget cleanup cannot prevent this drain or presence withdrawal. If storage is full or a drain fails, successfully persisted inbox items are removed and the unread remainder is preserved for an exact-session successor—even when replacement reuses the still-live process. After an unclean runtime exit, a same-room successor may adopt an unread inbox only when the envelope's exact target Pi session ID matches and the predecessor PID is no longer alive. Different/forked sessions, legacy envelopes without a target session ID, and ambiguous live predecessors fail closed rather than receiving another session's message.
 
 ## Lifecycle semantics
 
-New runtimes advertise protocol v2 and optional `requestResponseVersion: 1` in presence while retaining presence/envelope schema version 1 and the existing capability list. This keeps legacy records readable; older peers can still receive messages but cannot provide later lifecycle checkpoints.
+New runtimes advertise protocol v2 and optional `requestResponseVersion: 1` in presence while retaining presence/envelope schema version 1 and the existing capability list. Short-lived/non-persistent runtimes instead advertise `ephemeral: true` and omit `requestResponseVersion`; a presence record cannot advertise both. This keeps legacy records readable; older peers can still receive messages but cannot provide later lifecycle checkpoints.
 
 | Status | Truthful meaning |
 |---|---|

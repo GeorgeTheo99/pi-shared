@@ -29,13 +29,14 @@ function completion(model: any, content: any[]) {
 	return stream;
 }
 
-async function fixture(run: (f: { makeSession: (before?: ExtensionFactory[]) => Promise<any>; stats: { work: number } }) => Promise<void>) {
+async function fixture(run: (f: { makeSession: (before?: ExtensionFactory[], ephemeral?: boolean) => Promise<any>; stats: { work: number } }) => Promise<void>) {
 	const dir = mkdtempSync(join(tmpdir(), "pi-coordinator-sdk-"));
-	const variables = ["PI_SESSION_COORDINATOR_DIR", "PI_SESSION_COORDINATOR_POLL_MS", "PI_SESSION_COORDINATOR_HEARTBEAT_MS"];
+	const variables = ["PI_SESSION_COORDINATOR_DIR", "PI_SESSION_COORDINATOR_POLL_MS", "PI_SESSION_COORDINATOR_HEARTBEAT_MS", "PI_SUBAGENT_DEPTH"];
 	const previous = variables.map((key) => process.env[key]);
 	process.env.PI_SESSION_COORDINATOR_DIR = join(dir, "state");
 	process.env.PI_SESSION_COORDINATOR_POLL_MS = "50";
 	process.env.PI_SESSION_COORDINATOR_HEARTBEAT_MS = "100";
+	process.env.PI_SUBAGENT_DEPTH = "0";
 	const fetch = globalThis.fetch;
 	let networkAttempts = 0;
 	globalThis.fetch = async () => { networkAttempts++; throw new Error("Network forbidden in this fixture"); };
@@ -47,7 +48,7 @@ async function fixture(run: (f: { makeSession: (before?: ExtensionFactory[]) => 
 		const model = runtime.getModel("openai", "gpt-4o");
 		assert(model);
 		await runtime.setRuntimeApiKey("openai", "local-fixture-not-a-real-key");
-		async function makeSession(before: ExtensionFactory[] = []) {
+		async function makeSession(before: ExtensionFactory[] = [], ephemeral = false) {
 			const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
 			const loader = new DefaultResourceLoader({ cwd: dir, agentDir: dir, settingsManager,
 				noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
@@ -57,7 +58,7 @@ async function fixture(run: (f: { makeSession: (before?: ExtensionFactory[]) => 
 				}],
 			});
 			await loader.reload();
-			const { session } = await createAgentSession({ cwd: dir, agentDir: dir, resourceLoader: loader, modelRuntime: runtime, model, settingsManager, sessionManager: SessionManager.inMemory(dir) });
+			const { session } = await createAgentSession({ cwd: dir, agentDir: dir, resourceLoader: loader, modelRuntime: runtime, model, settingsManager, sessionManager: ephemeral ? SessionManager.inMemory(dir) : SessionManager.create(dir, join(dir, "sessions")) });
 			sessions.push(session);
 			await session.bindExtensions({ onError: (error: any) => errors.push(error) });
 			assert(session.getActiveToolNames().includes("peer_send"));
@@ -115,6 +116,18 @@ test("real SDK: request waits for a normal turn; one reply updates status withou
 		assert.equal(recipientCalls, 3);
 		assert.equal(stats.work, 1, "the reply must not terminate the normal task or restrict its tools");
 		assert.equal(senderCalls, 0, "a reply never wakes the sender");
+	});
+});
+
+test("real SDK: non-persistent sessions remain discoverable but reject response requests", { timeout: 20000 }, async () => {
+	await fixture(async ({ makeSession }) => {
+		const sender = await makeSession();
+		const recipient = await makeSession([], true);
+		assert.equal(peer(recipient).ephemeral, true);
+		assert.equal(peer(recipient).requestResponseVersion, undefined);
+		assert.equal(peer(sender).requestResponseVersion, 1, "fresh persistent sessions are supported before their first turn");
+		await assert.rejects(request(sender, recipient), /short-lived\/non-persistent/);
+		assert.equal(state.readOutgoingMessageStatuses(sender.sessionManager.getSessionId()).length, 0);
 	});
 });
 

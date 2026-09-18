@@ -887,6 +887,7 @@ export function redactSensitiveText(value: string): string {
 export function buildKickoffPrompt(
 	generatedPrompt: string,
 	request: SelfHandoffRequest,
+	peerWarning?: string,
 ): string {
 	const delimiter = `SELF-HANDOFF-${request.contextNonce}`;
 	const transferred = [
@@ -911,11 +912,11 @@ ${redactSensitiveText(generatedPrompt.trim())}
 Transferred durable state:
 ${transferred || "- No active goal or non-empty work plan was transferred."}
 
-Orientation checkpoint — this first turn only:
+${peerWarning ? `${peerWarning}\n\n` : ""}Orientation checkpoint — this first turn only:
 - Do not call tools, change files, run commands, update durable state, or begin implementation.
 - Respond only with a concise "## Handoff summary" followed by a numbered "## Proposed next steps" list.
 - Summarize the objective, constraints, current state, and immediate decision/action sequence from the generated context.
-- Finish by telling the user to reply "Proceed" or provide adjustments.
+${peerWarning ? "- Include the peer-request warning above in the handoff summary; do not claim those requests or replies transferred.\n" : ""}- Finish by telling the user to reply "Proceed" or provide adjustments.
 - Then stop and wait. Do not continue autonomously until a new explicit user message arrives after this response.
 
 After that new user message:
