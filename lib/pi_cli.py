@@ -151,6 +151,10 @@ def routes_for(aliases, provider, profile, direct):
     routes = {}
     for key, meta in _eligible_entries(aliases):
         for alias in [str(meta["alias"]), *(_pi_hints(meta).get("aliases") or [])]:
+            # Newly reserved launcher command: retire legacy shortcuts without
+            # rejecting otherwise valid existing configurations/model catalogs.
+            if alias == "models":
+                continue
             if alias in COMMANDS:
                 raise ValueError(f"Alias collides with stock Pi command: {alias}")
             routes[alias] = {"provider": provider, "model": _model_id_for(key, meta),
@@ -334,10 +338,18 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     path = Path(os.environ.get("PI_LAUNCHER_CONFIG", "~/.pi/launcher.json")).expanduser().absolute()
     try:
+        if argv[:1] == ["models"]:
+            if argv == ["models"]:
+                argv = ["--launcher-list"]
+            elif argv[1:] in (["--help"], ["-h"]):
+                argv = ["--launcher-help"]
+            else:
+                raise ValueError("Usage: pi models (list configured aliases); pi list lists packages")
         if argv == ["--launcher-help"]:
             print("pi <exact-alias> [Pi options] | pi <alias> --default (save and exit)\n"
                   "pi openai: ChatGPT subscription preset (when direct routes enabled)\n"
-                  "--launcher-list | --launcher-check | --launcher-refresh | --launcher-help\n"
+                  "pi models: list configured aliases (also --launcher-list)\n"
+                  "--launcher-check | --launcher-refresh | --launcher-help\n"
                   "--launcher-migrate <legacy pi-launchers.zsh> (offline, one-time bootstrap)\n"
                   "pi -- <literal prompt> bypasses aliases; pi list remains the stock package command.")
             return 0

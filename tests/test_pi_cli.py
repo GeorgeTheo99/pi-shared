@@ -203,7 +203,50 @@ def test_launcher_check_and_list_work_without_upstream(machine):
     assert "test\tmodel-gateway/test-1" in listing.stdout
 
 
-@pytest.mark.parametrize("mode", ["--launcher-check", "--launcher-list", "--launcher-refresh"])
+def test_models_lists_aliases_offline_without_changing_defaults(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    assert launch(machine, "test", "--default").returncode == 0
+    before = machine["config"].read_bytes()
+    listing = launch(machine, "models", upstream=False)
+    assert listing.returncode == 0, listing.stderr
+    assert listing.stdout == launch(machine, "--launcher-list", upstream=False).stdout
+    assert "openai\topenai-codex/" in listing.stdout
+    assert machine["config"].read_bytes() == before
+
+
+def test_models_retires_old_colliding_alias_without_rejecting_config(machine):
+    aliases = dict(ALIASES, **{"cloud:collision": {"alias": "models", "provider_model_id": "collision"}})
+    machine["aliases"].write_text(json.dumps(aliases))
+    assert render(machine).returncode == 0
+    config = json.loads(machine["config"].read_text())
+    assert "models" not in config["routes"]
+    # Older generators allowed this alias; refreshing must remain possible.
+    config["routes"]["models"] = dict(config["routes"]["test"])
+    machine["config"].write_text(json.dumps(config))
+    result = launch(machine, "models", upstream=False)
+    assert result.returncode == 0, result.stderr
+    assert "models\t" not in result.stdout
+    assert "models" not in json.loads(machine["config"].read_text())["routes"]
+
+
+@pytest.mark.parametrize("args", [("--", "models"), ("--system-prompt", "models")])
+def test_models_literal_or_option_value_passes_through(machine, args):
+    assert invocation(launch(machine, *args))["argv"] == list(args)
+
+
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+def test_models_help_works_without_config(machine, flag):
+    result = launch(machine, "models", flag, upstream=False)
+    assert result.returncode == 0 and "pi models" in result.stdout
+
+
+def test_models_extra_args_are_not_sent_to_upstream(machine):
+    result = launch(machine, "models", "unexpected")
+    assert result.returncode == 1 and "Usage: pi models" in result.stderr
+    assert not result.stdout
+
+
+@pytest.mark.parametrize("mode", ["models", "--launcher-check", "--launcher-list", "--launcher-refresh"])
 def test_read_only_modes_fail_when_cli_mode_unconfigured(machine, mode):
     assert not machine["config"].exists()
     result = launch(machine, mode, upstream=False)

@@ -17,7 +17,7 @@ Shared pi instructions and explicitly shareable pi resources.
 - `bin/pi-vanilla` — recovery launcher for a vanilla Pi session when shared/local harness resources break normal startup.
 - `bin/pi-omlx-repair` — repair/wiring script for the dedicated `~/.pi-omlx/agent` Pi profile used by local oMLX/cloud model launchers.
 - `bin/pi-catalog` — render Pi CLI artifacts (`models.json` + `pi-launchers.zsh`, and optionally the unified `pi-launch` CLI config via `--cli-out`) from a `model-aliases.json` catalog (the model-gateway public contract). The Pi-side of the model-gateway/Pi separation: the gateway owns the generic catalog, pi-catalog owns Pi-specific rendering. Install per-machine via a `~/.local/bin` symlink.
-- `bin/pi-launch` — unified `pi` launcher. Packaging points `pi` at this script (passing ORDINARY Pi argv, no transport `--`) and supplies the absolute stock executable via `PI_UPSTREAM_BIN` plus a sibling `pi-upstream` real symlink. It routes exact aliases to the gateway, offers a `pi <alias> --default` save, a ChatGPT-subscription `openai` preset, and offline `--launcher-check|--launcher-list|--launcher-refresh|--launcher-help|--launcher-migrate` interfaces. Its data-only config lives at `~/.pi/launcher.json` (`PI_LAUNCHER_CONFIG`).
+- `bin/pi-launch` — unified `pi` launcher. Packaging points `pi` at this script (passing ORDINARY Pi argv, no transport `--`) and supplies the absolute stock executable via `PI_UPSTREAM_BIN` plus a sibling `pi-upstream` real symlink. It routes exact aliases to the gateway, offers a `pi <alias> --default` save, a ChatGPT-subscription `openai` preset, `pi models` for offline alias listing (`pi list` remains package listing), and offline `--launcher-check|--launcher-list|--launcher-refresh|--launcher-help|--launcher-migrate` interfaces. Its data-only config lives at `~/.pi/launcher.json` (`PI_LAUNCHER_CONFIG`).
 - `bin/pi-shared-install` / `install.sh` — portable installer that symlinks shared helper scripts into `~/.local/bin`, wires this repo into `~/.pi/agent/settings.json`, and optionally renders initial Pi catalog artifacts (add `--cli-out PATH` / `PI_SHARED_CLI_OUT` to select JSON routing instead of zsh generation).
 - `lib/pi_catalog.py` — the importable module behind `bin/pi-catalog` (render functions + CLI).
 - `lib/pi_cli.py` — the importable module behind `bin/pi-launch` (config schema, offline resolution, and the shared `--cli-out` schema source of truth).
@@ -171,14 +171,16 @@ Contract:
   `pi openai` is the ChatGPT-subscription preset (when direct routes are enabled)
   and clears `OPENAI_API_KEY`/`OPENAI_BASE_URL`. Unknown positional prompts and
   stock commands (`list`, `help`, `version`) pass through untouched, and
-  `pi -- <literal>` bypasses alias resolution entirely.
+  `pi -- <literal>` bypasses alias resolution entirely. `models` is now reserved
+  for alias listing; an old shortcut named `models` is omitted on refresh, but
+  its model remains available through stock `--model` or the interactive picker.
 - Config path is `~/.pi/launcher.json`, overridable with `PI_LAUNCHER_CONFIG`.
   Explicit `PI_CODING_AGENT_DIR` and upstream `--resume/--continue/--session/--fork`
   args are respected without an implicit default-profile switch. A saved
   `defaultProfile` selects the profile for plain `pi` and print/JSON/RPC runs.
 - Management interfaces need no `PI_UPSTREAM_BIN` and run offline with no provider
   or service effects: `--launcher-check` (drift check; used by tooling directly),
-  `--launcher-list`, `--launcher-refresh` (explicit offline regen with manual
+  `pi models` (also `--launcher-list`), `--launcher-refresh` (explicit offline regen with manual
   `models.json` edit protection), `--launcher-help`, and one-time
   `--launcher-migrate <legacy pi-launchers.zsh>` which reconstructs the config
   from the legacy launcher's recognized JSON metadata (source, provider, profile,
