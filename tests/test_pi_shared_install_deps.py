@@ -37,7 +37,7 @@ def _make_repo(tmp_path: Path, extensions: dict[str, dict | None]) -> Path:
     helpers = repo / "extensions/dev-doctor"
     helpers.mkdir(parents=True)
     shutil.copy(SHARED_ROOT / "extensions/dev-doctor/doctor_common.py", helpers / "doctor_common.py")
-    for name in ("pi-catalog", "pi-omlx-repair", "pi-vanilla"):
+    for name in ("pi-catalog", "pi-gateway", "pi-omlx-repair", "pi-vanilla"):
         _write_exec(repo / "bin" / name, "#!/bin/sh\nexit 0\n")
     for name, deps in extensions.items():
         d = repo / "extensions" / name

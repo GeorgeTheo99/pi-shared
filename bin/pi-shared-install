@@ -383,6 +383,7 @@ main() {
   [ "$(uname -s)" = "Darwin" ] || warn "pi-shared installer is intended for macOS; continuing because no launchd changes are required"
   log "Installing pi-shared from $ROOT_DIR"
   install_symlink pi-catalog
+  install_symlink pi-gateway
   install_symlink pi-omlx-repair
   install_symlink pi-vanilla
   install_extension_deps
