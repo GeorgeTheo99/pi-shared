@@ -10,10 +10,10 @@ No gateway or oMLX service is installed on the client Mac. There is no peer
 registration or change to the server. Gateway-to-gateway federation is a separate
 [manual configuration](https://github.com/GeorgeTheo99/model-gateway/blob/main/docs/federation.md).
 
-> Release boundary: this flow requires the matching new pi-setup release and
-> pi-shared module. It is not in the published Homebrew 0.1.6 CLI. Until release,
-> development/testing must use isolated source checkouts and disposable profiles,
-> not installed Homebrew files. `pi-shared setup --help` lists supported modes.
+> Requires Homebrew package 0.1.7 or newer and the updated pi-shared module.
+> Existing managed installations should run `pi-shared update` first.
+> `pi-shared setup --help` lists supported modes. Develop/test in isolated source
+> checkouts and disposable profiles, never by editing installed Homebrew files.
 
 ## Prerequisites
 

@@ -32,9 +32,9 @@ that conflict deliberately—do not blindly use `brew link --overwrite`.
 | Existing gateway | Connect this Mac directly to a server gateway, including over Tailscale; no local gateway |
 | Later | Install shared tools now and configure models later |
 
-**Existing-gateway onboarding is new source functionality, not included in the
-currently published Homebrew 0.1.6 package.** It requires the matching pi-setup
-release and updated shared module; check `pi-shared setup --help` before using it.
+**Existing-gateway onboarding requires Homebrew package 0.1.7 or newer and an
+updated shared module.** Run `pi-shared update` on an existing managed install;
+`pi-shared setup --help` lists the connection options.
 See [connecting to a server gateway](docs/existing-gateway.md) for prerequisites,
 credentials, TLS/private-network options, and explicit catalog refresh.
 
