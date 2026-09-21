@@ -24,13 +24,14 @@ that conflict deliberately—do not blindly use `brew link --overwrite`.
 
 ## Choose your model connection
 
-An explicit gateway-free **Direct providers** mode is being prepared in source;
-see [direct-provider setup](docs/direct-providers.md). It is not yet available in
-Homebrew 0.1.7. The released choices below remain unchanged.
+**Direct providers** requires Homebrew package **0.1.8 or newer** and an updated
+shared module. Run `pi-shared update` first on existing installations.
+See [direct-provider setup](docs/direct-providers.md).
 
 | Setup choice | Use it for |
 |---|---|
-| Cloud | Cloud/subscription use; installs a local gateway for optional provider onboarding |
+| Direct providers | Native Pi subscriptions/API keys; no model-gateway or oMLX |
+| Cloud | Gateway-enabled cloud use; installs a local gateway for provider onboarding |
 | Local | Models on this Mac through oMLX; installation and downloads remain explicit |
 | Both | Cloud and local model use |
 | Existing gateway | Connect this Mac directly to a server gateway, including over Tailscale; no local gateway |

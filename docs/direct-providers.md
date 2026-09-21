@@ -1,9 +1,9 @@
 # Direct providers without model-gateway
 
-> Unreleased source functionality. Requires coordinated changes in `pi-setup`
-> and `pi-shared`; the published Homebrew 0.1.7 setup does not offer `--mode direct`.
-> Do not replace installed runtime files or point production profiles at development
-> worktrees. Publication and installation require a separate approved release.
+> Requires Homebrew package **0.1.8 or newer** and the updated shared module.
+> Run `pi-shared update` first on existing installations; confirm that
+> `pi-shared setup --help` lists `direct`. Do not replace installed runtime files
+> or point production profiles at development worktrees.
 
 The new explicit setup choice is:
 
