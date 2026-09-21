@@ -24,6 +24,10 @@ that conflict deliberately—do not blindly use `brew link --overwrite`.
 
 ## Choose your model connection
 
+An explicit gateway-free **Direct providers** mode is being prepared in source;
+see [direct-provider setup](docs/direct-providers.md). It is not yet available in
+Homebrew 0.1.7. The released choices below remain unchanged.
+
 | Setup choice | Use it for |
 |---|---|
 | Cloud | Cloud/subscription use; installs a local gateway for optional provider onboarding |

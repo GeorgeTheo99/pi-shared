@@ -12,6 +12,8 @@
 #                     [--pi-agent-dir PATH|''] [--provider-name NAME]
 #                     [--direct-launchers|--no-direct-launchers] [--overlay PACKAGE_DIR ...]
 #
+# PI_SHARED_DIRECT_ONLY=1 bootstraps native-only JSON routing; no gateway catalog,
+# generated models.json or gateway profile. Requires PI_SHARED_CLI_OUT.
 # --cli-out PATH (or PI_SHARED_CLI_OUT) selects JSON routing instead of zsh.
 # The legacy default remains available for older setup orchestrators. Existing
 # JSON or recognized legacy generation metadata is preserved during upgrades.
@@ -62,6 +64,7 @@ PROVIDER_NAME="${PI_SHARED_PROVIDER_NAME:-}"
 FORCE=0
 GENERATE_CATALOG=1
 BOOTSTRAP_LAUNCHERS="${PI_SHARED_BOOTSTRAP_LAUNCHERS:-0}"
+DIRECT_ONLY="${PI_SHARED_DIRECT_ONLY:-0}"
 INSTALL_DEPS=1
 NPM_BIN="${PI_SHARED_NPM:-npm}"
 DIRECT_LAUNCHERS="${PI_SHARED_DIRECT_LAUNCHERS-${PI_SHARED_LS99_EXTRAS-}}"
@@ -117,6 +120,11 @@ done
 case "$BOOTSTRAP_LAUNCHERS" in
   0|1) ;;
   *) die "PI_SHARED_BOOTSTRAP_LAUNCHERS must be 0 or 1" ;;
+esac
+
+case "$DIRECT_ONLY" in
+  0|1) ;;
+  *) die "PI_SHARED_DIRECT_ONLY must be 0 or 1" ;;
 esac
 
 case "$DIRECT_LAUNCHERS" in
@@ -277,7 +285,36 @@ wire_agents_md() {
   ok "Installed $dest → $src"
 }
 
+direct_preflight() {
+  [ "$DIRECT_ONLY" -eq 1 ] || return 0
+  [ -n "$CLI_OUT" ] && [ "$GENERATE_CATALOG" -eq 1 ] && [ "$BOOTSTRAP_LAUNCHERS" -eq 1 ] \
+    || die "Direct-only setup requires CLI output and launcher bootstrap; --no-catalog is incompatible"
+  local source flag
+  for source in "$LAUNCHERS_OUT" "$HOME/.pi/model-gateway/pi-launchers.zsh"; do
+    [ ! -e "$source" ] && [ ! -L "$source" ] \
+      || die "Existing legacy launcher requires explicit reconciliation before direct-only setup: $source"
+  done
+  for flag in "${CATALOG_OVERRIDES[@]:-}"; do
+    case "$flag" in
+      ""|--direct-launchers|--no-direct-launchers) ;;
+      *) die "Direct-only setup does not accept gateway catalog/profile overrides" ;;
+    esac
+  done
+  PI_LAUNCHER_CONFIG="$CLI_OUT" "$ROOT_DIR/bin/pi-launch" --launcher-check-direct \
+    || die "Cannot safely initialize direct-only routing"
+}
+
 generate_catalog() {
+  if [ "$DIRECT_ONLY" -eq 1 ]; then
+    local cmd=("$ROOT_DIR/bin/pi-launch" --launcher-init-direct)
+    case "$DIRECT_LAUNCHERS" in
+      1) cmd+=(--direct-launchers) ;;
+      0) cmd+=(--no-direct-launchers) ;;
+    esac
+    PI_LAUNCHER_CONFIG="$CLI_OUT" "${cmd[@]}"
+    CATALOG_PI_AGENT_DIR=""
+    return 0
+  fi
   if [ "$GENERATE_CATALOG" -eq 0 ]; then
     warn "Skipping pi-catalog generation (--no-catalog)"
     return 0
@@ -381,6 +418,7 @@ migrate_legacy_launcher_path() {
 
 main() {
   [ "$(uname -s)" = "Darwin" ] || warn "pi-shared installer is intended for macOS; continuing because no launchd changes are required"
+  direct_preflight
   log "Installing pi-shared from $ROOT_DIR"
   install_symlink pi-catalog
   install_symlink pi-gateway

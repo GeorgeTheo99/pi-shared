@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMMANDS = {"install", "remove", "uninstall", "update", "list", "config", "auth", "setup", "help", "version"}
 VALUES = {"--aliases", "--models-out", "--provider-name", "--gateway-url", "--gateway-api-key",
           "--pi-agent-dir", "--omlx-status", "--omlx-status-url", "--shared-dir"}
-FLAGS = {"--direct-launchers", "--no-direct-launchers", "--allow-empty-catalog"}
+FLAGS = {"--direct-launchers", "--no-direct-launchers", "--allow-empty-catalog", "--direct-only"}
 PATHS = {"--aliases", "--models-out", "--pi-agent-dir", "--omlx-status", "--shared-dir"}
 LIMIT = 8 * 1024 * 1024
 
@@ -92,7 +92,13 @@ def generation_values(args):
     for key in PATHS & values.keys():
         if not Path(values[key]).is_absolute():
             raise ValueError(f"Generation path must be absolute: {key}")
-    if not values.get("--aliases") or not values.get("--shared-dir"):
+    if "--direct-only" in values:
+        if (set(values) - {"--direct-only", "--shared-dir", "--direct-launchers", "--no-direct-launchers"}
+                or not ({"--direct-launchers", "--no-direct-launchers"} & values.keys())):
+            raise ValueError("Direct-only launchers cannot include gateway generation settings")
+    elif not values.get("--aliases"):
+        raise ValueError("Missing generation identity")
+    if not values.get("--shared-dir"):
         raise ValueError("Missing generation identity")
     if Path(values["--shared-dir"]).resolve() != ROOT:
         raise ValueError("Launcher belongs to another shared installation; regenerate with pi-catalog")
@@ -167,7 +173,9 @@ def routes_for(aliases, provider, profile, direct):
 
 def make_config(aliases, args, status, models_digest, aliases_digest, default_profile=None):
     values = generation_values(args)
-    routes = routes_for(aliases, values["--provider-name"], values.get("--pi-agent-dir"),
+    if "--direct-only" in values and (aliases or default_profile is not None):
+        raise ValueError("Direct-only launchers cannot include gateway aliases or a default profile")
+    routes = routes_for(aliases, values.get("--provider-name", ""), values.get("--pi-agent-dir"),
                         "--direct-launchers" in values)
     return {"version": 1, "routes": routes, "defaultProfile": default_profile,
             "generation": {"args": args, "status": status, "modelsSha256": models_digest,
@@ -212,6 +220,26 @@ def load_config(path):
         p = route["profile"]
         if p is not None and (not isinstance(p, str) or not Path(p).is_absolute() or "\0" in p):
             raise ValueError("Invalid route profile")
+    if "--direct-only" in values and (profile is not None or any(r["gateway"] or r["profile"] for r in routes.values())):
+        raise ValueError("Direct-only launchers cannot select gateway routes/profiles")
+    return config
+
+
+def initialize_direct(path, preference=None, check=False):
+    """Bootstrap native presets without reading catalogs or managing models.json."""
+    direct = True if preference is None else preference
+    if path.exists() or path.is_symlink():
+        previous = load_config(path)
+        values = generation_values(previous["generation"]["args"])
+        if "--direct-only" not in values:
+            raise ValueError("Existing launcher is not direct-only; reconcile it explicitly before changing connection mode")
+        if preference is None:
+            direct = "--direct-launchers" in values
+    args = ["--direct-only", "--shared-dir", str(ROOT),
+            "--direct-launchers" if direct else "--no-direct-launchers"]
+    config = make_config({}, args, {}, "unmanaged", digest(b""))
+    if not check:
+        atomic_write(path, dump(config))
     return config
 
 
@@ -220,6 +248,13 @@ def refresh(path, config, check=False):
     from pi_catalog import render_models, _dump, _load_omlx_status
     gen = config["generation"]
     values = generation_values(gen["args"])
+    if "--direct-only" in values:
+        updated = make_config({}, gen["args"], {}, "unmanaged", digest(b""))
+        if updated != config:
+            if check:
+                raise ValueError("Direct-only launcher is stale; run --launcher-refresh")
+            atomic_write(path, dump(updated))
+        return updated
     raw = read_owned(Path(values["--aliases"]), missing="--allow-empty-catalog" in values)
     aliases = json.loads(raw) if raw else {}
     if not isinstance(aliases, dict) or any(not isinstance(v, dict) for v in aliases.values()):
@@ -263,6 +298,11 @@ def configure(path, overrides):
     from pi_catalog import main as render
     config = refresh(path, load_config(path))  # protect any manual model edits
     values = generation_values(config["generation"]["args"])
+    if "--direct-only" in values:
+        if overrides not in (["--direct-launchers"], ["--no-direct-launchers"]):
+            raise ValueError("Direct-only launcher does not accept gateway routing overrides")
+        initialize_direct(path, preference=overrides == ["--direct-launchers"])
+        return
     original_models = values.get("--models-out")
     i = 0
     while i < len(overrides):
@@ -352,6 +392,13 @@ def main(argv=None):
                   "--launcher-check | --launcher-refresh | --launcher-help\n"
                   "--launcher-migrate <legacy pi-launchers.zsh> (offline, one-time bootstrap)\n"
                   "pi -- <literal prompt> bypasses aliases; pi list remains the stock package command.")
+            return 0
+        if argv[:1] in (["--launcher-init-direct"], ["--launcher-check-direct"]):
+            if argv[1:] not in ([], ["--direct-launchers"], ["--no-direct-launchers"]):
+                raise ValueError("Direct bootstrap accepts only --direct-launchers or --no-direct-launchers")
+            preference = None if len(argv) == 1 else argv[1] == "--direct-launchers"
+            initialize_direct(path, preference, check=argv[0] == "--launcher-check-direct")
+            print("Direct-only launcher ready (offline; native Pi owns models and authentication).")
             return 0
         if argv[:1] == ["--launcher-migrate"]:
             # Offline one-time bootstrap: reconstruct the CLI config from a
