@@ -370,6 +370,112 @@ def upstream():
     return str(path)
 
 
+MODEL_GROUPS = {
+    "local": "LOCAL · via model gateway",
+    "cloud": "CLOUD · via model gateway",
+    "gateway": "GATEWAY · hosting unknown",
+    "direct": "DIRECT · subscription",
+}
+MODELS_USAGE = "Usage: pi models [--local | --cloud | --direct] [--verbose] [--json]"
+
+
+def saved_model_default(config):
+    """Read only the selected profile's saved default, not project overrides/auth."""
+    profile = Path(os.environ.get("PI_CODING_AGENT_DIR") or config.get("defaultProfile")
+                   or Path.home() / ".pi/agent").expanduser().resolve()
+    try:
+        raw = read_owned(profile / "settings.json", missing=True)
+        settings = json.loads(raw) if raw else {}
+        if not isinstance(settings, dict):
+            raise ValueError("Expected a settings object")
+        provider, model = settings.get("defaultProvider"), settings.get("defaultModel")
+        if isinstance(provider, str) and provider and isinstance(model, str) and model:
+            return {"provider": provider, "model": model, "profile": str(profile)}
+    except (OSError, ValueError):
+        print("pi models: unable to read saved profile default; no default marked.", file=sys.stderr)
+    return None
+
+
+def model_listing(config):
+    """Join refreshed routes to catalog presentation metadata without changing schema."""
+    from pi_catalog import _eligible_entries, _is_cloud_key, _norm_provider, _pi_hints
+    values = generation_values(config["generation"]["args"])
+    aliases = {}
+    if "--direct-only" not in values:
+        raw = read_owned(Path(values["--aliases"]), missing="--allow-empty-catalog" in values)
+        if digest(raw) != config["generation"]["aliasesSha256"]:
+            raise ValueError("Catalog changed while listing models; retry pi models")
+        aliases = json.loads(raw) if raw else {}
+    routes, rows, covered = config["routes"], [], set()
+    default = saved_model_default(config)
+
+    def add(names, name, group):
+        route = routes[names[0]]
+        profile = Path(os.environ.get("PI_CODING_AGENT_DIR") or route["profile"]
+                       or Path.home() / ".pi/agent").expanduser().resolve()
+        rows.append({"alias": names[0], "aliases": names[1:], "name": str(name),
+                     "group": group, **route,
+                     "default": default == {"provider": route["provider"],
+                                            "model": route["model"], "profile": str(profile)}})
+        covered.update(names)
+
+    for key, meta in _eligible_entries(aliases):
+        names = [name for name in [str(meta["alias"]), *(_pi_hints(meta).get("aliases") or [])]
+                 if name in routes and routes[name]["gateway"]]
+        if not names:
+            continue
+        # Canonical remote discovery uses cloud: for transport, not hosting.
+        group = ("gateway" if _norm_provider(meta) == "model-gateway" else
+                 "cloud" if _is_cloud_key(key) else "local")
+        name = _pi_hints(meta).get("name") or meta.get("name") or routes[names[0]]["model"]
+        add(names, name, group)
+    for alias, route in routes.items():
+        if alias not in covered:
+            add([alias], route["model"] + (" · ChatGPT subscription" if alias == "openai" else ""),
+                "gateway" if route["gateway"] else "direct")
+    order = list(MODEL_GROUPS)
+    rows.sort(key=lambda row: (order.index(row["group"]), row["alias"]))
+    return {"version": 1, "models": rows, "savedDefault": default}
+
+
+def print_models(config, flags):
+    listing = model_listing(config)
+    selected = next((group for group in MODEL_GROUPS if "--" + group in flags), None)
+    rows = listing["models"]
+    if selected:
+        rows = listing["models"] = [row for row in rows if row["group"] == selected]
+    if "--json" in flags:
+        print(json.dumps(listing, indent=2))
+        return
+
+    def text(value):
+        # Catalog labels are data, never terminal control sequences.
+        return " ".join("".join(c if c.isprintable() else " " for c in str(value)).split())
+
+    width = max([len("Alias"), *(len(row["alias"]) for row in rows)])
+    sections = []
+    for group, title in MODEL_GROUPS.items():
+        entries = [row for row in rows if row["group"] == group]
+        if not entries:
+            continue
+        lines = [title, f"    {'Alias':<{width}}  Model"]
+        for row in entries:
+            marker = "★" if row["default"] else " "
+            alternate = f" (also: {', '.join(row['aliases'])})" if row["aliases"] else ""
+            lines.append(f"  {marker} {row['alias']:<{width}}  {text(row['name'])}{alternate}")
+            if "--verbose" in flags:
+                lines.append(f"    {'':<{width}}  Route: {text(row['provider'])}/{text(row['model'])}")
+                profile = os.environ.get("PI_CODING_AGENT_DIR") or row["profile"] or str(Path.home() / ".pi/agent")
+                lines.append(f"    {'':<{width}}  Profile: {text(profile)}")
+        sections.append("\n".join(lines))
+    print("\n\n".join(sections) if sections else "No configured model aliases match this view.")
+    if any(row["default"] for row in rows):
+        print("\n★ Saved profile default (project/session overrides may differ).")
+    if any(row["group"] == "local" for row in rows):
+        print("\nLocal = locally hosted inference, possibly on another machine.")
+    print("\nLaunch: pi <alias> · Details: pi models --verbose")
+
+
 def main(argv=None):
     # pi-launch receives ORDINARY Pi argv with NO extra transport separator
     # (packaging invokes `pi-launch <user argv...>` directly). A user's
@@ -379,16 +485,26 @@ def main(argv=None):
     path = Path(os.environ.get("PI_LAUNCHER_CONFIG", "~/.pi/launcher.json")).expanduser().absolute()
     try:
         if argv[:1] == ["models"]:
-            if argv == ["models"]:
-                argv = ["--launcher-list"]
-            elif argv[1:] in (["--help"], ["-h"]):
-                argv = ["--launcher-help"]
-            else:
-                raise ValueError("Usage: pi models (list configured aliases); pi list lists packages")
+            if argv[1:] in (["--help"], ["-h"]):
+                print(MODELS_USAGE + "\nList configured aliases offline, grouped by hosting/route.\n"
+                      "--local/--cloud filter gateway hosting; --direct selects subscription presets.\n"
+                      "--verbose shows full route IDs and profiles; --json emits structured data.\n"
+                      "No availability/authentication checks. pi list lists packages.\n"
+                      "Legacy tab-separated output: pi --launcher-list")
+                return 0
+            flags = set(argv[1:])
+            if (flags - {"--local", "--cloud", "--direct", "--verbose", "--json"}
+                    or len(flags & {"--local", "--cloud", "--direct"}) > 1):
+                raise ValueError(MODELS_USAGE)
+            if not path.exists():
+                raise ValueError("Pi launcher CLI mode not configured; run pi-shared setup")
+            print_models(refresh(path, load_config(path)), flags)
+            return 0
         if argv == ["--launcher-help"]:
             print("pi <exact-alias> [Pi options] | pi <alias> --default (save and exit)\n"
                   "pi openai: ChatGPT subscription preset (when direct routes enabled)\n"
-                  "pi models: list configured aliases (also --launcher-list)\n"
+                  "pi models: grouped configured aliases (see pi models --help)\n"
+                  "--launcher-list: legacy tab-separated alias/route output\n"
                   "--launcher-check | --launcher-refresh | --launcher-help\n"
                   "--launcher-migrate <legacy pi-launchers.zsh> (offline, one-time bootstrap)\n"
                   "pi -- <literal prompt> bypasses aliases; pi list remains the stock package command.")

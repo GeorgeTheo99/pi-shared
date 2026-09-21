@@ -209,9 +209,153 @@ def test_models_lists_aliases_offline_without_changing_defaults(machine):
     before = machine["config"].read_bytes()
     listing = launch(machine, "models", upstream=False)
     assert listing.returncode == 0, listing.stderr
-    assert listing.stdout == launch(machine, "--launcher-list", upstream=False).stdout
-    assert "openai\topenai-codex/" in listing.stdout
+    assert "CLOUD · via model gateway" in listing.stdout
+    assert "DIRECT · subscription" in listing.stdout
+    assert "★ test" in listing.stdout
+    assert "model-gateway/test-1" not in listing.stdout
+    assert "ChatGPT subscription" in listing.stdout
     assert machine["config"].read_bytes() == before
+
+
+@pytest.fixture
+def mixed_models(machine):
+    aliases = {
+        **ALIASES,
+        "local-8bit": {"alias": "local", "name": "Local Model · 8-bit"},
+        "cloud:remote": {"alias": "remote", "provider": "model-gateway",
+                         "provider_model_id": "remote-model"},
+        "cloud:synonyms": {"alias": "primary", "provider": "fireworks", "name": "Fallback",
+                           "provider_model_id": "org/full-model-id",
+                           "pi": {"name": "Friendly Model", "aliases": ["alternate", "short"]}},
+        "unsupported": {"alias": "hidden", "supported": False},
+    }
+    machine["aliases"].write_text(json.dumps(aliases))
+    assert render(machine, "--direct-launchers").returncode == 0
+    return machine
+
+
+def test_models_groups_names_and_collapses_explicit_synonyms(mixed_models):
+    result = launch(mixed_models, "models", upstream=False)
+    assert result.returncode == 0, result.stderr
+    output = result.stdout
+    assert output.index("LOCAL ·") < output.index("CLOUD ·") < output.index("GATEWAY ·") < output.index("DIRECT ·")
+    assert "Local Model · 8-bit" in output
+    assert "Friendly Model (also: alternate, short)" in output
+    assert "Fallback" not in output and "hidden" not in output
+    assert "org/full-model-id" not in output
+    assert "possibly on another machine" in output
+    # Collapsing presentation must not remove any launchable aliases or TSV rows.
+    legacy = launch(mixed_models, "--launcher-list", upstream=False).stdout
+    for alias in ("primary", "alternate", "short"):
+        assert f"{alias}\tmodel-gateway/org/full-model-id" in legacy
+        assert invocation(launch(mixed_models, alias))["argv"][:4] == [
+            "--provider", "model-gateway", "--model", "org/full-model-id"]
+
+
+@pytest.mark.parametrize("flag,group", [("--local", "local"), ("--cloud", "cloud"), ("--direct", "direct")])
+def test_models_filters_and_json(mixed_models, flag, group):
+    result = launch(mixed_models, "models", flag, "--json", upstream=False)
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["version"] == 1 and data["savedDefault"] is None
+    assert data["models"] and {row["group"] for row in data["models"]} == {group}
+    text = launch(mixed_models, "models", flag, upstream=False).stdout
+    assert group.upper() + " ·" in text
+    for other in {"LOCAL", "CLOUD", "DIRECT", "GATEWAY"} - {group.upper()}:
+        assert other + " ·" not in text
+
+
+def test_models_json_preserves_ids_aliases_and_unknown_hosting(mixed_models):
+    result = launch(mixed_models, "models", "--json", upstream=False)
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    rows = {row["alias"]: row for row in data["models"]}
+    assert rows["primary"]["aliases"] == ["alternate", "short"]
+    assert rows["primary"]["model"] == "org/full-model-id"
+    assert rows["primary"]["name"] == "Friendly Model"
+    assert rows["remote"]["group"] == "gateway"
+    assert rows["openai"]["gateway"] is False
+    assert not any(row["default"] for row in rows.values())
+    assert launch(mixed_models, "models", "--verbose", "--json", upstream=False).stdout == result.stdout
+
+
+def test_models_verbose_shows_routes_and_profiles(mixed_models):
+    result = launch(mixed_models, "models", "--verbose", upstream=False)
+    assert result.returncode == 0, result.stderr
+    assert "Route: model-gateway/org/full-model-id" in result.stdout
+    assert f"Profile: {mixed_models['home'] / '.pi-omlx/agent'}" in result.stdout
+
+
+def test_models_default_synonym_and_explicit_profile(mixed_models):
+    assert launch(mixed_models, "alternate", "--default").returncode == 0
+    result = launch(mixed_models, "models", "--json", upstream=False)
+    data = json.loads(result.stdout)
+    assert [row["alias"] for row in data["models"] if row["default"]] == ["primary"]
+    assert data["savedDefault"]["model"] == "org/full-model-id"
+    profile = mixed_models["home"] / "custom"
+    profile.mkdir()
+    env = {"PI_CODING_AGENT_DIR": str(profile)}
+    assert launch(mixed_models, "openai", "--default", env_extra=env).returncode == 0
+    data = json.loads(launch(mixed_models, "models", "--json", env_extra=env, upstream=False).stdout)
+    assert [row["alias"] for row in data["models"] if row["default"]] == ["openai"]
+    assert data["savedDefault"]["profile"] == str(profile)
+
+
+def test_models_does_not_mark_default_from_an_inactive_profile(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    assert launch(machine, "test", "--default").returncode == 0
+    # Same provider/model saved elsewhere does not make that route the active default.
+    profile = machine["home"] / "different-profile"
+    profile.mkdir()
+    config = json.loads(machine["config"].read_text())
+    config["defaultProfile"] = str(profile)
+    machine["config"].write_text(json.dumps(config))
+    (profile / "settings.json").write_text(json.dumps({"defaultProvider": "model-gateway", "defaultModel": "test-1"}))
+    data = json.loads(launch(machine, "models", "--json", upstream=False).stdout)
+    assert not any(row["default"] for row in data["models"])
+
+
+@pytest.mark.parametrize("body", ["not json", "[]"])
+def test_models_bad_settings_warn_without_blocking_listing(machine, body):
+    assert render(machine).returncode == 0
+    profile = machine["home"] / ".pi/agent"
+    profile.mkdir()
+    (profile / "settings.json").write_text(body)
+    result = launch(machine, "models", "--json", upstream=False)
+    assert result.returncode == 0
+    assert "unable to read saved profile default" in result.stderr
+    assert json.loads(result.stdout)["savedDefault"] is None
+    assert (profile / "settings.json").read_text() == body
+
+
+def test_models_empty_view_and_direct_only_without_catalog(machine):
+    assert launch(machine, "--launcher-init-direct", upstream=False).returncode == 0
+    machine["aliases"].write_text("invalid catalog must never be read")
+    result = launch(machine, "models", "--local", upstream=False)
+    assert result.returncode == 0 and "No configured model aliases" in result.stdout
+    assert json.loads(launch(machine, "models", "--local", "--json", upstream=False).stdout)["models"] == []
+    assert "DIRECT ·" in launch(machine, "models", upstream=False).stdout
+    assert launch(machine, "--launcher-init-direct", "--no-direct-launchers", upstream=False).returncode == 0
+    assert "No configured model aliases" in launch(machine, "models", upstream=False).stdout
+
+
+def test_models_missing_bootstrap_catalog(machine):
+    machine["aliases"].unlink()
+    assert render(machine, "--allow-empty-catalog", "--direct-launchers").returncode == 0
+    result = launch(machine, "models", "--json", upstream=False)
+    assert result.returncode == 0, result.stderr
+    assert [row["alias"] for row in json.loads(result.stdout)["models"]] == ["openai"]
+
+
+def test_models_sanitizes_terminal_controls_in_names(machine):
+    aliases = {"cloud:x": {"alias": "safe", "provider_model_id": "x", "name": "Bad\u001b[2J\nName\u202e"}}
+    machine["aliases"].write_text(json.dumps(aliases))
+    assert render(machine).returncode == 0
+    result = launch(machine, "models", upstream=False)
+    assert result.returncode == 0
+    assert "\u001b" not in result.stdout and "\u202e" not in result.stdout
+    data = json.loads(launch(machine, "models", "--json", upstream=False).stdout)
+    assert data["models"][0]["name"] == aliases["cloud:x"]["name"]
 
 
 def test_models_retires_old_colliding_alias_without_rejecting_config(machine):
@@ -240,8 +384,10 @@ def test_models_help_works_without_config(machine, flag):
     assert result.returncode == 0 and "pi models" in result.stdout
 
 
-def test_models_extra_args_are_not_sent_to_upstream(machine):
-    result = launch(machine, "models", "unexpected")
+@pytest.mark.parametrize("args", [("unexpected",), ("--unknown",), ("--local", "--cloud"),
+                                 ("--cloud", "--direct"), ("--local", "--direct")])
+def test_models_extra_args_are_not_sent_to_upstream(machine, args):
+    result = launch(machine, "models", *args)
     assert result.returncode == 1 and "Usage: pi models" in result.stderr
     assert not result.stdout
 

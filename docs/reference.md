@@ -183,13 +183,28 @@ Contract:
   `defaultProfile` selects the profile for plain `pi` and print/JSON/RPC runs.
 - Management interfaces need no `PI_UPSTREAM_BIN` and run offline with no provider
   or service effects: `--launcher-check` (drift check; used by tooling directly),
-  `pi models` (also `--launcher-list`), `--launcher-refresh` (explicit offline regen with manual
+  `pi models` (grouped human output; `--local|--cloud|--direct`, `--verbose`, `--json`),
+  `--launcher-list` (legacy tab-separated aliases/routes), `--launcher-refresh` (explicit offline regen with manual
   `models.json` edit protection), `--launcher-help`, and one-time
   `--launcher-migrate <legacy pi-launchers.zsh>` which reconstructs the config
   from the legacy launcher's recognized JSON metadata (source, provider, profile,
   endpoint, direct opt-out) without evaluating any shell and never clobbering an
   existing config. Missing configuration fails checks explicitly; `--launcher-help`
   remains available before configuration.
+- `pi models` collapses catalog-declared alternate aliases under their primary alias;
+  routing and the saved config schema are unchanged. Names come from `pi.name`,
+  then catalog `name`, then the route model ID. `★` compares the selected profile's
+  saved provider/model with each route and profile; it does not resolve project
+  settings or sessions. Missing defaults are unmarked; unreadable settings warn
+  without blocking the list. Local hosting can be on another machine. Canonical
+  remote entries (`provider: model-gateway`) have unknown hosting and are neither
+  `--local` nor `--cloud`; view them in the unfiltered list.
+- `pi models --json` emits `{version: 1, models: [...], savedDefault: ...}` with one
+  row per primary alias: `alias`, alternate `aliases`, `name`, `group`
+  (`local|cloud|gateway|direct`), `provider`, `model`, configured `profile`, `gateway`,
+  and boolean `default`. `savedDefault` is null or the selected profile's saved
+  `{provider, model, profile}`. Filters apply only to `models`; `--verbose` does not
+  change JSON. No credentials, gateway URLs, or authentication state are included.
 
 Homebrew setup 0.1.5+ selects CLI mode automatically. The standalone shared
 installer retains its legacy default for older orchestrators during upgrades.

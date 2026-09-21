@@ -59,7 +59,10 @@ Full component choices and prerequisites live in the
 ## Use Pi
 
 ```bash
-pi models                 # List configured model aliases, offline
+pi models                 # Grouped local, cloud, and direct aliases (offline)
+pi models --cloud         # Only cloud models routed through the gateway
+pi models --verbose       # Include full route IDs and profiles
+pi models --json          # Structured output for scripts
 pi openai                 # ChatGPT subscription preset; use /login to authenticate
 pi <model-alias>           # Start with a gateway model
 pi <model-alias> --default # Save your default and exit
@@ -70,6 +73,18 @@ pi                        # Start with your saved choice
 subscription login alone does not create gateway routes. Direct presets such as
 `openai` are absent if you explicitly disabled them. Use `pi -- openai` to send
 that word as a literal prompt rather than select the preset.
+
+`pi models` uses catalog names and puts alternate aliases on the same row.
+`--local`, `--cloud`, and `--direct` select one group; combine a filter with
+`--verbose` or `--json`. Local means locally hosted inference, possibly on another
+machine. Remote canonical catalogs without hosting metadata appear under
+**Gateway · hosting unknown**, not as guessed local/cloud models.
+
+`★` marks the saved default in the selected profile (`PI_CODING_AGENT_DIR`, then
+launcher default profile, then `~/.pi/agent`). Project/session overrides can differ.
+Listing makes no network or authentication checks; it retains the launcher's
+existing offline refresh of generated routes from the saved catalog.
+`pi --launcher-list` retains the legacy tab-separated alias/route output.
 
 ## Update and check
 
