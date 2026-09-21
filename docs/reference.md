@@ -191,6 +191,12 @@ Contract:
   endpoint, direct opt-out) without evaluating any shell and never clobbering an
   existing config. Missing configuration fails checks explicitly; `--launcher-help`
   remains available before configuration.
+- Homebrew 0.1.9+ reads the trusted shared `lib/pi-launcher-capabilities.json`.
+  `modelsCommand: 1` declares that `models` and its arguments belong to the shared
+  launcher. Older/unmarked modules retain the package's legacy translation to
+  `--launcher-list`/`--launcher-help`; new flags require updating the module.
+  Homebrew 0.1.8 and older always pre-translate, so updating the module alone does
+  not activate grouped `pi models` through those packages.
 - `pi models` collapses catalog-declared alternate aliases under their primary alias;
   routing and the saved config schema are unchanged. Names come from `pi.name`,
   then catalog `name`, then the route model ID. `★` compares the selected profile's

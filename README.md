@@ -74,6 +74,8 @@ subscription login alone does not create gateway routes. Direct presets such as
 `openai` are absent if you explicitly disabled them. Use `pi -- openai` to send
 that word as a literal prompt rather than select the preset.
 
+Grouped `pi models` requires **Homebrew 0.1.9 or newer** and the updated shared
+module; run `pi-shared update` on existing managed installations.
 `pi models` uses catalog names and puts alternate aliases on the same row.
 `--local`, `--cloud`, and `--direct` select one group; combine a filter with
 `--verbose` or `--json`. Local means locally hosted inference, possibly on another
