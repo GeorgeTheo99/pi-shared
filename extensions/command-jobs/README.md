@@ -1,33 +1,37 @@
 # Managed command jobs
 
-`command_job` starts bounded local commands without ad-hoc PID files or shell
+`command_start` starts bounded local commands without ad-hoc PID files or shell
 completion markers. It does not replace `bash`, grant approval for external actions,
 or provide an OS sandbox. Requires a trusted caller workspace.
 
 ```javascript
-command_job({action:"start", command:"npm", args:["test"], timeout_seconds:600})
+command_start({command:"npm", args:["test"], timeout_seconds:600})
 // => cmd_<uuid>; do independent work, then:
-wait_for({jobs:["cmd_<uuid>"], timeout:660})
-command_job({action:"status", id:"cmd_<uuid>"})
-command_job({action:"logs", id:"cmd_<uuid>", stream:"stderr", max_bytes:8192})
-command_job({action:"cancel", id:"cmd_<uuid>"})
+wait_for_jobs({jobs:["cmd_<uuid>"], timeout:660})
+command_status({id:"cmd_<uuid>"})
+command_list({})
+command_logs({id:"cmd_<uuid>", stream:"stderr", max_bytes:8192})
+command_cancel({id:"cmd_<uuid>"})
 ```
 
-Actions: `start`, `status`, `list`, `logs`, `cancel`. Send only fields for the
-selected action; do not carry arguments over from a previous call.
+Each operation has its own closed schema; there is no legacy `command_job` tool
+or `action` argument. Do not carry arguments over from a different operation.
 
-| Action | Required fields (besides `action`) | Optional fields |
+| Tool | Required fields | Optional fields |
 | --- | --- | --- |
-| `start` | `command`, `timeout_seconds` | `args`, `cwd`, `label`, `readiness` |
-| `status`, `cancel` | `id` | None |
-| `list` | None | None |
-| `logs` | `id` | `stream`, `cursor`, `max_bytes` |
+| `command_start` | `command`, `timeout_seconds` | `args`, `cwd`, `label`, `readiness` |
+| `command_status`, `command_cancel` | `id` | None |
+| `command_list` | None | None |
+| `command_logs` | `id` | `stream`, `cursor`, `max_bytes` |
 
-Fields not applicable to the action are rejected before any command starts.
-Errors identify the offending field names and allowed fields, without including
-argument values. For example, `status` with `max_bytes` must use `logs` instead
-if the intent is to read output. `timeout_seconds` is start-only; use `wait_for`
-to wait for completion. `start` requires `command` and `timeout_seconds` (up to 24h).
+Pi schema validation runs before handler side effects, including direct execution.
+Unknown fields (including nested readiness fields), missing required fields, and
+invalid types/ranges are rejected; validation diagnostics redact argument values.
+Optional nulls use Pi's SDK normalization; required nulls remain invalid.
+All tools request JSON-schema constrained sampling with `strict:"prefer"`.
+Use `command_logs`, not `command_status`, to read output. `timeout_seconds` is
+start-only; use `wait_for_jobs` to wait for completion. `command_start` requires
+`command` and `timeout_seconds` (up to 24h).
 Optional `args`, `cwd` relative to caller workspace, non-sensitive `label`, and
 `readiness` are supported. For explicitly intended shell syntax use `command:"sh"`
 and `args:["-c", script]`; there is no implicit shell expansion. Commands inherit
@@ -41,8 +45,8 @@ no redirects/response capture). Example `readiness:{kind:"http",port:8100,
 path:"/health",timeout_seconds:30}`. Supply only endpoints safe to probe. A probe
 proves an endpoint responded, not that this command owns that endpoint.
 
-`wait_for({jobs:[id],readiness:true,timeout:40})` waits for configured probes on all
-listed command jobs; only `job_mode:"all"` is supported for readiness. A ready
+`wait_for_ready({jobs:[id],timeout:40})` waits for configured probes on all
+listed command jobs; it has no `job_mode` or `readiness` argument. A ready
 server remains running and may later fail. Probe failure does not rewrite its
 process exit status. Status exposes lifecycle, readiness, observed exit code,
 termination reason, and cleanup evidence independently. Completion waits may mix
@@ -54,7 +58,7 @@ wait modes fail promptly. Aborting a wait never cancels its jobs.
 - Owner-lifetime execution only. Normal Pi shutdown/reload cancels owned groups.
   Hard crashes cannot run cleanup; records become `lost` on missing owner or a
   30-second lease expiry. Execution is not resumed. Stale PIDs are never killed.
-- `cancel` publishes a request; the owner processes it within its 500ms heartbeat.
+- `command_cancel` publishes a request; the owner processes it within its 500ms heartbeat.
   Request publication is not termination. Cancellation/timeout can carry
   `cleanup:"unconfirmed"`; process-group signaling does not prove every child
   exited. Escaped descendants are outside the cleanup guarantee. No claim of
@@ -66,7 +70,7 @@ wait modes fail promptly. Aborting a wait never cancels its jobs.
   retained for inspection rather than deleting potentially live-process evidence.
 - Output is drained after capture fills; metadata reports omitted bytes. Log write
   errors terminate the job and cannot count as successful evidence capture.
-- `logs` returns up to 64 KiB, an opaque cursor bound to job/stream, `base64` of
+- `command_logs` returns up to 64 KiB, an opaque cursor bound to job/stream, `base64` of
   retained bytes, and a UTF-8 text view. Text can split a multibyte character at a
   cursor boundary; concatenate decoded base64 for exact retained bytes. stdout
   was decoded by the shared process runner, so this is not an arbitrary-binary

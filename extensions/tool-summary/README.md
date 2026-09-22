@@ -21,11 +21,13 @@ Summaries, retry cooldowns, raw-exposure markers, mode, thresholds, and reset ep
 
 | Class | Threshold | Reduction |
 |---|---:|---|
-| `read`, `deep_research`, `spawn_subagent`, `workflow`, panel/report outputs | 24,000 characters | Background active-model high-fidelity summary |
+| `read`, `deep_research`, subagent launch/result tools, `workflow`, panel/report outputs | 24,000 characters | Background active-model high-fidelity summary |
 | `web_fetch`, browser/app extracted prose, text/HTML API bodies | 16,000 characters | Background active-model summary |
-| `bash`, logs, search/KB results, structured JSON, evaluate/API output | 16,000 characters | Deterministic reduction |
+| `bash`, `command_logs`, logs, search/KB results, structured JSON, evaluate/API output | 16,000 characters | Deterministic reduction |
 | Unknown/custom text tools | 16,000 characters | Deterministic for JSON/log-like output; otherwise background active-model summary |
 | `memory_read`, mutation/control/status/navigation tools, images, screenshots, recall, and path-only artifact results | Exempt | Raw only |
+
+Subagent launch tools (`subagent_run`, `subagent_parallel`, `subagent_chain`, `subagent_interactive`, `subagent_worktree`) plus `subagent_status` and `subagent_answer` use high-fidelity policy because they can return child findings. Wait tools, command start/status/list/cancel, and subagent list/cancel/steer/followup remain exempt control results. Legacy `spawn_subagent`, `wait_for`, and `command_job` names remain recognized for old transcript evidence and recall only; they are not registered or advertised, and queued legacy calls are not auto-replayed.
 
 Image-bearing results are exempt from *summarization*, but their image parts are still subject to image aging (rule 8) — the newest 4 images stay raw, older ones become text placeholders in provider context only.
 

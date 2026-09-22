@@ -172,7 +172,7 @@ test('command load failure does not notify success; reset preserves exclusions',
 });
 
 test('bounded literal name/description/group discovery is read-only', async t => {
-  const names = ['read', 'command_job', 'verify', ...Array.from({ length: 100 }, (_, i) => `test_${i}`)];
+  const names = ['read', 'command_start', 'verify', ...Array.from({ length: 100 }, (_, i) => `test_${i}`)];
   const h = await harness(t, { quality: bundle(['verify']) }, {}, names);
   h.tools.get('verify').description = 'Parse JUnit evidence';
   const before = h.writes.length;
@@ -180,7 +180,7 @@ test('bounded literal name/description/group discovery is read-only', async t =>
   assert.equal(result.details.results[0].name, 'verify');
   assert.equal(result.details.results[0].active, false);
   result = await h.call(routers[2], { group: 'development' });
-  assert(result.details.results.some((r: any) => r.name === 'command_job'));
+  assert(result.details.results.some((r: any) => r.name === 'command_start'));
   result = await h.call(routers[2], { query: 'test_', limit: 5 });
   assert.equal(result.details.returned, 5); assert.equal(result.details.total, 100); assert.equal(result.details.nextOffset, 5);
   const page = await h.call(routers[2], { query: 'test_', limit: 5, offset: 5 });

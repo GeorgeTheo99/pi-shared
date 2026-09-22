@@ -2,19 +2,19 @@
 
 A trusted JavaScript workflow runner built on top of Pi subagents.
 
-Pi already has `spawn_subagent` for one-off single / parallel / chain delegation. `workflow` is the next level up: **repeatable, scriptable, multi-phase orchestration** expressed as a small JavaScript program whose primitives are Pi subagent calls.
+Pi already has `subagent_run`, `subagent_parallel`, and `subagent_chain` for one-off single / parallel / chain delegation. `workflow` is the next level up: **repeatable, scriptable, multi-phase orchestration** expressed as a small JavaScript program whose primitives are Pi subagent calls.
 
 ## When to use it
 
 | Situation | Use |
 |---|---|
-| One-off fan-out: "run scout on these 3 things in parallel" | `spawn_subagent` (parallel) |
-| Sequential pipeline: scout → planner → worker | `spawn_subagent` (chain) |
+| One-off fan-out: "run scout on these 3 things in parallel" | `subagent_parallel` |
+| Sequential pipeline: scout → planner → worker | `subagent_chain` |
 | Repeatable pattern worth saving/reusing | `workflow` (by `name`) |
 | Interleaved phases, conditional lanes, gathered results fed into later steps | `workflow` |
 | Multi-phase orchestration that doesn't fit a flat task list | `workflow` |
 
-Rule of thumb: if you'd want to save it and run it again, or it needs real control flow, use `workflow`. If a declarative task list is enough, use `spawn_subagent`.
+Rule of thumb: if you'd want to save it and run it again, or it needs real control flow, use `workflow`. If a declarative task list is enough, use `subagent_run`, `subagent_parallel`, or `subagent_chain`.
 
 ## The `workflow` tool
 
@@ -37,7 +37,7 @@ The workflow body is an **async function body** (top-level `await` and `return` 
 | Global | Signature | Description |
 |---|---|---|
 | `agent` | `(prompt, opts?) => Promise<string>` | Run one Pi subagent. `opts.agent` picks a shared agent (`scout`, `planner`, `reviewer`, `worker`, `panelist`; default `worker`). `opts.model`, `opts.thinking`, and `opts.cwd` are optional. `opts.onProgress(text)` receives each streamed assistant update **while the subagent is still running**, so the orchestrator can observe in-progress findings. Returns the subagent's final assistant text. Throws on failure. |
-| `parallel` | `(thunks) => Promise<any[]>` | Run zero-arg async lanes concurrently. Default max 16 agent calls; actual children share the host-wide 8-slot scheduler with `spawn_subagent`. Returns results in input order. |
+| `parallel` | `(thunks) => Promise<any[]>` | Run zero-arg async lanes concurrently. Default max 16 agent calls; actual children share the host-wide 8-slot scheduler with the subagent tools. Returns results in input order. |
 | `phase` | `(title) => void` | Mark a status grouping boundary (shown in progress + result). |
 | `log` | `(message) => void` | Emit a progress note (shown in progress + result). |
 | `cache` | `(key, producer) => Promise<T>` | Resume-by-replay primitive. When journaling is enabled (`args._journal`), a completed `key`'s result is replayed from disk instead of re-running `producer`; otherwise it degrades to `await producer()`. See [Resume-by-replay](#resume-by-replay-journaling). |
@@ -49,7 +49,7 @@ The workflow body is an **async function body** (top-level `await` and `return` 
 Each `agent(...)` call streams the subagent's `--mode json` events. Two things surface that live activity:
 
 - **TUI progress** shows a per-agent line with a `[N↑]` counter of streamed updates so a long-running subagent visibly advances rather than looking frozen. Aborting the workflow (Esc/Ctrl-C) propagates to every running subagent (SIGTERM → SIGKILL after 5s).
-- **`opts.onProgress(text)`** hands each streamed update to your workflow JS. This is the *orchestrator-visible* channel — use it to log, trip an early-exit, or feed a supervisor decision. Workflow `agent()` calls are one-shot, so workflow steering remains between bounded calls (see `supervisor`). For proactive mid-turn coordination, use an interactive background `spawn_subagent` job with `jobAction:"steer"` or `jobAction:"followup"`.
+- **`opts.onProgress(text)`** hands each streamed update to your workflow JS. This is the *orchestrator-visible* channel — use it to log, trip an early-exit, or feed a supervisor decision. Workflow `agent()` calls are one-shot, so workflow steering remains between bounded calls (see `supervisor`). For proactive mid-turn coordination, use a `subagent_interactive` job with `background:true`, then `subagent_steer({jobId,message})` or `subagent_followup({jobId,message})` for a live owner-session child without a pending question. Continue substantive independent parent work before waiting once with `wait_for_jobs({jobs:[jobId],timeout:3600})`, then fetch `subagent_status({jobId})` once. If it is `awaiting_answer`, use `subagent_answer({jobId,questionId,answer})` for only the exact current untrusted question.
 
 ```js
 await agent("Do the long thing", {
@@ -118,7 +118,7 @@ See [`../../workflows/research-fanout.js`](../../workflows/research-fanout.js):
 workflow({
   name: "research-fanout",
   args: { questions: [
-    "How does spawn_subagent route tasks?",
+    "How does subagent_run route tasks?",
     "Where is the job store persisted?",
   ] },
 })
@@ -143,14 +143,14 @@ Returns `{ rounds, accepted, finalOutput, history }` where `history` is the per-
 
 ## How subagents run
 
-Each `agent(...)` call spawns an isolated `pi --mode json -p --no-session` subprocess, exactly like `spawn_subagent` single mode:
+Each `agent(...)` call spawns an isolated `pi --mode json -p --no-session` subprocess, exactly like `subagent_run`:
 
 - **Shared agents only** in v1 (`scout`, `planner`, `reviewer`, `worker`, `panelist`). No `agentScope` / project-agent selection inside workflows.
 - **Model precedence**: `opts.model` → agent frontmatter `model` → parent session model. Inheriting the parent model avoids children falling back to a default provider with no credentials.
 - **Thinking precedence**: `opts.thinking` → workflow-level `thinking` → a legacy `:<thinking>` model suffix → `high`. Pi clamps the selected level to model capabilities.
-- **Profile/model routing**: no per-call `agentDir` override. The shared runner preserves parent/profile inheritance and routes GPT-family models through the trusted OpenAI Codex subscription profile when available, matching `spawn_subagent`.
+- **Profile/model routing**: no per-call `agentDir` override. The shared runner preserves parent/profile inheritance and routes GPT-family models through the trusted OpenAI Codex subscription profile when available, matching `subagent_run`.
 - **Scheduling**: every `agent()` call—including calls made through direct `Promise.all`, not only `parallel()`—acquires the host-wide lease. Default request limit is 16 and host concurrency is 8.
-- **Aborts/timeouts**: workflow abort/failure/session shutdown cancels queued work and terminates running process trees (SIGTERM, then SIGKILL after the configured grace). Queue/run deadlines and output bounds match `spawn_subagent`.
+- **Aborts/timeouts**: workflow abort/failure/session shutdown cancels queued work and terminates running process trees (SIGTERM, then SIGKILL after the configured grace). Queue/run deadlines and output bounds match the subagent tools.
 - **Nesting**: child sessions cannot delegate again by default (`PI_SUBAGENT_MAX_DEPTH=1`).
 
 ## Constraints
@@ -160,7 +160,7 @@ Each `agent(...)` call spawns an isolated `pi --mode json -p --no-session` subpr
 - **No structured output schema validation.** Return whatever you want; it's serialized to JSON in the result.
 - **No per-call `agentDir` / `agentScope`.**
 - **At most 16 agent calls per workflow by default.** Change shared limits with the `PI_SUBAGENT_*` variables documented in [`../spawn-subagent/README.md`](../spawn-subagent/README.md).
-- **Workflow steering is between steps, not mid-step.** Use the `supervisor` pattern for checkpoint course-correction. The separate interactive `spawn_subagent` mode provides acknowledged `steer` and `followup` controls when proactive coordination is required.
+- **Workflow steering is between steps, not mid-step.** Use the `supervisor` pattern for checkpoint course-correction. The separate `subagent_interactive` tool provides acknowledged `subagent_steer` and `subagent_followup` controls when proactive coordination is required.
 
 These are deliberate v1 scope cuts. Each can become a v2 feature once the reuse need is proven.
 
@@ -173,8 +173,8 @@ Workflow scripts run **in-process** via the `AsyncFunction` constructor — equi
 - Explicit `scriptPath` files are canonicalized with `realpath`; symlink escapes and external paths require approval unless their directory is allowlisted with `PI_WORKFLOW_ALLOWED_SCRIPT_DIRS`.
 - Inline `script` — agent-authored and always gated by an interactive confirmation that shows a source preview and SHA-256 digest. It is blocked in noninteractive contexts.
 
-There is no vm sandbox. This matches the existing trust level of `bash` and `spawn_subagent` in Pi. A sandbox can be added in v2 if workflow sources become less trusted.
+There is no vm sandbox. This matches the existing trust level of `bash` and `subagent_run` in Pi. A sandbox can be added in v2 if workflow sources become less trusted.
 
 ## Routing
 
-When `workflow` is an active tool, a routing note is injected into the system prompt steering the model to use `workflow` for repeatable multi-phase orchestration and `spawn_subagent` for ordinary one-off delegation. See `WORKFLOW_ROUTING` in `index.ts`.
+When `workflow` is an active tool, a routing note is injected into the system prompt steering the model to use `workflow` for repeatable multi-phase orchestration and `subagent_run` / `subagent_parallel` / `subagent_chain` for ordinary one-off delegation. See `WORKFLOW_ROUTING` in `index.ts`.

@@ -1,8 +1,8 @@
 /** Read-only discovery. Capability groups do not participate in activation. */
 const groups = [
-	{ name: "development", description: "Managed commands, verification, code intelligence and environment diagnostics", tools: ["command_job", "verify", "code_intel", "dev_doctor"] },
+	{ name: "development", description: "Managed commands, verification, code intelligence and environment diagnostics", tools: ["command_start", "command_status", "command_list", "command_logs", "command_cancel", "verify", "code_intel", "dev_doctor"] },
 	{ name: "browser", description: "Public browser retrieval and local/private app testing (independent boundaries)", tools: ["browser_fetch", "browser_inspect", "app_*"] },
-	{ name: "delegation", description: "Subagent delegation, model panels and bounded waiting", tools: ["spawn_subagent", "panel_select", "wait_for"] },
+	{ name: "delegation", description: "Subagent delegation, model panels and bounded waiting", tools: ["subagent_run", "subagent_parallel", "subagent_chain", "subagent_interactive", "subagent_worktree", "subagent_list", "subagent_status", "subagent_cancel", "subagent_answer", "subagent_steer", "subagent_followup", "panel_select", "wait_for_condition", "wait_for_jobs", "wait_for_ready"] },
 	{ name: "planning", description: "Work plans, goals, user questions and project memory", tools: ["work_plan", "start_goal", "update_goal", "ask_user", "memory_*"] },
 	{ name: "recall", description: "Recall original tool results and search the web", tools: ["tool_result_recall", "web_search", "web_fetch"] },
 ];

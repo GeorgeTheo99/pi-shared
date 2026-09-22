@@ -10,7 +10,7 @@ manual symlinks and sourcing `pi-launchers.zsh` are not required for that path.
 ## Contents
 
 - `AGENTS.md` — shared global pi instructions; symlink to `~/.pi/agent/AGENTS.md`.
-- `extensions/` — shared pi extensions, including oversized tool-result summarization (`tool_result_recall`, `/tool-summary`), project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`spawn_subagent`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), same-process fresh-session handoff (`/self-handoff`), machine-local peer coordination (`peer_sessions`, `peer_send`, `peer_message_status`, `peer_acknowledge`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), local-search MCP-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_read`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
+- `extensions/` — shared pi extensions, including oversized tool-result summarization (`tool_result_recall`, `/tool-summary`), project memory (`memory_read`, `memory_write`, `/memory`), native subagents (`subagent_run`, `subagent_parallel`, `subagent_chain`, `subagent_interactive`, `subagent_worktree`, `/subagents`), workflow orchestration (`workflow`, `/workflows`), same-process fresh-session handoff (`/self-handoff`), machine-local peer coordination (`peer_sessions`, `peer_send`, `peer_message_status`, `peer_acknowledge`), model-panel second opinions (`/panel`, `panel_models`, `panel_select`), local-search MCP-backed web search/fetch (`web_search`, `web_fetch`), `software-kb` tools (`kb_search`, `kb_read`, `kb_sources`), and commands (`/kb-search`, `/kb-sources`).
 - `knowledge/software-engineering/` — shared source catalog/editorial cards plus optional private, page-cited PDF search. `kb_sources` distinguishes catalog availability from locally indexed content. Book originals/extracted text stay ignored and are not distributed; see [KB ingestion and verification](../knowledge/software-engineering/README.md).
 - `skills/` — shared skills only; local-only skills should live outside this repo, preferably under `~/local_code/pi-databricks/skills`.
 - `prompts/` — shared prompt templates.
@@ -33,13 +33,14 @@ verification, and activation prerequisites for the development-tooling roadmap.
 
 | Tool | Purpose |
 |---|---|
-| `command_job` + `wait_for` | Bounded local commands, readiness, logs, and explicit process outcomes |
+| `command_start`, `command_status`, `command_list`, `command_logs`, `command_cancel` | Bounded local commands, logs, and explicit process outcomes |
+| `wait_for_condition`, `wait_for_jobs`, `wait_for_ready` | Shell predicates, job completion, and fixed command-readiness waits |
 | `verify` | Reviewed project checks with TAP/JUnit/exit evidence and source freshness |
 | `code_intel` | Read-only TypeScript/JavaScript navigation and diagnostics |
 | `dev_doctor` / `bin/pi-doctor` | Static environment inspection with explicitly selected probes |
 | `tool_result_recall` | Exact text recall and lossless JSON Pointer selection |
 | `app_test` | Isolated local/private browser contexts, assertions and failure evidence |
-| `spawn_subagent` with `isolation:"worktree"` | Retained, committed-base single-worker Git isolation |
+| `subagent_worktree` | Retained, committed-base single-worker Git isolation |
 | `enterprise_list_bundles` | Bounded discovery without overriding user tool exclusions |
 | `safe_edit` | Exact single-file preview/apply with stale-input rejection |
 
@@ -47,6 +48,29 @@ Existing `bash`, `read`, `edit`, persistent `app_*`, and public browser-worker t
 remain available. Reload/restart is a user action; verification trust and language-
 server configuration are not granted automatically. None of these tools is an OS
 sandbox, and process completion is not the same as test success or service readiness.
+
+### Job API migration
+
+The old tool names are no longer registered or advertised. Old transcript evidence and exact recall are preserved; queued legacy calls are **not auto-replayed**. Migrate explicit configured allowlists/exclusions referencing old names to the intended new operations **before activating the new tools**. This split grants no additional permissions or ownership, and does not rename extension paths, state directories, or `/subagents`.
+
+| Previous call | Replacement |
+|---|---|
+| `command_job` start/status/list/logs/cancel | `command_start`, `command_status`, `command_list`, `command_logs`, `command_cancel` |
+| `wait_for` with `condition` | `wait_for_condition({condition,timeout,poll_interval?,progress?,failure_exit_codes?})` |
+| `wait_for` with `jobs` | `wait_for_jobs({jobs,timeout,job_mode?,poll_interval?})` |
+| Command readiness wait | `wait_for_ready({jobs,timeout,poll_interval?})`; `cmd_` IDs only, fixed readiness semantics |
+| `spawn_subagent` single/tasks/chain | `subagent_run`, `subagent_parallel`, `subagent_chain` |
+| `spawn_subagent` with `interactive:true` | `subagent_interactive`; no `outputSchema` or `isolation` |
+| `spawn_subagent` with `isolation:"worktree"` | `subagent_worktree`; fixed foreground worker, no `agent`, `background`, or `isolation` flags |
+| `spawn_subagent` with `jobAction` | `subagent_list`, `subagent_status`, `subagent_cancel`, `subagent_answer`, `subagent_steer`, `subagent_followup` |
+
+`command_start` requires `command` and `timeout_seconds`, with optional `args`, `cwd`, `label`, and `readiness`. Command status/cancel take `{id}`, list takes `{}`, and logs takes `{id,stream?,cursor?,max_bytes?}`. Subagent status/cancel take `{jobId}`, list takes `{}`, answer takes `{jobId,questionId,answer,background?}`, and steer/followup take `{jobId,message}`. Launch schemas and examples are in [Spawn Subagent](../extensions/spawn-subagent/README.md).
+
+All waits require explicit `timeout`. Do substantive independent parent work before waiting once when results become a dependency, then inspect status once. `wait_for_jobs` accepts command/subagent IDs and wakes on `awaiting_answer`; `wait_for_ready` accepts only command IDs with declared readiness. Neither readiness nor process completion proves test success.
+
+The shared operation boundary uses each tool's closed schema before both Pi execution and direct handler calls. Only optional `null` placeholders normalize to omission; required nulls and primitive coercions are rejected, and meaningful empty arrays/strings retain their documented meaning. Validation errors never echo commands, prompts, or answers. Strict sampling is preferred where supported; arbitrary `outputSchema` maps require provider fallback, so local validation remains authoritative. Object-union schemas are deliberately avoided for provider portability.
+
+`npm run test:job-contracts` tests all operation contracts against the installed Pi SDK and offline OpenAI/Anthropic/Google serialization. It requires a discoverable SDK (or `PI_TEST_SDK_DIR` / `PI_INSTALL_DIR`) and fails rather than silently skipping when unavailable. Engine regression suites remain `npm run test:subagents` and `npm run test:command-jobs`.
 
 ## Pi launcher profiles
 
@@ -372,32 +396,33 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - `app_*` tools for local/private web app testing remain in-process and unchanged: `app_open`, `app_click`, `app_type_text`, `app_wait_for`, `app_extract_text`, `app_screenshot`, `app_console_logs`, `app_network_log`, `app_api_request`, `app_page_state`, and tab helpers
   - browser-worker enforces authenticated public-network-only egress; the retired granular public `browser_*` family must never be loaded with the two worker tools
 - `extensions/spawn-subagent` — native subagent delegation:
-  - `spawn_subagent` keeps existing isolated `pi --mode json -p --no-session` behavior for non-interactive single, parallel, or chained specialist work
-  - opt-in single-mode `interactive:true` uses one persistent RPC child for 10 correlated `ask_parent` exchanges by default (20 maximum); resume with `jobAction:"answer"`, the current `jobId`, and exact `questionId`
-  - live owner-session interactive jobs accept acknowledged `jobAction:"steer"` and `"followup"` controls; coordination messages are bounded and explicitly untrusted
+  - `subagent_run`, `subagent_parallel`, and `subagent_chain` keep existing isolated `pi --mode json -p --no-session` behavior for non-interactive single, parallel, or chained specialist work
+  - `subagent_worktree` runs a fixed foreground worker in a retained, committed-base Git worktree; it accepts `task`, optional `baseRevision` / `cwd` / shared launch options / `outputSchema`, not `agent`, `background`, or `isolation` flags
+  - `subagent_interactive` uses one persistent RPC child for 10 correlated `ask_parent` exchanges by default (20 maximum); resume with `subagent_answer({jobId,questionId,answer})` and the exact current question
+  - live owner-session interactive jobs without a pending question accept acknowledged `subagent_steer({jobId,message})` and `subagent_followup({jobId,message})` controls; coordination messages are bounded and explicitly untrusted
   - questions/answers are bounded and explicitly untrusted tool-result data; parked children release the scheduler lease and reacquire it before an answer resumes work
   - optional bounded `outputSchema` contracts validate exact JSON for one-shot single, parallel, and chain runs; chain handoffs isolate prior output in an untrusted JSON envelope
   - parallel tasks and chain steps may specify task-level `model`, `thinking`, `agentDir`, and `outputSchema` overrides; child thinking defaults explicitly to `high`
   - bundled shared agents: `scout`, `planner`, `reviewer`, `worker`, `panelist`
-  - default fan-out is 16 tasks with a host-wide 8-child concurrency lease shared by `spawn_subagent`, `workflow`, background jobs, and independent Pi processes; foreground priority, starvation aging, and optional provider pools keep the queue responsive
-  - background job completion is a UI notification in interactive/RPC sessions, never an injected LLM-context message; fetch/list/cancel jobs with `jobAction: "status"` / `"list"` / `"cancel"`
-  - `wait_for({jobs:[...]})` wakes on `awaiting_answer` as well as terminal completion, preventing parent/child wait deadlocks
+  - default fan-out is 16 tasks with a host-wide 8-child concurrency lease shared by the subagent tools, `workflow`, background jobs, and independent Pi processes; foreground priority, starvation aging, and optional provider pools keep the queue responsive
+  - background job completion is a UI notification in interactive/RPC sessions, never an injected LLM-context message; fetch/list/cancel jobs with `subagent_status({jobId})` / `subagent_list({})` / `subagent_cancel({jobId})`
+  - `wait_for_jobs({jobs:["sub_…"],timeout:3600})` wakes on `awaiting_answer` as well as terminal completion, preventing parent/child wait deadlocks
   - background records use locked, atomic, owner-leased persistence so one Pi process cannot falsely fail or overwrite another process's live jobs
   - `/subagents [shared|user|project|all]` lists available agents
   - project-local `.pi/agents` are not read unless the project is trusted or the user grants explicit interactive approval
 - `extensions/panel` — user-invoked alternate-model second opinions:
   - `/panel` asks a runtime-selected alternate model for a second opinion on the current conversation or an explicit task
-  - `/panel --compare` runs multiple model families through `spawn_subagent` in parallel and asks the main session to synthesize
+  - `/panel --compare` runs multiple model families through `subagent_parallel` and asks the main session to synthesize
   - `/panel --list [search]`, `panel_models`, and `panel_select` use Pi model registries for portable runtime model discovery, including the alternate `~/.pi-omlx/agent` profile by default; lists disclose `vision`/`text-only` capability and `panel_select({requiresImages:true})` fails closed to vision-capable choices
   - when a text-only model omits an image, the agent can delegate the accessible local path to a vision-capable panelist and consume bounded textual observations without putting image bytes in the parent request history
   - optional model preferences/exclusions live in `~/.pi/panel-config.json` or project `.pi/panel-config.json`; trusted `modelProfileDirs` overrides are honored only from `~/.pi/panel-config.json`
 - `extensions/workflow` — trusted JS workflow runner on top of Pi subagents:
   - `workflow` runs a JavaScript workflow body (inline `script`, saved `name`, or `scriptPath`) whose primitives are Pi subagent calls
   - workflow globals: `agent(prompt, opts?)`, `parallel(thunks)`, `phase(title)`, `log(message)`, `args`, `cwd`; workflow-level and per-agent `thinking` overrides default to `high`
-  - shared agents only in v1 (`scout`, `planner`, `reviewer`, `worker`, `panelist`); each `agent()` call uses the same scheduler, managed process lifecycle, model/profile routing, and bounds as `spawn_subagent`
+  - shared agents only in v1 (`scout`, `planner`, `reviewer`, `worker`, `panelist`); each `agent()` call uses the same scheduler, managed process lifecycle, model/profile routing, and bounds as `subagent_run`
   - saved workflows: `pi-shared/workflows/<name>.js` (shared, committed) or `.pi/workflows/<name>.js` (project, requires trust); `/workflows` lists them
   - inline JavaScript always requires explicit interactive approval; noninteractive workflow use must resolve to a trusted or allowlisted file
-  - use for repeatable, multi-phase, scriptable orchestration; use `spawn_subagent` for ordinary one-off single/parallel/chain delegation
+  - use for repeatable, multi-phase, scriptable orchestration; use `subagent_run`, `subagent_parallel`, or `subagent_chain` for ordinary one-off single/parallel/chain delegation
   - resume-by-replay journals are context-bound, exact, locked, and atomic; stale, corrupt, colliding, or oversized replay data fails closed
   - v1 scope: Pi-backed subagents only and no workflow-level structured-output schema validation
 - `extensions/integration-bundles` — lazy enterprise tool-bundle loader driven by a machine-local `master_integration_list.yaml`:
@@ -413,7 +438,7 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
 
 - `skills/frontend-design` — high-quality frontend/UI design skill for building polished, distinctive web interfaces
 - `skills/handoff` — writes a structured continuation handoff for a fresh Pi session
-- `skills/panel` — orchestrates `/panel` second-opinion, image-capable delegation, and multi-model compare workflows using `panel_select` plus `spawn_subagent panelist`
+- `skills/panel` — orchestrates `/panel` second-opinion, image-capable delegation, and multi-model compare workflows using `panel_select` plus `subagent_run` / `subagent_parallel` with the `panelist` agent
 - `skills/resume-handoff` — resumes from the most recent handoff file and verifies current repo state before continuing
 
 ## Shared vs local-only setup

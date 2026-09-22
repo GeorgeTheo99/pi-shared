@@ -4,13 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
-import waitFor from "../extensions/wait-for/index.ts";
+import { waitForEngine } from "../extensions/wait-for/index.ts";
 import { runShellProcess } from "../extensions/_shared/shell-process.ts";
 
 function setup(t: any) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-wait-execution-"));
-	let tool: any;
-	waitFor({ registerTool: (definition: any) => { tool = definition; } } as any);
+	const tool: any = waitForEngine;
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	return { dir, tool, call: (args: any, signal?: AbortSignal) => tool.execute("test", args, signal, undefined, { cwd: dir }) };
 }

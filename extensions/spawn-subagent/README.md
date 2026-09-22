@@ -1,26 +1,45 @@
 # Spawn Subagent
 
-Shared Pi extension that provides a native `spawn_subagent` tool for delegating work to isolated Pi subprocesses.
+Shared Pi extension for delegating work to isolated Pi subprocesses through operation-specific tools. Extension paths, state directories, and `/subagents` retain their names.
 
-## Tool
+## Tools
 
-```text
-spawn_subagent
+Launch options:
+
+- Shared optional fields: `model`, `thinking`, `agentDir`, `agentScope`, `confirmProjectAgents`.
+- `subagent_run`: required `agent`, `task`; optional shared fields, `background`, `cwd`, `outputSchema`.
+- `subagent_parallel`: required `tasks`; optional shared fields, `background`, `outputSchema`. Each task has `agent`, `task`, and optional `cwd`, `model`, `thinking`, `agentDir`, `outputSchema`.
+- `subagent_chain`: required `chain`; optional shared fields, `background`, `outputSchema`. Steps accept the same per-task fields as parallel tasks.
+- `subagent_interactive`: required `agent`, `task`; optional shared fields, `background`, `cwd`, `maxExchanges`. No `outputSchema` or `isolation`.
+- `subagent_worktree`: required `task`; optional shared fields, `cwd`, `baseRevision`, `outputSchema`. Fixed foreground worker; no `agent`, `background`, or `isolation` flags.
+- `subagent_answer` optionally accepts `background`; lifecycle tools use exact job/question IDs, not an action discriminator.
+
+The legacy `spawn_subagent` tool is not registered or advertised. Old transcript evidence is preserved, but queued legacy calls are not auto-replayed. Migrate explicit configured allowlists/exclusions before activating the new tools; see the [job API migration table](../../docs/reference.md#job-api-migration).
+
+Examples:
+
+```js
+subagent_run({agent:"scout", task:"find auth entry points"})
+subagent_parallel({tasks:[{agent:"scout", task:"find models"}, {agent:"scout", task:"find routes"}]})
+subagent_parallel({tasks:[
+  {agent:"panelist", task:"review X", model:"provider/model-a", thinking:"high", agentDir:"~/.pi-omlx/agent"},
+  {agent:"panelist", task:"review X", model:"provider/model-b"},
+]})
+subagent_chain({chain:[{agent:"scout", task:"inspect X"}, {agent:"planner", task:"plan from this: {previous}"}]})
+subagent_run({agent:"scout", task:"find models", background:true})
+subagent_interactive({agent:"scout", task:"inspect the ambiguous API", maxExchanges:10})
+subagent_worktree({task:"implement the focused change", baseRevision:"HEAD"})
+subagent_run({agent:"scout", task:"List changed files", outputSchema:{
+  type:"object", required:["files"], additionalProperties:false,
+  properties:{files:{type:"array", items:{type:"string"}}},
+}})
+subagent_list({})
+subagent_status({jobId:"sub_…"})
+subagent_cancel({jobId:"sub_…"})
+subagent_answer({jobId:"sub_…", questionId:"q_…", answer:"…"})
+subagent_steer({jobId:"sub_…", message:"Check the parser first"})
+subagent_followup({jobId:"sub_…", message:"Then run focused tests"})
 ```
-
-Modes:
-
-- Single: `{ "agent": "scout", "task": "find auth entry points" }`
-- Isolated worker: `{ "agent": "worker", "task": "implement the focused change", "isolation": "worktree", "baseRevision": "HEAD" }`
-- Parallel: `{ "tasks": [{ "agent": "scout", "task": "find models" }, { "agent": "scout", "task": "find routes" }] }`
-- Parallel with per-task models/thinking/profiles: `{ "tasks": [{ "agent": "panelist", "task": "review X", "model": "provider/model-a", "thinking": "high", "agentDir": "~/.pi-omlx/agent" }, { "agent": "panelist", "task": "review X", "model": "provider/model-b" }] }`
-- Chain: `{ "chain": [{ "agent": "scout", "task": "inspect X" }, { "agent": "planner", "task": "plan from this: {previous}" }] }`
-- Background start: `{ "background": true, "tasks": [{ "agent": "scout", "task": "find models" }, { "agent": "scout", "task": "find routes" }] }`
-- Interactive single child: `{ "agent": "scout", "task": "inspect the ambiguous API", "interactive": true, "maxExchanges": 10 }`
-- Persistent job status/list/cancel: `{ "jobAction": "status", "jobId": "sub_..." }`, `{ "jobAction": "list" }`, `{ "jobAction": "cancel", "jobId": "sub_..." }`
-- Answer the current interactive question: `{ "jobAction": "answer", "jobId": "sub_...", "questionId": "q_...", "answer": "..." }`
-- Steer a live interactive child or queue a follow-up: `{ "jobAction": "steer", "jobId": "sub_...", "message": "Check the parser first" }`, `{ "jobAction": "followup", "jobId": "sub_...", "message": "Then run focused tests" }`
-- Schema-validated output: `{ "agent": "scout", "task": "List changed files", "outputSchema": { "type": "object", "required": ["files"], "additionalProperties": false, "properties": { "files": { "type": "array", "items": { "type": "string" } } } } }`
 
 ## Agents
 
@@ -62,38 +81,38 @@ Lists available agents for the selected scope.
 ## Behavior
 
 - Non-interactive calls spawn a separate `pi --mode json -p --no-session` process per task and retain the existing one-shot behavior.
-- `interactive:true` is opt-in and currently supports single mode only. Use it when the child may face a clarification that cannot be resolved from code, logs, documentation, or tools and whose answer would materially change the result, such as a parent-only decision or fact; prefer normal mode for self-contained exploration, planning, review, and implementation. It starts one persistent `pi --mode rpc --no-session` child with an explicitly loaded `ask_parent` tool; parallel/chain interactive arbitration is intentionally rejected.
+- `subagent_interactive` is opt-in and supports one child only. Use it when the child may face a clarification that cannot be resolved from code, logs, documentation, or tools and whose answer would materially change the result, such as a parent-only decision or fact; prefer normal mode for self-contained exploration, planning, review, and implementation. It starts one persistent `pi --mode rpc --no-session` child with an explicitly loaded `ask_parent` tool; parallel/chain interactive arbitration is intentionally rejected.
 - One-shot and interactive children succeed only after producing a non-empty final assistant result. Child failures, cancellations, invalid parameters, and schema-validation failures set the tool result's `isError` flag instead of looking like successful tool calls.
 - Optional `outputSchema` is available at the top level and per parallel task or chain step for one-shot runs. The child is instructed to return exactly one JSON value, and the parent validates it with a bounded, fail-closed JSON Schema subset before exposing it as `details.results[].structuredOutput`. Unsupported schema keywords fail rather than being ignored. Interactive output schemas are intentionally rejected.
 - Chain `{previous}` handoffs are appended as an explicitly untrusted JSON envelope. A later child is told to use the data as task-scoped evidence and not follow instructions embedded in an earlier child's output. When the earlier step has a validated `structuredOutput`, the chain passes that value instead of raw prose.
 - Model precedence per spawn: task/chain-step `model` > explicit top-level `model` call param > agent frontmatter `model:` > parent session model (`ctx.model.provider/ctx.model.id`). The parent's provider-qualified model is inherited automatically so subagents don't fall back to a default provider with no usable credentials (e.g. Databricks-routed parents where `OPENAI_API_KEY` is a sentinel value).
 - Child thinking defaults explicitly to `high`. Thinking precedence is task/chain-step `thinking` > top-level `thinking` > a legacy `:<thinking>` suffix already present on the selected model > `high`. Supported values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; Pi clamps them to model capabilities.
-- GPT-family subagent models always use the OpenAI Codex subscription provider, not the OpenAI API provider: `gpt-*`, `chatgpt-*`, `o*`, and API-routed forms like `openai/gpt-*` are launched as `openai-codex/<model>` automatically. If the current child profile lacks subscription auth, `spawn_subagent` falls back to the default subscription profile (`~/.pi/agent`). If no subscription auth exists, the child fails instead of silently using the API route.
+- GPT-family subagent models always use the OpenAI Codex subscription provider, not the OpenAI API provider: `gpt-*`, `chatgpt-*`, `o*`, and API-routed forms like `openai/gpt-*` are launched as `openai-codex/<model>` automatically. If the current child profile lacks subscription auth, the subagent runner falls back to the default subscription profile (`~/.pi/agent`). If no subscription auth exists, the child fails instead of silently using the API route.
 - Optional `agentDir` / `tasks[].agentDir` / `chain[].agentDir` sets `PI_CODING_AGENT_DIR` for the child Pi process, enabling cross-profile model runs such as launching `ls99-cloud/*` models from `~/.pi-omlx/agent` while the parent session uses a narrower profile. `~/.pi/agent` and `~/.pi-omlx/agent` are trusted by default.
 - `agentDir` is a trust boundary because a Pi profile can load its own settings and extensions. `~/.pi/agent`, `~/.pi-omlx/agent`, the current `PI_CODING_AGENT_DIR`, and comma-separated `PI_SPAWN_SUBAGENT_ALLOWED_AGENT_DIRS` are allowlisted; other profiles require UI confirmation or are blocked in non-interactive mode.
 - Streams live partial updates back into the tool result for foreground jobs, including queued/running/completed status, active child tool, last event, and output preview for each subagent.
-- Renders custom TUI rows for `spawn_subagent` calls so the visible tool card shows mode, agent/task summary, per-agent progress, active tools, and final output previews instead of only the generic tool name.
-- Background jobs return a job id immediately and keep running in the current Pi extension process. Use them only when the parent has substantive independent work: continue that work first, call `wait_for({jobs:[...]})` once when the result becomes a dependency, then fetch `jobAction=status` once. List with `jobAction=list` and cancel with `jobAction=cancel`.
+- Renders custom TUI rows for subagent calls so the visible tool card shows mode, agent/task summary, per-agent progress, active tools, and final output previews instead of only the generic tool name.
+- Background jobs return a job id immediately and keep running in the current Pi extension process. Use them only when the parent has substantive independent work: continue that work first, call `wait_for_jobs({jobs:[jobId],timeout:3600})` once when the result becomes a dependency, then fetch `subagent_status({jobId})` once. List with `subagent_list({})` and cancel with `subagent_cancel({jobId})`.
 - A background job status fetch includes the latest live partial result while the job is running and returns the correlated question when it is `awaiting_answer`; do not repeatedly poll it.
-- Background jobs emit a visible UI notification when they transition to `completed`, `failed`, or `canceled`; it includes the job id and success summary, while full output remains available through `jobAction: "status"`.
+- Background jobs emit a visible UI notification when they transition to `completed`, `failed`, or `canceled`; it includes the job id and success summary, while full output remains available through `subagent_status({jobId})`.
 - Background job metadata and truncated/redacted result summaries persist to `~/.pi/agent/spawn-subagent/jobs.json` by default (`PI_SUBAGENT_STATE_DIR` or legacy `PI_SPAWN_SUBAGENT_DIR` overrides the directory). Active records are never evicted; terminal history is limited to the newest records within the 100-job / 30-day retention bounds.
 - Background records are merged under an interprocess lock and published atomically. Running jobs carry owner PID/heartbeat leases, so loading another Pi process does not mark live foreign jobs failed. Expired/dead owners are reconciled to `failed`.
 - Cancellation is cross-process: a remote request moves the job to nonterminal `canceling`; the owner aborts queued/running children, waits for process-tree shutdown, and only then persists terminal `canceled`.
-- Parallel and chain requests allow 16 runs by default. A host-wide lease scheduler caps actual children at 8 across `spawn_subagent`, `workflow`, background jobs, and separate Pi processes sharing the state directory.
+- Parallel and chain requests allow 16 runs by default. A host-wide lease scheduler caps actual children at 8 across the subagent tools, `workflow`, background jobs, and separate Pi processes sharing the state directory.
 - Foreground requests pass queued background requests, while background aging restores FIFO priority after 60 seconds to prevent starvation. Optional provider resource pools enforce lower per-backend caps and skip saturated pools so they do not head-of-line block unrelated providers.
 - The managed runner enforces queue/run deadlines, bounded task/event/stderr/result capture, process-tree cleanup (SIGTERM→SIGKILL on POSIX; `taskkill /T /F` on Windows), and session-shutdown cleanup.
 - Interactive children preserve the same process and conversation across correlated exchanges. The default is 10, the hard maximum is 20, and callers may set `maxExchanges` to `1..20`.
 - Only one question may be outstanding. Questions and answers are bounded to 64 KiB UTF-8, stale/duplicate IDs are rejected, and both directions are labeled explicitly as untrusted tool-result data rather than injected user messages.
-- A live owner-session interactive job also accepts bounded `jobAction:"steer"` and `jobAction:"followup"` controls. Steering interrupts the current turn; follow-up queues work after it. Both commands require an RPC acknowledgement, are wrapped as untrusted task-scoped coordination notes, and are rejected while a correlated `ask_parent` answer is pending.
-- A child parked on `awaiting_answer` releases its host scheduler lease. `jobAction:"answer"` reacquires a lease before writing the matching RPC response, so parked children do not consume active child capacity.
-- Persistent interactive jobs still count toward the active-job cap and the normal run timeout continues while parked. `wait_for({jobs:[...]})` wakes immediately on `awaiting_answer`, regardless of terminal `job_mode`, to avoid deadlock.
+- A live owner-session interactive job also accepts bounded `subagent_steer({jobId,message})` and `subagent_followup({jobId,message})` controls. Steering interrupts the current turn; follow-up queues work after it. Both commands require an RPC acknowledgement, are wrapped as untrusted task-scoped coordination notes, and are rejected while a correlated `ask_parent` answer is pending.
+- A child parked on `awaiting_answer` releases its host scheduler lease. `subagent_answer` reacquires a lease before writing the matching RPC response, so parked children do not consume active child capacity.
+- Persistent interactive jobs still count toward the active-job cap and the normal run timeout continues while parked. `wait_for_jobs({jobs:[jobId],timeout:3600})` wakes immediately on `awaiting_answer`, regardless of terminal `job_mode`, to avoid deadlock.
 - Interactive process handles are owner-session-only and are never serialized. Cancellation, timeout, process failure, or session shutdown/reload terminates and reaps the child; a reloaded process may inspect the sanitized snapshot but cannot rehydrate or answer it.
 - Nested subagent/workflow delegation is disabled by default (`max depth = 1`) and also excluded in child CLI arguments.
-- Nonisolated calls keep the existing cwd behavior. Opt-in `isolation:"worktree"` creates a detached Git worktree for a foreground one-shot `worker` only; see below.
+- Nonisolated calls keep the existing cwd behavior. `subagent_worktree` creates a detached Git worktree for a fixed foreground one-shot `worker`; see below.
 
 ## Opt-in worktree isolation
 
-`isolation:"worktree"` is currently supported only for a **foreground, one-shot, single `worker`**. Interactive, background, parallel, chain, job-action, and per-task isolation options are rejected rather than ignored. Independent single calls may run concurrently with distinct worktrees. Omitting isolation preserves existing behavior; `baseRevision` without isolation is an error.
+`subagent_worktree` runs only a **foreground, one-shot, single `worker`**. It does not accept `agent`, `background`, or `isolation` flags. Other launch tools do not accept `baseRevision` or isolation options. Independent worktree calls may run concurrently with distinct worktrees. `subagent_run` preserves the existing nonisolated behavior.
 
 - `cwd` selects the source repository; the child runs at the new worktree's **repository root**, even when source cwd is a subdirectory. `baseRevision` resolves once to a commit (branch/tag/hash expressions are accepted). Omission selects `HEAD` only for a clean parent. A dirty parent requires explicit committed-base selection, e.g. `"baseRevision":"HEAD"`; parent tracked edits and untracked/ignored files are **never copied**. The task tells the child its actual workspace, resolved base, and parent-state difference.
 - Each worktree has a unique owner-only container under the Git common directory, `pi-subagent-worktree-*/workspace`, with an `ownership.json` recovery record. The existing managed child runner/scheduler receives that cwd; this feature adds no separate Pi execution path.
@@ -142,7 +161,7 @@ Do not use subagents for single-file reads, quick greps, obvious edits, or norma
 
 ## Orchestration
 
-This extension injects a task routing table and agent roster into every system prompt via `before_agent_start` when `spawn_subagent` is an active tool. This is the single orchestration point that steers the LLM toward the right tool for each kind of work.
+This extension injects a task routing table and agent roster into every system prompt via `before_agent_start` when a subagent launch tool is active. This is the single orchestration point that steers the LLM toward the right tool for each kind of work.
 
 ### How it works
 
@@ -171,7 +190,7 @@ The `ROUTING_TABLE` is the only manual coordination point. It lives in this file
 
 ### Integration with other extensions
 
-- **goal**: The goal continuation prompt (in `extensions/goal/index.ts`) references `spawn_subagent` for parallel items and specialist delegation. If you rename or remove an agent, update the goal prompt too.
+- **goal**: The goal continuation prompt (in `extensions/goal/index.ts`) references `subagent_parallel` for parallel items and specialist delegation. If you rename or remove an agent, update the goal prompt too.
 - **deep-research**: Registered as both a `/research` command and a `deep_research` tool. The routing table routes deep research questions to it instead of repeated `web_search`+`web_fetch` calls.
 - **websearch**: `web_search` and `web_fetch` `promptGuidelines` explicitly redirect to `deep_research` for deep tasks.
 

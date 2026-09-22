@@ -590,7 +590,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "browser_wait_for",
     label: "Browser Wait For",
-    description: "Wait for a selector, URL fragment, or page idle state in the active browser tab.",
+    description: "Wait for a selector, URL fragment, or page idle state in the active browser tab. This is a page wait, not a process/job wait; use wait_for_ready for managed command readiness or wait_for_jobs for completion.",
     parameters: Type.Object({
       selector: Type.Optional(Type.String({ description: "CSS selector to wait for" })),
       urlContains: Type.Optional(Type.String({ description: "URL fragment to wait for" })),

@@ -473,6 +473,9 @@ function cloneQuestion(question: InteractiveQuestion | undefined): InteractiveQu
 	return question ? { ...question } : undefined;
 }
 
+// Keep the legacy name excluded as well for children using older profiles.
+export const CHILD_DELEGATION_EXCLUSIONS = "spawn_subagent,subagent_run,subagent_parallel,subagent_chain,subagent_interactive,subagent_worktree,workflow";
+
 function terminalBoundary(result: PiAgentResult): InteractivePiAgentBoundary {
 	const status = result.status === "canceled" ? "canceled" : result.status === "completed" ? "completed" : "failed";
 	return { status, result: cloneProgress(result) };
@@ -515,7 +518,7 @@ export async function createInteractivePiAgent(
 	const askParentPath = path.resolve(import.meta.dirname, "../spawn-subagent/ask-parent.ts");
 	const args = ["--mode", "rpc", "--no-session", "--extension", askParentPath];
 	if (options.config.depth + 1 >= options.config.maxDepth) {
-		args.push("--exclude-tools", "spawn_subagent,workflow");
+		args.push("--exclude-tools", CHILD_DELEGATION_EXCLUSIONS);
 	}
 	if (model) args.push("--model", model);
 	args.push(...getSubagentThinkingArgs(model, options.thinking));
@@ -955,7 +958,7 @@ export async function runPiAgent(options: RunPiAgentOptions): Promise<PiAgentRes
 	result.model = model;
 	const args = ["--mode", "json", "-p", "--no-session"];
 	if (options.config.depth + 1 >= options.config.maxDepth) {
-		args.push("--exclude-tools", "spawn_subagent,workflow");
+		args.push("--exclude-tools", CHILD_DELEGATION_EXCLUSIONS);
 	}
 	if (model) args.push("--model", model);
 	args.push(...getSubagentThinkingArgs(model, options.thinking));

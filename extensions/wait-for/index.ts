@@ -1,5 +1,5 @@
 /**
- * wait_for — a "pause and wait" tool for Pi.
+ * Blocking condition, job-completion, and command-readiness waits for Pi.
  *
  * Pi's agent loop is strictly LLM -> tool -> LLM -> tool. There is no native
  * "block until an external event, then resume" step, so "waiting" usually means
@@ -7,7 +7,7 @@
  * re-sends the whole context (cache reads) each turn and burns tokens while
  * nothing is actually happening.
  *
- * `wait_for` fixes this by turning the wait itself into a single blocking tool
+ * The wait tools fix this by turning the wait itself into a single blocking tool
  * call. While it runs, the agent loop is paused (no LLM call = zero tokens
  * burned) and resumes the instant the condition is met or the timeout fires.
  * Optional `progress` output streams to the TUI so the user can see what is
@@ -16,7 +16,7 @@
  * Typical use: gate a dependent step behind a detached long-running task
  * (download, build, deploy, training) after any parallel prep work is done.
  *
- *   wait_for({
+ *   wait_for_condition({
  *     // Watch the DONE marker the download script already writes:
  *     condition: "grep -q '^DONE ' ~/models/mlx/GLM-5.2-mxfp4.download.log 2>/dev/null",
  *     timeout: 3600,
@@ -33,6 +33,7 @@ import { StringEnum, Type } from "@mariozechner/pi-ai";
 import { defineTool, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { runShellProcess } from "../_shared/shell-process.ts";
+import { operationTool } from "../_shared/operation-tool.ts";
 import {
 	type JobSnapshot,
 	TERMINAL_JOB_STATUS,
@@ -177,22 +178,12 @@ function truncate(text: string, max: number): string {
 	return `${trimmed.slice(0, max)}…`;
 }
 
-const waitForTool = defineTool({
+/** Unregistered engine retained for internal callers and regression coverage. */
+export const waitForEngine = defineTool({
 	name: "wait_for",
 	label: "Wait For",
 	executionMode: "sequential",
-	description:
-		"Block the agent loop until either a shell `condition` is true or a background subagent job becomes actionable (`awaiting_answer`) or terminal, then resume — without burning tokens while waiting. `condition` is a shell command run with `sh -c` (exit code 0 = met, failure_exit_codes = fatal, other non-zero = not yet). `jobs` are command_job cmd_ IDs or background subagent job ids; pass `job_mode` to control terminal completion. Use readiness=true only for command jobs with configured probes, to wait for all to become ready rather than complete. Any `awaiting_answer` job always wakes the wait so the parent can answer without deadlock. `condition` and `jobs` are mutually exclusive. Always set a `timeout`. The call is abortable (Esc/Ctrl-C).",
-	promptSnippet:
-		"wait_for to block the agent loop (zero tokens) until a shell condition is true or background subagent jobs finish, instead of polling",
-	promptGuidelines: [
-		"Use wait_for to pause for a long-running detached task (download, build, deploy, training) to finish, or for fanned-out background subagent jobs to finish, instead of polling with repeated bash calls. While wait_for runs, the agent loop is paused and consumes zero tokens.",
-		"`condition` must test the actual outcome, not just whether a status query succeeded. Exit 0 means met, failure_exit_codes means fatal (default 126/127), other non-zero means not yet. Map terminal deployment/auth failures to a configured failure code instead of waiting until timeout. Examples: `pgrep -f aria2c >/dev/null 2>&1` is wrong (true while running) — to wait for completion watch a DONE marker: `grep -q '^DONE ' file.download.log 2>/dev/null`, or invert: `! pgrep -f aria2c >/dev/null 2>&1`, or a file: `test -f /path/to/done.flag`.",
-		"`jobs` waits for background subagent job ids returned by `spawn_subagent({..., background:true})`. Any `awaiting_answer` job wakes immediately regardless of `job_mode`; answer it with `spawn_subagent({jobAction:'answer', jobId, questionId, answer})`. Otherwise `job_mode` defaults to `all` terminal, with `any`, `any_success`, or `any_failure` alternatives. `condition` and `jobs` are mutually exclusive.",
-		"Always provide a `timeout` (seconds, capped at 24h). For longer tasks, chain another wait_for or use the launchd + handoff resume pattern.",
-		"Provide a `progress` command (e.g. `du -sh /path | cut -f1`) so the wait shows live progress in the TUI (ignored in `jobs` mode, which shows per-job status instead).",
-		"Do parallel prep work BEFORE calling wait_for. Launch the long task detached (nohup/&), do all independent wiring, then call wait_for once as the gate before the dependent step. Never poll in a loop when wait_for can block for you.",
-	],
+	description: "Internal blocking wait engine. Public callers use the operation-specific wait tools.",
 	parameters: Type.Object({
 		condition: Type.Optional(
 			Type.String({
@@ -387,7 +378,7 @@ const waitForTool = defineTool({
 						? `Job wait condition reached after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}); ${failedJobs} unsuccessful, ${awaitingJobs} awaiting answer. ${params.readiness ? "Readiness is not completion." : "Terminal does not imply successful."}`
 						: `Condition met after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}). Resuming.`;
 					const tail = useJobs
-						? `\n${reason}\n${lastStdout}\n\nInspect cmd_ IDs with command_job({action:"status",id:"<id>"}); inspect subagents with spawn_subagent({jobAction:"status",jobId:"<id>"}). Answer awaiting_answer with the correlated questionId.`
+						? `\n${reason}\n${lastStdout}\n\nInspect cmd_ IDs with command_status({id:"<id>"}); inspect subagents with subagent_status({jobId:"<id>"}). Answer awaiting_answer with subagent_answer({jobId,questionId,answer}) using the current correlated questionId, then use wait_for_jobs for further completion waits.`
 						: "";
 					return textResult(head + tail, {
 						...baseDetails,
@@ -424,12 +415,12 @@ const waitForTool = defineTool({
 			const elapsedMs = Date.now() - startedAt;
 			if (aborted) {
 				return textResult(
-					`Wait aborted after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}).${useJobs ? " Background jobs continue; cancel explicitly with command_job action=cancel or spawn_subagent jobAction=cancel." : " Termination was requested for the active condition/progress process group; escaped descendants are not covered."}`,
+					`Wait aborted after ${formatDuration(elapsedMs)} (${checks} check${checks === 1 ? "" : "s"}).${useJobs ? " Background jobs continue; cancel explicitly with command_cancel({id}) or subagent_cancel({jobId})." : " Termination was requested for the active condition/progress process group; escaped descendants are not covered."}`,
 					{ ...baseDetails, aborted: true, checks, elapsedMs, lastStdout, lastStderr, lastProgress },
 				);
 			}
 			return errorResult(
-				`wait_for failed: ${err instanceof Error ? err.message : String(err)}`,
+				`Wait failed: ${err instanceof Error ? err.message : String(err)}`,
 				{
 					...baseDetails,
 					checks,
@@ -447,12 +438,13 @@ const waitForTool = defineTool({
 		const to = args.timeout ?? "?";
 		const pi = args.poll_interval ?? DEFAULT_POLL_INTERVAL;
 		const jobs = Array.isArray(args.jobs) ? args.jobs.map((s) => String(s)) : [];
+		const name = args.readiness ? "wait_for_ready" : args.jobs !== undefined ? "wait_for_jobs" : "wait_for_condition";
 		const lines = [
-			theme.fg("toolTitle", theme.bold("wait_for ")) + theme.fg("muted", `up to ${to}s, every ${pi}s`),
+			theme.fg("toolTitle", theme.bold(`${name} `)) + theme.fg("muted", `up to ${to}s, every ${pi}s`),
 		];
-		if (jobs.length > 0) {
+		if (args.jobs !== undefined) {
 			const mode = args.job_mode ?? "all";
-			lines.push(theme.fg("dim", `  jobs (${mode}): ${jobs.join(", ")}`));
+			lines.push(theme.fg("dim", `  jobs (${args.readiness ? "all ready" : mode}): ${jobs.join(", ")}`));
 		} else {
 			const cond = truncate(String(args.condition ?? ""), 80);
 			lines.push(theme.fg("dim", `  until: ${cond}`));
@@ -477,6 +469,120 @@ const waitForTool = defineTool({
 	},
 });
 
+const timingParameters = {
+	timeout: Type.Number({
+		exclusiveMinimum: 0,
+		description: "Maximum seconds to wait; capped at 86400 (24h). Timeout is an error; interruption returns an aborted result.",
+	}),
+	poll_interval: Type.Optional(Type.Number({
+		description: `Seconds between checks. Default ${DEFAULT_POLL_INTERVAL}, clamped to [${MIN_POLL_INTERVAL}, ${MAX_POLL_INTERVAL}].`,
+	})),
+};
+
+export const waitForConditionTool = operationTool(defineTool({
+	name: "wait_for_condition",
+	label: "Wait For Condition",
+	executionMode: "sequential",
+	constrainedSampling: { type: "json_schema", strict: "prefer" },
+	description: "Block without token usage until a read-only shell predicate exits 0. Configured fatal exit codes fail promptly; other nonzero exits retry. Supports live progress, timeout, and abort. Each shell evaluation is capped at 30 seconds and the remaining deadline, plus bounded cleanup grace.",
+	promptSnippet: "Block until a shell condition is met instead of polling with repeated tool calls",
+	promptGuidelines: [
+		"Use wait_for_condition after independent prep work, as a single blocking gate for a detached task. The predicate must test the actual outcome, not just successful execution of a status query. Watch a DONE marker or use `! pgrep -f process >/dev/null 2>&1` for completion; plain pgrep is true while running.",
+		"For wait_for_condition, exit 0 means met; failure_exit_codes means fatal (default [126,127]); other nonzero exits mean pending. Map terminal deployment/auth failures to an explicit fatal code. Provide progress for live TUI updates. Never launch background work from a predicate: its process group is cleaned up.",
+	],
+	parameters: Type.Object({
+		condition: Type.String({ minLength: 1, pattern: "\\S", description: "Read-only predicate run with sh -c in the session cwd. Exit 0 = met; fatal exit codes = error; other nonzero = pending." }),
+		...timingParameters,
+		progress: Type.Optional(Type.String({ description: "Read-only shell command whose stdout is shown as live progress on each pending check." })),
+		failure_exit_codes: Type.Optional(Type.Array(Type.Integer({ minimum: 1, maximum: 255 }), {
+			maxItems: 255,
+			description: "Fatal condition exit codes. Replaces default [126,127]; [] retries all nonzero exits.",
+		})),
+	}, { additionalProperties: false }),
+	async execute(id, params, signal, onUpdate, ctx) {
+		return waitForEngine.execute(id, {
+			condition: params.condition,
+			timeout: params.timeout,
+			poll_interval: params.poll_interval,
+			progress: params.progress,
+			failure_exit_codes: params.failure_exit_codes,
+		}, signal, onUpdate, ctx);
+	},
+	renderCall(args, theme, context) {
+		return waitForEngine.renderCall!({
+			condition: args.condition,
+			timeout: args.timeout,
+			poll_interval: args.poll_interval,
+			progress: args.progress,
+			failure_exit_codes: args.failure_exit_codes,
+		}, theme, context);
+	},
+	renderResult: waitForEngine.renderResult,
+}));
+
+export const waitForJobsTool = operationTool(defineTool({
+	name: "wait_for_jobs",
+	label: "Wait For Jobs",
+	executionMode: "sequential",
+	constrainedSampling: { type: "json_schema", strict: "prefer" },
+	description: "Block without token usage for command or background subagent jobs. Default all waits for all terminal, not all successful. Any awaiting_answer job wakes immediately regardless of mode. Unknown IDs and impossible outcomes fail promptly. Abort leaves jobs running.",
+	promptSnippet: "Block for background job completion or an interactive subagent question",
+	promptGuidelines: [
+		"Use wait_for_jobs once independent work is complete for background jobs from subagent_run, subagent_parallel, or subagent_chain, and managed command jobs. Inspect results with subagent_status({jobId}) or command_status({id}); terminal does not imply successful.",
+		"wait_for_jobs wakes immediately for awaiting_answer in every mode. Fetch the current question with subagent_status({jobId}), answer using subagent_answer({jobId,questionId,answer}), then wait_for_jobs again. Cancel jobs explicitly with subagent_cancel({jobId}) or command_cancel({id}); aborting the wait does not cancel them.",
+	],
+	parameters: Type.Object({
+		jobs: Type.Array(Type.String({ minLength: 1, pattern: "\\S" }), { minItems: 1, maxItems: 64, description: "Command cmd_ IDs and/or background subagent job IDs." }),
+		...timingParameters,
+		job_mode: Type.Optional(StringEnum(["all", "any", "any_success", "any_failure"] as const, {
+			description: "all (default): all terminal; any: first terminal; any_success: first completed; any_failure: first failed/canceled. awaiting_answer always wakes immediately.",
+		})),
+	}, { additionalProperties: false }),
+	async execute(id, params, signal, onUpdate, ctx) {
+		return waitForEngine.execute(id, {
+			jobs: params.jobs,
+			timeout: params.timeout,
+			poll_interval: params.poll_interval,
+			job_mode: params.job_mode,
+		}, signal, onUpdate, ctx);
+	},
+	renderCall(args, theme, context) {
+		return waitForEngine.renderCall!({ jobs: args.jobs ?? [], timeout: args.timeout, poll_interval: args.poll_interval, job_mode: args.job_mode }, theme, context);
+	},
+	renderResult: waitForEngine.renderResult,
+}));
+
+export const waitForReadyTool = operationTool(defineTool({
+	name: "wait_for_ready",
+	label: "Wait For Ready",
+	executionMode: "sequential",
+	constrainedSampling: { type: "json_schema", strict: "prefer" },
+	description: "Block without token usage until all listed command jobs pass configured readiness probes while still running. Accepts only cmd_ IDs. Readiness is not completion. Missing/failed probes or stopped commands fail promptly. Abort leaves commands running.",
+	promptSnippet: "Block until all managed command readiness probes pass",
+	promptGuidelines: [
+		"Use wait_for_ready for command service readiness, not completion; use wait_for_jobs for terminal outcomes. Inspect with command_status({id}) and cancel with command_cancel({id}).",
+	],
+	parameters: Type.Object({
+		jobs: Type.Array(Type.String({ pattern: "^cmd_\\S+$" }), { minItems: 1, maxItems: 64, description: "Command cmd_ IDs with configured readiness probes; all must become ready while running." }),
+		...timingParameters,
+	}, { additionalProperties: false }),
+	async execute(id, params, signal, onUpdate, ctx) {
+		return waitForEngine.execute(id, {
+			jobs: params.jobs,
+			timeout: params.timeout,
+			poll_interval: params.poll_interval,
+			readiness: true,
+			job_mode: "all",
+		}, signal, onUpdate, ctx);
+	},
+	renderCall(args, theme, context) {
+		return waitForEngine.renderCall!({ jobs: args.jobs ?? [], timeout: args.timeout, poll_interval: args.poll_interval, readiness: true, job_mode: "all" }, theme, context);
+	},
+	renderResult: waitForEngine.renderResult,
+}));
+
 export default function waitFor(pi: ExtensionAPI) {
-	pi.registerTool(waitForTool);
+	pi.registerTool(waitForConditionTool);
+	pi.registerTool(waitForJobsTool);
+	pi.registerTool(waitForReadyTool);
 }

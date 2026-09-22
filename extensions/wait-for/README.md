@@ -1,19 +1,25 @@
-# wait_for
+# Wait tools
 
-A "pause and wait" tool for Pi. Blocks the agent loop until a shell condition is true, then resumes — **without burning tokens while waiting**.
+Three focused tools block the agent loop — **without burning tokens while waiting**:
+
+- `wait_for_condition`: wait for a shell predicate.
+- `wait_for_jobs`: wait for command/subagent terminal outcomes or an interactive question.
+- `wait_for_ready`: wait for all command readiness probes while processes remain running.
+
+There is no legacy `wait_for` registration. Each public schema rejects unrelated fields, including the old `readiness` switch. Arguments are validated with Pi's stock validator even for direct execution; validation errors do not echo submitted values.
 
 ## Why
 
 Pi's agent loop is strictly `LLM → tool → LLM → tool`. There is no native "block until an external event, then resume" step, so waiting usually means **polling** — emitting a tool call to check state on every iteration, which re-sends the whole conversation context (cache reads) each turn. During a 22‑minute download that produced ~11 explicit polls and ~1.4M cache‑read tokens in one session, even though the per‑poll work was tiny.
 
-`wait_for` turns the wait itself into a single blocking tool call. While it runs, **no LLM call happens, so the wait costs zero tokens**. The loop resumes the instant the condition is met or the timeout fires. Optional `progress` output streams to the TUI, and the call is fully abortable (Esc/Ctrl‑C).
+Each wait tool turns the wait itself into a single blocking tool call. While it runs, **no LLM call happens, so the wait costs zero tokens**. The loop resumes the instant the condition is met or the timeout fires. Optional `progress` output streams to the TUI, and the call is fully abortable (Esc/Ctrl‑C).
 
 ## Usage
 
 Gate a dependent step behind a detached long‑running task (download, build, deploy, training) **after** any parallel prep work is done.
 
 ```
-wait_for({
+wait_for_condition({
   // exit 0 = met. Watch a DONE marker the download script already writes:
   condition: "grep -q '^DONE ' ~/models/mlx/GLM-5.2-mxfp4.download.log 2>/dev/null",
   // or invert a process check:
@@ -30,14 +36,15 @@ wait_for({
 
 | param | type | description |
 |-------|------|-------------|
-| `condition` | string (optional) | Read-only predicate run with `sh -c` in the session cwd. Exit 0 = met; configured `failure_exit_codes` = fatal; other nonzero = not yet. Mutually exclusive with `jobs`. |
-| `jobs` | string[] (optional) | 1–64 nonempty command/subagent job IDs. Mutually exclusive with `condition`; omit rather than passing an empty array. |
-| `job_mode` | enum (optional) | With `jobs`: `all` (default), `any`, `any_success`, `any_failure`. Omit for shell waits; redundant `all` is accepted and ignored, other modes are rejected with repair instructions. |
-| `failure_exit_codes` | integer[] (optional) | Condition-only fatal exit codes, 1–255. Default `[126,127]` (not executable/not found). Overrides the default; `[]` retries all nonzero exits. |
-| `readiness` | boolean (optional) | Command jobs with `job_mode:"all"` only: wait for every configured readiness probe while processes remain running. |
+| `condition` | string (required for `wait_for_condition`) | Nonempty read-only predicate run with `sh -c` in the session cwd. Exit 0 = met; configured `failure_exit_codes` = fatal; other nonzero = not yet. |
+| `jobs` | string[] (required for `wait_for_jobs` / `wait_for_ready`) | 1–64 nonempty job IDs. `wait_for_ready` accepts only `cmd_…` IDs with configured probes. |
+| `job_mode` | enum (optional, `wait_for_jobs` only) | `all` (default), `any`, `any_success`, `any_failure`. |
+| `failure_exit_codes` | integer[] (optional, `wait_for_condition` only) | Up to 255 fatal exit codes, each 1–255. Default `[126,127]` (not executable/not found). Overrides the default; `[]` retries all nonzero exits. |
 | `timeout` | number (required) | Max seconds to wait. Hard cap 86400 (24h). For longer tasks, chain calls or use launchd + handoff. |
 | `poll_interval` | number (optional) | Seconds between checks. Default 10, clamped to [1, 3600]. |
-| `progress` | string (optional) | Shell command whose stdout shows as live progress on each poll. Ignored in `jobs` mode (which shows per‑job status). |
+| `progress` | string (optional, `wait_for_condition` only) | Read-only shell command whose stdout shows as live progress on each pending check. Job waits show per-job status automatically. |
+
+`timeout` and `poll_interval` apply to all three tools. `timeout` must be positive and is rounded down and clamped to [1, 86400] seconds. `wait_for_ready` always waits for **all** probes; it accepts neither `job_mode` nor `readiness`.
 
 ## Behavior
 
@@ -45,7 +52,7 @@ wait_for({
 - Otherwise loops: run condition → (optional) run `progress` → stream a TUI update → sleep `poll_interval` → repeat.
 - Returns success only when the condition exits 0 without forced termination before the overall deadline; fatal exit codes or shell startup errors fail promptly. Timeout is an error; interruption returns an explicit "aborted" result.
 - Each condition/progress eval is capped at 30s and the remaining overall deadline. No new evaluation starts after the deadline; termination/cleanup adds bounded grace. A timed-out shell cannot signal success even if its TERM handler exits 0.
-- Condition/progress process groups are cleaned up even after a natural shell exit. Do not launch background work from a predicate; start it separately with `command_job`. Descendants that escape the original process group are outside cleanup coverage.
+- Condition/progress process groups are cleaned up even after a natural shell exit. Do not launch background work from a predicate; start it separately as a managed command job. Descendants that escape the original process group are outside cleanup coverage.
 - Timeout errors retain bounded excerpts of the last **nonempty** stdout/stderr and progress, which may come from an earlier check. Empty checks do not erase useful diagnostics.
 - Runs in `executionMode: "sequential"` so it gates the turn.
 
@@ -58,7 +65,7 @@ wait_for({
 A successful status query means the query worked, **not** that deployment succeeded. Query the exact deployment and inspect its structured status. Use an explicit predicate contract, for example:
 
 ```
-wait_for({
+wait_for_condition({
   condition: "./scripts/check-deployment.sh", // your own read-only status predicate
   failure_exit_codes: [2, 126, 127],
   timeout: 600,
@@ -66,25 +73,22 @@ wait_for({
 })
 ```
 
-That script should exit **0** only on verified success, **1** while pending, and **2** on terminal deployment failure or unrecoverable authentication/configuration errors (write the reason to stderr). Choose which transport errors are retryable deliberately. `failure_exit_codes` replaces the default list, so retain 126/127 if desired. A pipeline can mask an upstream CLI failure: capture/check the query's exit status before parsing its JSON; do not rely on the last pipeline command alone. `wait_for` cannot infer remote state or authentication failure from arbitrary CLI output.
+That script should exit **0** only on verified success, **1** while pending, and **2** on terminal deployment failure or unrecoverable authentication/configuration errors (write the reason to stderr). Choose which transport errors are retryable deliberately. `failure_exit_codes` replaces the default list, so retain 126/127 if desired. A pipeline can mask an upstream CLI failure: capture/check the query's exit status before parsing its JSON; do not rely on the last pipeline command alone. `wait_for_condition` cannot infer remote state or authentication failure from arbitrary CLI output.
 
 ## Waiting for background subagent jobs
 
-`wait_for` can also block until fanned‑out `spawn_subagent({..., background:true})` jobs finish or an interactive child reaches `awaiting_answer`, instead of polling `jobAction: "status"` yourself (which burns tokens on every poll). Fan out the jobs, keep orchestrating in the main session, then gate the dependent step behind a single `wait_for`:
+`wait_for_jobs` blocks for background jobs launched with `subagent_run` (single), `subagent_parallel`, or `subagent_chain`, or an interactive child reaching `awaiting_answer`. Do independent work first, then use one blocking wait instead of repeated `subagent_status` calls:
 
-```
-# fan out
-spawn_subagent({ agent: "worker",   task: "…", background: true })  → bg_abc
-spawn_subagent({ agent: "reviewer", task: "…", background: true })  → bg_def
-# …main session keeps working…
-wait_for({
-  jobs: ["bg_abc", "bg_def"],
-  job_mode: "all",   // resume when both are terminal (completed/failed/canceled)
+```js
+// Launch single jobs with subagent_run({ agent: "worker", task: "…", background: true }).
+// After independent work, use the returned job IDs:
+wait_for_jobs({
+  jobs: ["sub_abc", "sub_def"],
+  job_mode: "all",   // both terminal, not necessarily successful
   timeout: 1800,
   poll_interval: 10,
 })
-# resumes with a per‑job status summary + a pointer to fetch full output:
-# spawn_subagent({ jobAction: "status", jobId: "bg_abc" })
+subagent_status({ jobId: "sub_abc" })
 ```
 
 `job_mode` options:
@@ -96,26 +100,31 @@ wait_for({
 | `any_success` | the first job reaches `completed` |
 | `any_failure` | the first job reaches `failed` or `canceled` |
 
-Any watched job reaching `awaiting_answer` wakes immediately regardless of `job_mode`, because continuing to wait would deadlock the parent that must answer it. Fetch the question with `spawn_subagent({jobAction:"status",jobId})`, then resume the same child with `spawn_subagent({jobAction:"answer",jobId,questionId,answer})`.
+Any watched job reaching `awaiting_answer` wakes immediately regardless of `job_mode`, because continuing to wait would deadlock the parent that must answer it. Fetch the question with `subagent_status({jobId})`, then resume the same child with `subagent_answer({jobId,questionId,answer})` using the exact current question ID, and call `wait_for_jobs` again.
 
-Terminal statuses are `completed`, `failed`, `canceled`; `awaiting_answer` is actionable but nonterminal, and `canceling` remains nonterminal until the owner has actually stopped and reaped its child processes. While waiting, the TUI shows terminal and awaiting-answer counts plus a per-job status block. `wait_for` reads the same owner-leased, atomically written job store (`~/.pi/agent/spawn-subagent/jobs.json`, overridable via `PI_SUBAGENT_STATE_DIR` or legacy `PI_SPAWN_SUBAGENT_DIR`) that `jobAction: "status"` uses, so it works across sessions/processes and treats expired owner leases as failed instead of hanging indefinitely.
+Terminal statuses are `completed`, `failed`, `canceled`; `awaiting_answer` is actionable but nonterminal, and `canceling` remains nonterminal until the owner has actually stopped and reaped its child processes. While waiting, the TUI shows terminal and awaiting-answer counts plus a per-job status block. `wait_for_jobs` reads the same owner-leased, atomically written job store (`~/.pi/agent/spawn-subagent/jobs.json`, overridable via `PI_SUBAGENT_STATE_DIR` or legacy `PI_SPAWN_SUBAGENT_DIR`) that `subagent_status` uses, so it works across sessions/processes and treats expired owner leases as failed instead of hanging indefinitely.
 
 ## Managed command jobs
 
-`jobs` also accepts `cmd_…` IDs from `command_job`, alone or mixed with subagent
+`wait_for_jobs` also accepts managed `cmd_…` command IDs, alone or mixed with subagent
 IDs. Completion means terminal, not necessarily successful: inspect the returned
 command status and exact exit code. The result headline counts unsuccessful jobs and pending questions; those outcomes render as warnings rather than a green "Jobs ready" success. Unknown IDs and impossible `any_success` or
 `any_failure` outcomes fail promptly. Wait interruption leaves jobs running.
 
-For configured local server probes use `readiness:true` with command IDs and
-`job_mode:"all"` only. It waits for every probe to be ready while its command is
-still running; readiness is not completion. See [command jobs](../command-jobs/README.md).
+For configured local server probes use:
+
+```js
+wait_for_ready({ jobs: ["cmd_server"], timeout: 60, poll_interval: 1 })
+command_status({ id: "cmd_server" })
+```
+
+It waits for every probe to be ready while its command is still running; readiness is not completion. Missing or failed probes and stopped commands fail promptly. Abort does not cancel jobs: use `command_cancel({id})` or `subagent_cancel({jobId})` explicitly. See [command jobs](../command-jobs/README.md).
 Shell evaluations respect the remaining overall deadline, plus bounded process
 cleanup grace, and retain at most 1 MiB stdout instead of unbounded capture.
 
-## Beyond `wait_for`: event‑driven resume (documented pattern, not built)
+## Beyond blocking waits: event‑driven resume (documented pattern, not built)
 
-`wait_for` keeps the full conversation in memory and resumes **in place, zero‑token, zero re‑read** — so for any task that fits in its 24h cap while Pi can stay open (a `tmux`/`nohup` session survives logout on an always‑on server), `wait_for` is the right tool and there is nothing to gain from killing the process. The patterns below only earn their keep when a task **exceeds 24h** or must **survive a reboot / Pi process death**, and they cost more than `wait_for` (a fresh‑session re‑read at resume, plus launchd moving parts). They are documented here as the known escalation path; they are **not** built tooling yet.
+Blocking waits keep the full conversation in memory and resume **in place, zero‑token, zero re‑read** — so for any task that fits in the 24h cap while Pi can stay open (a `tmux`/`nohup` session survives logout on an always‑on server), a wait tool is the right choice and there is nothing to gain from killing the process. The patterns below only earn their keep when a task **exceeds 24h** or must **survive a reboot / Pi process death**, and they cost more than a blocking wait (a fresh‑session re‑read at resume, plus launchd moving parts). They are documented here as the known escalation path; they are **not** built tooling yet.
 
 The decisive question is what the post‑wait step is:
 
@@ -185,13 +194,13 @@ For tails that genuinely require the agent to inspect output, decide, and branch
 3. The resumed session re‑grounds from the handoff note + `git status`/repo state, then continues.
 
 **Honest caveats (why this is the fallback, not the default):**
-- Resume is a **fresh session**: it re‑reads the handoff + repo to rebuild context (a real token cost `wait_for` avoids entirely), and the standard `resume‑handoff` skill pauses to ask the user before proceeding — a truly fire‑and‑forget resume needs a non‑interactive resume path that doesn't exist yet.
+- Resume is a **fresh session**: it re‑reads the handoff + repo to rebuild context (a real token cost the wait tools avoid entirely), and the standard `resume‑handoff` skill pauses to ask the user before proceeding — a truly fire‑and‑forget resume needs a non‑interactive resume path that doesn't exist yet.
 - No continuity of in‑memory state; anything not written to the handoff or disk is lost.
 - Launchd minimal‑env + WatchPaths double‑fire + success/failure‑marker + TTL/collision concerns from Pattern A all apply, plus now a Pi process to launch and a goal to reconcile.
-- On an always‑on server, leaving Pi open in `tmux` with a `wait_for` call is almost always simpler and strictly cheaper.
+- On an always‑on server, leaving Pi open in `tmux` with a blocking wait call is almost always simpler and strictly cheaper.
 
 ### When to escalate
 
-- **Don't escalate** if the task ≤ 24h and Pi can stay open — `wait_for` is strictly better.
+- **Don't escalate** if the task ≤ 24h and Pi can stay open — a blocking wait is strictly better.
 - **Pattern A** if the post‑wait step is fixed shell AND the task must survive reboot / >24h / run with no Pi open.
 - **Pattern B** if the post‑wait step needs agent judgment AND the task must survive reboot / >24h / run with no Pi open. Rare.

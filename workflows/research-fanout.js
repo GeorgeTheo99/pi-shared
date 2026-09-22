@@ -4,7 +4,7 @@
  *
  * Run from Pi:
  *   workflow({ name: "research-fanout", args: { questions: [
- *     "How does spawn_subagent route tasks?",
+ *     "How does subagent_run route tasks?",
  *     "Where is the job store persisted?",
  *   ] } })
  *

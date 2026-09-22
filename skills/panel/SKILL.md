@@ -5,7 +5,7 @@ description: Run a user-invoked second-opinion panel in Pi using alternate runti
 
 # Panel
 
-Run an independent second-opinion Pi session with `spawn_subagent` and the shared `panelist` agent.
+Run an independent second-opinion Pi session with `subagent_run` or `subagent_parallel` and the shared `panelist` agent.
 
 ## Entrypoints
 
@@ -33,8 +33,8 @@ Run an independent second-opinion Pi session with `spawn_subagent` and the share
    - If no model is selected, do not spawn a child. Disclose that no suitable panel or vision model is available.
    - If a selected model has `agentDir` in tool details, preserve it when spawning the panelist. This lets `/panel` use models from another Pi profile, such as `~/.pi-omlx/agent`, even when the parent session was launched with a narrow model profile.
 3. Spawn panelist(s):
-   - Single mode: call `spawn_subagent` with `agent: "panelist"`, the self-contained task, the selected `model`, and selected `agentDir` when present.
-   - Compare mode: call `spawn_subagent` with `tasks`, each `{ agent: "panelist", task, model, agentDir }`, so different models/profiles run in parallel.
+   - Single mode: call `subagent_run` with `agent: "panelist"`, the self-contained task, the selected `model`, and selected `agentDir` when present.
+   - Compare mode: call `subagent_parallel` with `tasks`, each `{ agent: "panelist", task, model, agentDir }`, so different models/profiles run in parallel.
 4. Synthesize for the user:
    - Start with the bottom-line answer.
    - Call out agreement/disagreement, important risks, and the recommended decision.

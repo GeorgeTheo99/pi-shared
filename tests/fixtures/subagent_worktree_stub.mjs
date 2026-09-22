@@ -1,13 +1,5 @@
-export const Type = {
-	String: (options = {}) => ({ type: "string", ...options }),
-	Boolean: (options = {}) => ({ type: "boolean", ...options }),
-	Integer: (options = {}) => ({ type: "integer", ...options }),
-	Unknown: () => ({}), Optional: (value) => value,
-	Record: (_key, value, options = {}) => ({ type: "object", additionalProperties: value, ...options }),
-	Object: (properties, options = {}) => ({ type: "object", properties, ...options }),
-	Array: (items, options = {}) => ({ type: "array", items, ...options }),
-};
-export const StringEnum = (values, options = {}) => ({ type: "string", enum: [...values], ...options });
+export { Type, StringEnum, validateToolArguments } from "./subagent_test_ai_stub.mjs";
+export const defineTool = (tool) => tool;
 export class Text { constructor(text) { this.text = text; } }
 export const SUBAGENT_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const untrustedSubagentProfileDirs = () => [];

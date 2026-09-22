@@ -8,7 +8,7 @@ function snapshots(values: Array<[string, JobSnapshot["status"]]>): Map<string, 
 	return new Map(values.map(([id, status]) => [id, { id, status }]));
 }
 
-test("wait_for wakes for awaiting_answer regardless of terminal job mode", () => {
+test("wait engine wakes for awaiting_answer regardless of terminal job mode", () => {
 	const state = snapshots([
 		["first", "running"],
 		["second", "awaiting_answer"],
@@ -20,7 +20,7 @@ test("wait_for wakes for awaiting_answer regardless of terminal job mode", () =>
 	}
 });
 
-test("wait_for keeps existing terminal mode behavior without pending questions", () => {
+test("wait engine keeps existing terminal mode behavior without pending questions", () => {
 	const running = snapshots([
 		["first", "completed"],
 		["second", "running"],

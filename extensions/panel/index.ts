@@ -279,7 +279,7 @@ export function formatModelList(models: PanelModel[], search?: string): string {
 
 function panelPrompt(args: string): string {
   const trimmed = args.trim();
-  return `Use the panel skill to run a second-opinion Pi panel for the current conversation.\n\nOriginal /panel arguments: ${trimmed || "(none)"}\n\nFollow the panel workflow: list/select models with panel_models or panel_select, then call spawn_subagent with agent=panelist. If the task requires inspecting an image, call panel_select with requiresImages=true and give the selected vision-capable child the exact local image path and question. If --compare is present, run parallel panelists with different task-specific models and synthesize the results. If no explicit task is provided, summarize the latest relevant user request, decisions, code/files, and open question from this conversation into the panelist prompt.`;
+  return `Use the panel skill to run a second-opinion Pi panel for the current conversation.\n\nOriginal /panel arguments: ${trimmed || "(none)"}\n\nFollow the panel workflow: list/select models with panel_models or panel_select, then call subagent_run with agent=panelist. If the task requires inspecting an image, call panel_select with requiresImages=true and give the selected vision-capable child the exact local image path and question. If --compare is present, call subagent_parallel with panelist tasks using different task-specific models and synthesize the results. If no explicit task is provided, summarize the latest relevant user request, decisions, code/files, and open question from this conversation into the panelist prompt.`;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -366,7 +366,7 @@ export default function (pi: ExtensionAPI) {
             "Selected model(s):",
             ...selected.map((model) => `- ${formatModel(model)}`),
             "",
-            "Use these values as `model` overrides in `spawn_subagent` calls; include `agentDir` for any selected model that has a profile.",
+            "Use these values as `model` overrides in `subagent_run` or per-task overrides in `subagent_parallel`; include `agentDir` for any selected model that has a profile.",
           ]
             .filter(Boolean)
             .join("\n")

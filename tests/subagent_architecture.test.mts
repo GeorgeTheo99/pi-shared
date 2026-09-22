@@ -37,7 +37,9 @@ test("nested delegation is blocked in child CLI arguments as defense in depth", 
 	const runner = read("extensions/_shared/pi-agent-runner.ts");
 	assert.match(runner, /PI_SUBAGENT_DEPTH/);
 	assert.match(runner, /--exclude-tools/);
-	assert.match(runner, /spawn_subagent,workflow/);
+	const exclusions = runner.match(/CHILD_DELEGATION_EXCLUSIONS = "([^"]+)"/)![1].split(",");
+	assert.deepEqual(exclusions, ["spawn_subagent", "subagent_run", "subagent_parallel", "subagent_chain", "subagent_interactive", "subagent_worktree", "workflow"]);
+	assert.equal((runner.match(/args\.push\("--exclude-tools", CHILD_DELEGATION_EXCLUSIONS\)/g) ?? []).length, 2);
 });
 
 test("subagent model overrides recognize Pi's max thinking suffix", () => {
@@ -60,7 +62,7 @@ test("subagent guidance is continuation-first and avoids numeric delegation budg
 	}
 	assert.doesNotMatch(spawnExtension, /Poll later with jobAction=status|poll with jobAction=status/i);
 	assert.match(spawnExtension, /Continue substantive independent parent work first/);
-	assert.match(spawnExtension, /wait_for\(\{jobs:/);
+	assert.match(spawnExtension, /wait_for_jobs\(\{jobs:/);
 });
 
 test("workflow journal identity distinguishes omitted thinking from explicit high", () => {

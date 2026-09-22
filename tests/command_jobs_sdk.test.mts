@@ -57,9 +57,10 @@ test("installed Pi finalizes failed waits/subagents as errors, and safe_edit use
 	assert.deepEqual(loaded.errors,[]); extensions=loaded.extensions;
 	const definitions=new Map<string,any>(); for(const e of extensions) for(const [name,tool] of e.tools) definitions.set(name,tool.definition);
 	const invoke=(name:string,args:any)=>definitions.get(name).execute("fixture",args,undefined,undefined,ctx);
-	assert.ok(definitions.get("wait_for"));
+	assert.ok(definitions.get("wait_for_condition"));
+	for (const retired of ["wait_for", "command_job", "spawn_subagent"]) assert.equal(definitions.has(retired), false);
 	const model={id:"fixture",name:"fixture",provider:"test",api:"openai-responses",reasoning:false,input:["text"],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:10000,maxTokens:1024};
-	async function finalized(args:any,toolName="wait_for") {
+	async function finalized(args:any,toolName="wait_for_condition") {
 		const definition=definitions.get(toolName); assert.ok(definition);
 		const tool={...definition,execute:(id:any,input:any,signal:any,update:any)=>definition.execute(id,input,signal,update,ctx)};
 		const streamFn=()=>{
@@ -70,37 +71,36 @@ test("installed Pi finalizes failed waits/subagents as errors, and safe_edit use
 		const messages=await core.runAgentLoop([{role:"user",content:"local fixture",timestamp:Date.now()}],{systemPrompt:"test",messages:[],tools:[tool]}, {model,convertToLlm:(m:any)=>m,shouldStopAfterTurn:()=>true},()=>{},undefined,streamFn);
 		return messages.find((m:any)=>m.role==="toolResult");
 	}
-	const badStatus=await finalized({action:"status",id:"cmd_00000000-0000-0000-0000-000000000000",max_bytes:8192},"command_job");
+	const badStatus=await finalized({id:"cmd_00000000-0000-0000-0000-000000000000",max_bytes:8192},"command_status");
 	assert.equal(badStatus?.isError,true);
-	assert.match(badStatus.content[0].text,/action=status: "max_bytes"/);
-	assert.match(badStatus.content[0].text,/Allowed fields: action, id\./);
-	assert.match(badStatus.content[0].text,/Use action=logs/);
-	const correctedList=await finalized({action:"list"},"command_job");
+	assert.match(badStatus.content[0].text,/Invalid arguments for command_status/);
+	assert.match(badStatus.content[0].text,/Allowed fields: id\./);
+	const correctedList=await finalized({},"command_list");
 	assert.equal(correctedList?.isError,false);
 	assert.deepEqual(correctedList.details,[]);
-	assert.deepEqual(definitions.get("wait_for").parameters.properties.job_mode.enum, ["all", "any", "any_success", "any_failure"]);
-	const condition=await finalized({condition:"true",job_mode:"all",timeout:2});
+	assert.deepEqual(definitions.get("wait_for_jobs").parameters.properties.job_mode.enum, ["all", "any", "any_success", "any_failure"]);
+	const condition=await finalized({condition:"true",timeout:2});
 	assert.equal(condition?.isError,false); assert.equal(condition.details.met,true);
-	assert.equal((await finalized({condition:"true",job_mode:"any",timeout:2}))?.isError,true);
+	for (const job_mode of ["all", "any"]) assert.equal((await finalized({condition:"true",job_mode,timeout:2}))?.isError,true);
 	const fatal=await finalized({condition:"printf sdk-fatal >&2; exit 2",failure_exit_codes:[2],timeout:2});
 	assert.equal(fatal?.isError,true); assert.match(fatal.content[0].text,/sdk-fatal/);
 	assert.equal((await finalized({condition:"true",failure_exit_codes:[0],timeout:2}))?.isError,true);
 	assert.equal((await finalized({condition:"true",jobs:[],timeout:2}))?.isError,true);
-	const missing=await finalized({jobs:["cmd_00000000-0000-0000-0000-000000000000"],timeout:2});
+	const missing=await finalized({jobs:["cmd_00000000-0000-0000-0000-000000000000"],timeout:2},"wait_for_jobs");
 	assert.equal(missing?.isError,true); assert.match(missing.content[0].text,/Unknown/);
-	const failed=await invoke("command_job",{action:"start",command:process.execPath,args:["-e","process.exit(7)"],timeout_seconds:2});
-	const terminal=await invoke("wait_for",{jobs:[failed.details.id],timeout:3,poll_interval:1});
+	const failed=await invoke("command_start",{command:process.execPath,args:["-e","process.exit(7)"],timeout_seconds:2});
+	const terminal=await invoke("wait_for_jobs",{jobs:[failed.details.id],timeout:3,poll_interval:1});
 	assert.equal(terminal.details.failedJobs,1);
 	assert.match(terminal.content[0].text,/1 unsuccessful/);
 	assert.doesNotMatch(terminal.content[0].text,/Jobs ready/);
-	assert.equal((await finalized({jobs:[failed.details.id],job_mode:"any_success",timeout:2}))?.isError,true);
-	assert.equal((await finalized({jobs:[failed.details.id],readiness:true,timeout:2}))?.isError,true);
+	assert.equal((await finalized({jobs:[failed.details.id],job_mode:"any_success",timeout:2},"wait_for_jobs"))?.isError,true);
+	assert.equal((await finalized({jobs:[failed.details.id],timeout:2},"wait_for_ready"))?.isError,true);
 	assert.equal((await finalized({condition:"sleep 3",timeout:1}))?.isError,true);
-	const rejectedWorktree=await finalized({agent:"reviewer",task:"fixture",isolation:"worktree"},"spawn_subagent");
+	const rejectedWorktree=await finalized({agent:"reviewer",task:"fixture"},"subagent_worktree");
 	assert.equal(rejectedWorktree?.isError,true);
-	const failedWorktree=await finalized({agent:"worker",task:"fixture",isolation:"worktree",baseRevision:"missing-fixture"},"spawn_subagent");
+	const failedWorktree=await finalized({task:"fixture",baseRevision:"missing-fixture"},"subagent_worktree");
 	assert.equal(failedWorktree?.isError,true); // Non-Git disposable cwd fails before any child/model execution.
-	const invalidNormal=await finalized({agent:"worker"},"spawn_subagent");
+	const invalidNormal=await finalized({agent:"worker"},"subagent_run");
 	assert.equal(invalidNormal?.isError,true);
 	fs.writeFileSync(path.join(dir,"text.txt"),"before\n");
 	const preview=await invoke("safe_edit",{action:"preview",path:"text.txt",edits:[{oldText:"before",newText:"after"}]});

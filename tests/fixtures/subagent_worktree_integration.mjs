@@ -9,7 +9,7 @@ const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-worktree-
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 process.env.PI_SUBAGENT_STATE_DIR = path.join(root, "state");
 process.env.PI_SUBAGENT_DEPTH = "0";
-let tool;
+const tools = new Map();
 const events = new Map();
 const context = { cwd: root, hasUI: false, isProjectTrusted: () => true, model: undefined };
 try {
@@ -20,7 +20,17 @@ try {
 	fs.writeFileSync(path.join(root, "file.txt"), "base\n");
 	git(root, "add", "file.txt");
 	git(root, "commit", "-m", "base");
-	extension({ registerTool: (definition) => { tool = definition; }, registerCommand() {}, on: (event, callback) => events.set(event, callback) });
+	extension({ registerTool: (definition) => { tools.set(definition.name, definition); }, registerCommand() {}, on: (event, callback) => events.set(event, callback) });
+	const promptEvent = (selectedTools) => ({ systemPrompt: "fixture", systemPromptOptions: { cwd: root, selectedTools } });
+	const singlePrompt = await events.get("before_agent_start")(promptEvent(["subagent_run"]), context);
+	assert.match(singlePrompt.systemPrompt, /subagent_run/);
+	assert.doesNotMatch(singlePrompt.systemPrompt, /subagent_parallel|subagent_chain|subagent_interactive|subagent_worktree|wait_for_jobs/);
+	for (const selected of [[], ["subagent_status"], ["subagent_cancel"]]) {
+		assert.equal(await events.get("before_agent_start")(promptEvent(selected), context), undefined);
+	}
+	const worktreePrompt = await events.get("before_agent_start")(promptEvent(["subagent_worktree"]), context);
+	assert.match(worktreePrompt.systemPrompt, /subagent_worktree/);
+	assert.doesNotMatch(worktreePrompt.systemPrompt, /subagent_run|subagent_parallel|subagent_chain|subagent_interactive|wait_for_jobs/);
 	let invocations = 0;
 	let outcome = "completed";
 	globalThis.worktreeRunner = async (options) => {
@@ -44,30 +54,30 @@ try {
 			updatedAt: new Date().toISOString(),
 		};
 	};
-	const invokeRaw = (params, signal) => tool.execute("fixture", params, signal, undefined, context);
-	const invoke = async (params, signal) => {
-		try { return await invokeRaw(params, signal); }
+	const invokeRaw = (name, params, signal) => tools.get(name).execute("fixture", params, signal, undefined, context);
+	const invoke = async (name, params, signal) => {
+		try { return await invokeRaw(name, params, signal); }
 		catch (error) { return { isError: true, content: [{ type: "text", text: error.message }], details: error.details }; }
 	};
 	const standard = { agent: "worker", task: "edit" };
-	const nonisolated = await invoke(standard);
+	const nonisolated = await invoke("subagent_run", standard);
 	assert.equal(nonisolated.details.results[0].worktree, undefined);
 	assert.equal(nonisolated.content[0].text, "done");
 	assert.equal(invocations, 1);
-	for (const invalid of [
-		{ ...standard, isolation: "worktree", interactive: true },
-		{ ...standard, isolation: "worktree", background: true },
-		{ tasks: [standard], isolation: "worktree" },
-		{ chain: [standard], isolation: "worktree" },
-		{ tasks: [{ ...standard, isolation: "worktree" }] },
-		{ ...standard, baseRevision: "HEAD" },
-	]) await assert.rejects(invokeRaw(invalid));
+	for (const [name, invalid] of [
+		["subagent_worktree", { task: "edit", interactive: true }],
+		["subagent_worktree", { task: "edit", background: true }],
+		["subagent_parallel", { tasks: [standard], isolation: "worktree" }],
+		["subagent_chain", { chain: [standard], isolation: "worktree" }],
+		["subagent_parallel", { tasks: [{ ...standard, isolation: "worktree" }] }],
+		["subagent_run", { ...standard, baseRevision: "HEAD" }],
+	]) await assert.rejects(invokeRaw(name, invalid));
 	assert.equal(invocations, 1);
 	fs.writeFileSync(path.join(root, "file.txt"), "parent dirty\n");
-	assert.equal((await invoke({ ...standard, isolation: "worktree" })).isError, true);
+	assert.equal((await invoke("subagent_worktree", { task: "edit" })).isError, true);
 	assert.equal(invocations, 1);
 	for (outcome of ["completed", "failed", "canceled", "throw"]) {
-		const result = await invoke({ ...standard, isolation: "worktree", baseRevision: "HEAD" });
+		const result = await invoke("subagent_worktree", { task: "edit", baseRevision: "HEAD" });
 		assert.equal(Boolean(result.isError), outcome !== "completed");
 		const report = result.details.results[0].worktree;
 		assert.ok(report);
@@ -83,7 +93,7 @@ try {
 			assert.equal(git(report.path, "status", "--porcelain"), "");
 		}
 	}
-	const canceled = await invoke({ ...standard, isolation: "worktree", baseRevision: "HEAD" }, AbortSignal.abort());
+	const canceled = await invoke("subagent_worktree", { task: "edit", baseRevision: "HEAD" }, AbortSignal.abort());
 	assert.equal(canceled.isError, true);
 	assert.equal(invocations, 5);
 	console.log("worktree spawn integration passed: default, rejected modes, dirty base, commits, failures, cancellation, runner throw");

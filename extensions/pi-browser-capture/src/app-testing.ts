@@ -680,7 +680,7 @@ const appTypeText = defineTool({
 const appWaitFor = defineTool({
 	name: "app_wait_for",
 	label: "App Wait For",
-	description: "Wait for a selector, URL fragment, or page idle state.",
+	description: "Wait for a selector, URL fragment, or page idle state. This is a page wait, not a process/job wait; use wait_for_ready for managed command readiness or wait_for_jobs for completion.",
 	promptSnippet: "app_wait_for to wait for an app condition",
 	parameters: Type.Object({
 		selector: Type.Optional(Type.String({ description: "CSS selector to wait for" })),

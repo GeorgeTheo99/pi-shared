@@ -12,7 +12,7 @@ Shared Pi extension for user-invoked alternate-model second opinions.
 /panel --list [search]       # list available runtime models
 ```
 
-The command forwards normal opinion requests into the `panel` skill workflow. The skill then uses `panel_select` and `spawn_subagent` with the shared `panelist` agent.
+The command forwards normal opinion requests into the `panel` skill workflow. The skill then uses `panel_select` and `subagent_run` (or `subagent_parallel` for compare mode) with the shared `panelist` agent.
 
 ## Tools
 
@@ -43,7 +43,7 @@ Config values are model patterns, not hardcoded shared defaults. They are resolv
 ## Notes
 
 - Model discovery uses Pi's extension-facing `ctx.modelRegistry` for the active profile and async `ModelRuntime` instances for configured alternate profiles rather than shelling out to `pi --list-models` (with the legacy registry factory retained for Pi 0.80.7).
-- Compare mode depends on `spawn_subagent` task-level `model` and `agentDir` overrides (`tasks[].model`, `tasks[].agentDir`).
+- Compare mode depends on `subagent_parallel` task-level `model` and `agentDir` overrides (`tasks[].model`, `tasks[].agentDir`).
 - For vision assistance, give the selected image-capable child an accessible local image path and a bounded visual question; image bytes stay out of the text-only parent model's request history.
 - Alternate profiles load Pi settings/extensions from that profile; only use trusted profile directories.
 - The `panelist` agent omits `tools:` frontmatter, so spawned panelists get a full Pi session; its prompt tells them to default to read-only unless implementation is explicitly requested.

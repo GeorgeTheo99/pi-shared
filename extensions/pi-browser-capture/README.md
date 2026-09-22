@@ -71,6 +71,8 @@ a substitute browser backend.
 - `app_api_request`
 - `app_page_state`
 
+`app_wait_for` waits on browser page state, not process lifecycle. Start a local app with `command_start({command,timeout_seconds,readiness})`, do independent preparation first, then use `wait_for_ready({jobs:["cmd_…"],timeout:60})` for its declared readiness before opening it. Use `wait_for_jobs({jobs:["cmd_…"],timeout:3600})` for terminal completion instead; readiness is not test success. These job tools do not change app target permissions or public-browser boundaries.
+
 Default app target: `http://127.0.0.1:8100`.
 
 Configure with:

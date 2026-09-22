@@ -69,7 +69,18 @@ const CONTROL_OR_MUTATION_TOOLS = new Set([
 	"panel_select",
 	"pptx_preview",
 	"pptx_preview_cleanup",
-	"wait_for",
+	"wait_for", // Historical transcripts; not an advertised tool.
+	"wait_for_condition",
+	"wait_for_jobs",
+	"wait_for_ready",
+	"command_start",
+	"command_status",
+	"command_list",
+	"command_cancel",
+	"subagent_list",
+	"subagent_cancel",
+	"subagent_steer",
+	"subagent_followup",
 	"app_open",
 	"app_open_tab",
 	"app_list_tabs",
@@ -86,7 +97,14 @@ const CONTROL_OR_MUTATION_TOOLS = new Set([
 const HIGH_FIDELITY_TOOLS = new Set([
 	"read",
 	"deep_research",
-	"spawn_subagent",
+	"spawn_subagent", // Historical transcripts; not an advertised tool.
+	"subagent_run",
+	"subagent_parallel",
+	"subagent_chain",
+	"subagent_interactive",
+	"subagent_worktree",
+	"subagent_status",
+	"subagent_answer",
 	"workflow",
 ]);
 
@@ -99,6 +117,8 @@ const EXTRACTED_PROSE_TOOLS = new Set([
 
 const DETERMINISTIC_TOOLS = new Set([
 	"bash",
+	"command_job", // Historical transcripts; not an advertised tool.
+	"command_logs",
 	"web_search",
 	"kb_search",
 	"browser_console_logs",

@@ -13,7 +13,7 @@
  *
  * The worker defaults to the OpenAI Codex subscription model
  * `openai-codex/gpt-5.6-sol`, auto-routed through the `~/.pi/agent` profile
- * by spawn_subagent's GPT-family subscription routing. Override per call via
+ * by the shared subagent runner's GPT-family subscription routing. Override per call via
  * `args.workerModel`. Reviewer/planner/scout inherit the parent session model
  * — on a resident local model that keeps spawn cost at ~0 swap, which is the
  * whole point of not auto-routing those roles (see AGENTS.md residency note).

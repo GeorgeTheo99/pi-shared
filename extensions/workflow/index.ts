@@ -1,7 +1,7 @@
 /**
  * workflow — trusted JS workflow runner on top of Pi subagents.
  *
- * Pi already has `spawn_subagent` for one-off single / parallel / chain
+ * Pi already has `subagent_run`, `subagent_parallel`, and `subagent_chain` for one-off
  * delegation. `workflow` is for the next level up: repeatable, scriptable,
  * multi-phase orchestration expressed as a small JavaScript program whose
  * primitives are Pi subagent calls.
@@ -488,9 +488,9 @@ const WorkflowParams = Type.Object({
   args: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Optional object passed to the workflow as the `args` global." })),
 });
 
-const WORKFLOW_ROUTING = `Workflow vs spawn_subagent routing:
+const WORKFLOW_ROUTING = `Workflow vs subagent routing:
 - Use \`workflow\` for repeatable, scriptable, multi-phase orchestration: when the fan-out pattern is non-trivial (interleaved phases, conditional lanes, gathered results fed into later steps) or worth saving/reusing as a named workflow.
-- Use \`spawn_subagent\` for ordinary one-off single / parallel / chain delegation where a declarative task list is enough.
+- Use \`subagent_run\`, \`subagent_parallel\`, or \`subagent_chain\` for ordinary one-off single / parallel / chain delegation where a declarative task list is enough.
 - Inside a workflow, \`agent(prompt, {agent, onProgress})\` runs one Pi subagent (shared agents: scout, planner, reviewer, worker, panelist; default worker) and returns its final text; pass \`onProgress(text)\` to observe its streamed output mid-run. \`parallel(thunks)\` runs lanes concurrently. \`phase(title)\` and \`log(msg)\` annotate progress. \`cache(key, fn)\` enables resume-by-replay when \`args._journal\` is set.
 - Keep workflows small and focused. Prefer saving repeatable workflows under pi-shared/workflows/<name>.js (shared) or .pi/workflows/<name>.js (project) and invoking them by \`name\`.`;
 
@@ -502,13 +502,13 @@ return defineTool({
     "Run a trusted JavaScript workflow whose primitives are Pi subagent calls. The workflow body is an async function with globals `agent(prompt, opts?)`, `parallel(thunks)`, `phase(title)`, `log(message)`, `cache(key, producer)`, `args`, and `cwd` in scope.",
     "Pass args._journal=<run id> to enable resume-by-replay: cache(key, fn) results are persisted, and re-invoking with the same _journal id replays completed steps and resumes a failed run from the first incomplete step.",
     "Provide exactly one source: `script` (inline JS), `name` (saved workflow), or `scriptPath` (workflow file). Optional `args` object is passed through to the workflow.",
-    "Use for repeatable, multi-phase, scriptable orchestration on top of existing Pi subagents. For ordinary one-off single/parallel/chain delegation, prefer spawn_subagent.",
+    "Use for repeatable, multi-phase, scriptable orchestration on top of existing Pi subagents. For ordinary one-off single/parallel/chain delegation, prefer subagent_run, subagent_parallel, or subagent_chain.",
     `Effective limits: ${formatSubagentLimits(config)}.`,
   ].join(" "),
   promptSnippet: "Run a trusted JS workflow of Pi subagent calls (agent/parallel/phase/log) for repeatable multi-phase orchestration.",
   promptGuidelines: [
     "Use `workflow` for repeatable, scriptable, multi-phase orchestration (interleaved phases, conditional lanes, gathered results fed into later steps) or patterns worth saving/reusing as a named workflow.",
-    "Use `spawn_subagent` for ordinary one-off single/parallel/chain delegation where a declarative task list is enough; do not reach for `workflow` for a simple fan-out.",
+    "Use `subagent_run`, `subagent_parallel`, or `subagent_chain` for ordinary one-off single/parallel/chain delegation where a declarative task list is enough; do not reach for `workflow` for a simple fan-out.",
     `Inside a workflow: \`agent(prompt, {agent})\` runs one Pi subagent (shared agents: scout, planner, reviewer, worker, panelist; default worker) and returns its final text. \`parallel(thunks)\` runs lanes concurrently (max ${config.maxFanout}; host concurrency ${config.maxConcurrency}). \`phase(title)\` and \`log(msg)\` annotate progress.`,
     "Save repeatable workflows under `pi-shared/workflows/<name>.js` (shared, committed) or `.pi/workflows/<name>.js` (project) and invoke them by `name`.",
     "Workflow scripts run in-process with the same trust level as bash. Prefer committed shared workflows; inline scripts always require explicit interactive approval.",
