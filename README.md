@@ -92,13 +92,16 @@ existing offline refresh of generated routes from the saved catalog.
 
 ```bash
 pi-shared update --plan
-pi-shared update
+pi-shared update          # Or: pi update (bare command, package 0.1.11+)
 pi-shared status
 ```
 
-For Homebrew installations, use `pi-shared update`, not stock `pi update` or
-global npm. The runtime follows the published package pin, not npm's latest
-release; Homebrew package **0.1.10** includes stock Pi **0.87.1**.
+With Homebrew package **0.1.11+**, bare `pi update` forwards to `pi-shared update`:
+both update the packaged Pi runtime and saved modules. Explicit options such as
+`pi update --extensions` retain stock behavior. Use `pi-shared update --plan`
+for a preview; stock self-update flags and global npm do not manage this runtime.
+The runtime follows the published package pin, not npm's latest release;
+Homebrew packages **0.1.10** and **0.1.11** include stock Pi **0.87.1**.
 
 Updates reuse your saved component selection. An external gateway stays externally
 managed: this Mac never installs, upgrades, or restarts it. Status checks local
