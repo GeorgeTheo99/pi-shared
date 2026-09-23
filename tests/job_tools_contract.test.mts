@@ -294,7 +294,11 @@ test("Anthropic public stream serializes tools before any network call", async (
 		let payload: any;
 		let requests = 0;
 		const stream = anthropic.stream({ id: "offline-contract", name: "fixture", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://invalid.invalid", reasoning: false, input: ["text"], contextWindow: 10000, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: { supportsStrictTools: supported } },
-			{ messages: [{ role: "user", content: "offline", timestamp: Date.now() }], tools: [...tools.values()] },
+			{ messages: [
+				// Pi 0.86+ provider streams read tool declarations from the transcript.
+				...(typeof ai.getCurrentTools === "function" ? [{ role: "system", content: "Offline contract", toolsAdded: [...tools.values()], timestamp: Date.now() }] : []),
+				{ role: "user", content: "offline", timestamp: Date.now() },
+			], tools: [...tools.values()] },
 			{ client: { beta: { messages: { create() { requests++; throw new Error("NETWORK FORBIDDEN"); } } } }, onPayload(value: any) { payload = wire(value); throw new Error("PAYLOAD CAPTURE COMPLETE"); } });
 		const result = await stream.result();
 		assert.equal(requests, 0);
