@@ -58,7 +58,7 @@ Changes apply immediately; `/reload` is not required.
 - `on`: create new summaries and substitute stored summaries.
 - `pause`: abort pending/in-flight creation and retain existing substitutions.
 - `off`: restore raw provider context and warn about estimated active-branch growth.
-- `status`: show mode, thresholds, exposure/completion/retry counts, in-flight work, and estimated savings.
+- `status`: show mode, thresholds, exposure/completion/retry counts, in-flight work, and estimated savings. On Pi `0.87.1`, active-summary counts and savings (including the `off` growth warning) use the canonical session projection, excluding omitted results and summaries of replaced content. Pi `0.85.1` retains compaction-aware entry selection. Exact recall still reads original active-branch entries.
 - `threshold`: inspect or change the standard/high-fidelity character thresholds. The minimum is 4,001, and standard cannot exceed high-fidelity.
 - `images`: inspect or change tool-result image retention (default: newest 4; range 0–64; `off` disables aging; `reset` restores the default).
 - `reset`: advance the branch epoch, clearing active summaries and exposure markers without deleting append-only history. Mode and thresholds are retained.

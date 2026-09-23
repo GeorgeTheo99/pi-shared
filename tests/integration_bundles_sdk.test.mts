@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { createAssistantMessageEventStream, InMemoryCredentialStore } from '@earendil-works/pi-ai';
+import * as piAi from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import integrationBundles from '../extensions/integration-bundles/index.ts';
 
@@ -45,7 +46,9 @@ test('real SDK: bundle load makes tools callable on the immediately following tu
     let turns = 0;
     const seen: string[][] = [];
     session.agent.streamFunction = (selected: any, context: any) => {
-      seen.push(context.tools.map((t: any) => t.name));
+      // Pi 0.86+ carries tool updates in the transcript; 0.85 uses context.tools.
+      const tools = context.tools ?? (piAi as any).getCurrentTools(context.messages);
+      seen.push(tools.map((t: any) => t.name));
       const turn = ++turns;
       const message: any = { role: 'assistant', api: selected.api, provider: selected.provider, model: selected.id, timestamp: Date.now(),
         usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },

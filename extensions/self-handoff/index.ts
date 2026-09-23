@@ -159,7 +159,12 @@ function serializeHandoffMessages(messages: readonly AgentMessage[]) {
 }
 
 function contextMessages(ctx: ExtensionCommandContext): AgentMessage[] {
-	return ctx.sessionManager
+	// Pi 0.87+ applies branch-local context edits in its canonical projection.
+	// Keep the entry conversion for stock 0.85.1, which lacks that API.
+	const manager = ctx.sessionManager as ExtensionCommandContext["sessionManager"] & {
+		buildSessionProjection?: () => { messages: AgentMessage[] };
+	};
+	return manager.buildSessionProjection?.().messages ?? manager
 		.buildContextEntries()
 		.flatMap((entry) => sessionEntryToContextMessages(entry));
 }

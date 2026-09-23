@@ -96,6 +96,10 @@ pi-shared update
 pi-shared status
 ```
 
+For Homebrew installations, use `pi-shared update`, not stock `pi update` or
+global npm. The runtime follows the published package pin, not npm's latest
+release; Homebrew package **0.1.10** includes stock Pi **0.87.1**.
+
 Updates reuse your saved component selection. An external gateway stays externally
 managed: this Mac never installs, upgrades, or restarts it. Status checks local
 configuration; it does **not** prove remote authentication, inference, or browser

@@ -67,7 +67,7 @@ test("installed SDK + loopback broker: native errors, success, schema, command, 
       stream.push({ type: "done", reason: "toolUse", message }); return stream;
     };
     const messages = await runAgentLoop([{ role: "user", content: "fixture only", timestamp: Date.now() }], { systemPrompt: "fixture", messages: [], tools: [{ ...tool,
-      execute: (id, args, signal, update) => tool.execute(id, args, signal, update, ctx) }] }, { model, convertToLlm: (m: any) => m, shouldStopAfterTurn: () => true }, () => {}, undefined, streamFn);
+      execute: (id, args, signal, update) => tool.execute(id, args, signal, update, ctx) }] }, { model, convertToLlm: (m: any) => m, shouldStopAfterTurn: () => true, finishTurn: () => ({ action: "end" as const }) }, () => {}, undefined, streamFn);
     return messages.find(m => m.role === "toolResult") as any;
   }
   const invalid = await finalize({ question: "solar", max_sources: -1 });

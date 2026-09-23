@@ -1013,7 +1013,10 @@ test("busy-session receipts survive shutdown and are delivered after reload with
 		});
 		await state.persistOutgoingMessageStatus({ envelope: incoming, targetSessionName: "Busy target", trackingSupported: true });
 		await state.enqueueMessage(incoming);
-		await waitUntil(() => state.readSessionReceipts(sessionId).some((item) => item.envelope.id === incoming.id));
+		await waitUntil(() =>
+			state.readSessionReceipts(sessionId).some((item) => item.envelope.id === incoming.id) &&
+			state.readInbox(scope.roomId, self.runtimeId).length === 0,
+		);
 		assert.equal(first.sentMessages.length, 0, "busy sessions must not receive context messages immediately");
 		assert.equal(state.readInbox(scope.roomId, self.runtimeId).length, 0, "durable receipt should replace the file envelope");
 		assert.equal(state.readOutgoingMessageStatuses(peer.sessionId, incoming.id)[0].effectiveStatus, "delivered");

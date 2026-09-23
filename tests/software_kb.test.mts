@@ -56,7 +56,7 @@ async function finalize(tool: any, args: any) {
     stream.push({ type: "done", reason: "toolUse", message }); return stream;
   };
   const messages = await runAgentLoop([{ role: "user", content: "fixture", timestamp: Date.now() }], { systemPrompt: "fixture", messages: [], tools: [{ ...tool,
-    execute: (id: any, args: any, signal: any, update: any) => tool.execute(id, args, signal, update, {}) }] }, { model, convertToLlm: (m: any) => m, shouldStopAfterTurn: () => true }, () => {}, undefined, streamFn);
+    execute: (id: any, args: any, signal: any, update: any) => tool.execute(id, args, signal, update, {}) }] }, { model, convertToLlm: (m: any) => m, shouldStopAfterTurn: () => true, finishTurn: () => ({ action: "end" as const }) }, () => {}, undefined, streamFn);
   return messages.find(m => m.role === "toolResult") as any;
 }
 
