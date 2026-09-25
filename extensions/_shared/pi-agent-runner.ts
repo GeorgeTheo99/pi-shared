@@ -294,14 +294,27 @@ export function getFinalAssistantOutput(messages: Message[]): string {
 	return "";
 }
 
+function isRuntimeScript(script: string): boolean {
+	if ([".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"].includes(path.extname(script).toLowerCase())) {
+		return true;
+	}
+	try {
+		const firstLine = fs.readFileSync(script, "utf8").split("\n", 1)[0];
+		return /^#!.*\b(node|bun)(?:\s|$)/.test(firstLine);
+	} catch {
+		return false;
+	}
+}
+
 export function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	const currentScript = process.argv[1];
-	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
-	}
 	const execName = path.basename(process.execPath).toLowerCase();
 	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
+	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
+	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)
+		&& (!isGenericRuntime || isRuntimeScript(currentScript))) {
+		return { command: process.execPath, args: [currentScript, ...args] };
+	}
 	if (!isGenericRuntime) return { command: process.execPath, args };
 	return { command: "pi", args };
 }
