@@ -7,13 +7,15 @@
 # to source generated launchers.
 #
 # Usage:
-#   pi-shared-install [--force] [--no-catalog] [--bootstrap-launchers] [--no-deps] [--aliases PATH]
+#   pi-shared-install [--force] [--no-catalog] [--bootstrap-launchers] [--enable-gateway] [--no-deps] [--aliases PATH]
 #                     [--models-out PATH] [--launchers-out PATH] [--cli-out PATH]
 #                     [--pi-agent-dir PATH|''] [--provider-name NAME]
 #                     [--direct-launchers|--no-direct-launchers] [--overlay PACKAGE_DIR ...]
 #
 # PI_SHARED_DIRECT_ONLY=1 bootstraps native-only JSON routing; no gateway catalog,
 # generated models.json or gateway profile. Requires PI_SHARED_CLI_OUT.
+# --enable-gateway (or PI_SHARED_ENABLE_GATEWAY=1) permits adding gateway routing to an
+# existing generated direct-only launcher; native profiles/defaults are retained.
 # --cli-out PATH (or PI_SHARED_CLI_OUT) selects JSON routing instead of zsh.
 # The legacy default remains available for older setup orchestrators. Existing
 # JSON or recognized legacy generation metadata is preserved during upgrades.
@@ -65,6 +67,8 @@ FORCE=0
 GENERATE_CATALOG=1
 BOOTSTRAP_LAUNCHERS="${PI_SHARED_BOOTSTRAP_LAUNCHERS:-0}"
 DIRECT_ONLY="${PI_SHARED_DIRECT_ONLY:-0}"
+ENABLE_GATEWAY="${PI_SHARED_ENABLE_GATEWAY:-0}"
+GATEWAY_UPGRADE=0
 INSTALL_DEPS=1
 NPM_BIN="${PI_SHARED_NPM:-npm}"
 DIRECT_LAUNCHERS="${PI_SHARED_DIRECT_LAUNCHERS-${PI_SHARED_LS99_EXTRAS-}}"
@@ -84,7 +88,7 @@ die()  { printf '%s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
 usage() {
   sed -n '2,/^set -euo/p' "$0" | grep -E '^#   ' | sed 's/^#   /  /'
-  exit 1
+  exit 0
 }
 
 expand_path() {
@@ -101,6 +105,7 @@ while [ $# -gt 0 ]; do
     --force) FORCE=1 ;;
     --no-catalog) GENERATE_CATALOG=0 ;;
     --bootstrap-launchers) BOOTSTRAP_LAUNCHERS=1 ;;
+    --enable-gateway) ENABLE_GATEWAY=1 ;;
     --no-deps) INSTALL_DEPS=0 ;;
     --aliases) shift; [ $# -gt 0 ] || die "--aliases requires a path"; ALIASES_PATH="$(expand_path "$1")"; CATALOG_OVERRIDES+=(--aliases "$ALIASES_PATH") ;;
     --models-out) shift; [ $# -gt 0 ] || die "--models-out requires a path"; MODELS_OUT="$(expand_path "$1")"; CATALOG_OVERRIDES+=(--models-out "$MODELS_OUT") ;;
@@ -126,6 +131,13 @@ case "$DIRECT_ONLY" in
   0|1) ;;
   *) die "PI_SHARED_DIRECT_ONLY must be 0 or 1" ;;
 esac
+
+case "$ENABLE_GATEWAY" in
+  0|1) ;;
+  *) die "PI_SHARED_ENABLE_GATEWAY must be 0 or 1" ;;
+esac
+[ "$ENABLE_GATEWAY" -eq 0 ] || [ "$DIRECT_ONLY" -eq 0 ] \
+  || die "Gateway enable is incompatible with direct-only setup"
 
 case "$DIRECT_LAUNCHERS" in
   ""|0|1) ;;
@@ -304,6 +316,37 @@ direct_preflight() {
     || die "Cannot safely initialize direct-only routing"
 }
 
+enable_gateway() {
+  local check="$1"
+  local args=(--aliases "$ALIASES_PATH" --models-out "$MODELS_OUT" --shared-dir "$ROOT_DIR"
+    --provider-name "${PROVIDER_NAME:-model-gateway}" --gateway-url http://localhost:9111 --gateway-api-key cloud)
+  [ -z "$CATALOG_PI_AGENT_DIR" ] || args+=(--pi-agent-dir "$CATALOG_PI_AGENT_DIR")
+  [ "$BOOTSTRAP_LAUNCHERS" -eq 0 ] || args+=(--allow-empty-catalog)
+  case "$DIRECT_LAUNCHERS" in
+    1) args+=(--direct-launchers) ;;
+    0) args+=(--no-direct-launchers) ;;
+  esac
+  python3 -B - "$ROOT_DIR" "$CLI_OUT" "$check" "${args[@]}" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / 'lib'))
+from pi_cli import enable_gateway
+try:
+    print(int(enable_gateway(Path(sys.argv[2]), sys.argv[4:], check=sys.argv[3] == '1')))
+except (OSError, ValueError) as exc:
+    raise SystemExit(str(exc))
+PY
+}
+
+gateway_preflight() {
+  [ "$ENABLE_GATEWAY" -eq 1 ] || return 0
+  [ -n "$CLI_OUT" ] && [ "$GENERATE_CATALOG" -eq 1 ] \
+    || die "Gateway enable requires CLI output and catalog generation"
+  if [ -e "$CLI_OUT" ] || [ -L "$CLI_OUT" ]; then
+    GATEWAY_UPGRADE="$(enable_gateway 1)" || die "Cannot safely add gateway routing"
+  fi
+}
+
 generate_catalog() {
   if [ "$DIRECT_ONLY" -eq 1 ]; then
     local cmd=("$ROOT_DIR/bin/pi-launch" --launcher-init-direct)
@@ -317,6 +360,11 @@ generate_catalog() {
   fi
   if [ "$GENERATE_CATALOG" -eq 0 ]; then
     warn "Skipping pi-catalog generation (--no-catalog)"
+    return 0
+  fi
+  if [ "$GATEWAY_UPGRADE" -eq 1 ]; then
+    enable_gateway 0 >/dev/null || die "Cannot safely add gateway routing"
+    ok "Added gateway routing; native profiles and defaults preserved"
     return 0
   fi
   if [ -n "$CLI_OUT" ]; then
@@ -419,6 +467,7 @@ migrate_legacy_launcher_path() {
 main() {
   [ "$(uname -s)" = "Darwin" ] || warn "pi-shared installer is intended for macOS; continuing because no launchd changes are required"
   direct_preflight
+  gateway_preflight
   log "Installing pi-shared from $ROOT_DIR"
   install_symlink pi-catalog
   install_symlink pi-gateway

@@ -132,3 +132,110 @@ def test_direct_config_rejects_gateway_metadata(machine, mutation):
     machine["config"].write_text(json.dumps(config))
     result = launch(machine, "--launcher-check", upstream=False)
     assert result.returncode != 0 and "Direct-only" in result.stderr
+
+
+def install_combined(machine, *args, **env):
+    return subprocess.run(
+        [str(ROOT / "bin/pi-shared-install"), "--no-deps", *args],
+        env={**machine["env"], "PI_SHARED_DIRECT_ONLY": "0", "PI_SHARED_ENABLE_GATEWAY": "1",
+             "PI_SHARED_BOOTSTRAP_LAUNCHERS": "1", "PI_SHARED_ALIASES": str(machine["aliases"]),
+             "PI_SHARED_CLI_OUT": str(machine["config"]), **env},
+        capture_output=True, text=True, timeout=30,
+    )
+
+
+@pytest.mark.parametrize("shortcut", [True, False])
+def test_add_gateway_preserves_native_configuration_and_is_idempotent(machine, shortcut):
+    assert install_direct(machine, *([] if shortcut else ["--no-direct-launchers"])).returncode == 0
+    native = machine["home"] / ".pi/agent"
+    settings = native / "settings.json"
+    original = json.loads(settings.read_text())
+    original.update(defaultProvider="custom", defaultModel="native", theme="user-theme")
+    settings.write_text(json.dumps(original))
+    (native / "models.json").write_text('{"providers":{"custom":{"apiKey":"$USER_KEY"}}}')
+    (native / "auth.json").write_text('{"custom":{"type":"api_key","key":"fixture-only"}}')
+    saved = {path: path.read_bytes() for path in native.glob("*.json")}
+    result = install_combined(machine)
+    assert result.returncode == 0, result.stderr
+    config = json.loads(machine["config"].read_text())
+    assert "--direct-only" not in config["generation"]["args"]
+    assert set(config["routes"]) == {"test", "other"} | ({"openai"} if shortcut else set())
+    assert config["defaultProfile"] is None
+    assert invocation(launch(machine))["env"]["PI_CODING_AGENT_DIR"] is None
+    assert invocation(launch(machine, "--provider", "custom", "--model", "native"))["argv"] == [
+        "--provider", "custom", "--model", "native"]
+    for path, body in saved.items():
+        assert json.loads(path.read_bytes()) == json.loads(body)
+    gateway = machine["home"] / ".pi-omlx/agent"
+    assert set(json.loads((gateway / "models.json").read_text())["providers"]) == {"model-gateway"}
+    before = {path: path.read_bytes() for path in (machine["config"], gateway / "models.json", gateway / "settings.json")}
+    result = install_combined(machine)
+    assert result.returncode == 0, result.stderr
+    assert all(path.read_bytes() == body for path, body in before.items())
+    assert launch(machine, "--launcher-check", upstream=False).returncode == 0
+
+
+@pytest.mark.parametrize("mutation", ["custom-route", "custom-field", "malformed", "catalog", "models", "empty-models", "models-link"])
+def test_add_gateway_fails_before_writes_on_custom_or_malformed_inputs(machine, mutation):
+    assert install_direct(machine).returncode == 0
+    config = machine["config"]
+    value = json.loads(config.read_text())
+    models = machine["home"] / ".pi-omlx/agent/models.json"
+    if mutation == "custom-route":
+        value["routes"]["mine"] = dict(provider="custom", model="native", gateway=False, profile=None)
+        config.write_text(json.dumps(value))
+    elif mutation == "custom-field":
+        value["userSetting"] = "retain"
+        config.write_text(json.dumps(value))
+    elif mutation == "malformed":
+        config.write_text("invalid JSON")
+    elif mutation == "catalog":
+        machine["aliases"].write_text("[]")
+    elif mutation == "models":
+        models.write_text('{"providers":{"custom":{}}}')
+    elif mutation == "empty-models":
+        models.touch()
+    else:
+        models.symlink_to(machine["home"] / "missing-user-models.json")
+    before = {p: p.read_bytes() for p in machine["home"].rglob("*") if p.is_file() and not p.is_symlink()}
+    result = install_combined(machine)
+    assert result.returncode != 0
+    assert "Cannot safely add gateway routing" in result.stderr
+    assert all(path.read_bytes() == body for path, body in before.items())
+    assert not (machine["home"] / ".pi-omlx/agent/settings.json").exists()
+
+
+def test_gateway_upgrade_requires_explicit_intent(machine):
+    assert install_direct(machine).returncode == 0
+    before = machine["config"].read_bytes()
+    assert install_combined(machine, PI_SHARED_ENABLE_GATEWAY="0").returncode == 0
+    assert machine["config"].read_bytes() == before
+    assert not (machine["home"] / ".pi-omlx/agent/models.json").exists()
+    assert install_combined(machine, "--enable-gateway", PI_SHARED_ENABLE_GATEWAY="0").returncode == 0
+    assert "--direct-only" not in json.loads(machine["config"].read_text())["generation"]["args"]
+
+
+def test_installer_help_advertises_gateway_upgrade_and_succeeds_without_writes(machine):
+    before = set(machine["home"].rglob("*"))
+    result = subprocess.run([str(ROOT / "bin/pi-shared-install"), "--help"],
+                            env=machine["env"], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert "--enable-gateway" in result.stdout
+    assert set(machine["home"].rglob("*")) == before
+    result = subprocess.run([str(ROOT / "bin/pi-shared-install"), "--not-a-real-option"],
+                            env=machine["env"], capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert "unknown argument" in result.stderr
+
+
+def test_add_gateway_bootstrap_without_catalog_retains_native_routes(machine):
+    assert install_direct(machine).returncode == 0
+    machine["aliases"].unlink()
+    result = install_combined(machine)
+    assert result.returncode == 0, result.stderr
+    config = json.loads(machine["config"].read_text())
+    assert "--direct-only" not in config["generation"]["args"]
+    assert "--models-out" in config["generation"]["args"]
+    assert set(config["routes"]) == {"openai"}
+    assert not (machine["home"] / ".pi-omlx/agent/models.json").exists()
+    assert launch(machine, "--launcher-check", upstream=False).returncode == 0

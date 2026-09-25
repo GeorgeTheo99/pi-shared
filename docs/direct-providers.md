@@ -35,9 +35,20 @@ usable. An existing shortcut opt-out is preserved on reruns.
 - `pi models`, launcher checks, and launcher refresh run offline. Direct launches
   do not depend on a gateway service. They still require valid native provider
   credentials and network access when applicable.
-- Gateway catalog or profile overrides cannot be mixed into a direct-only
-  launcher. Adding gateway routes later requires explicit reconciliation rather
-  than silently changing connection or billing behavior.
+- Direct access and gateway access can coexist. An explicit gateway-enabled
+  setup can upgrade a generated direct-only launcher, retaining native provider
+  settings, credentials, the default profile, and the subscription-shortcut
+  preference. Gateway shortcuts use a separate managed profile; adding them
+  does not make gateway routing the default.
+- Installer integrations authorize this additive transition with
+  `pi-shared-install --enable-gateway` (or `PI_SHARED_ENABLE_GATEWAY=1`) and
+  `PI_SHARED_DIRECT_ONLY=0`. Prefer the CLI flag so older installers fail closed
+  instead of ignoring an unfamiliar environment variable. Ordinary refreshes
+  do not change connection policy. A custom/malformed launcher or an existing
+  destination `models.json` is refused before installer writes; select a new
+  dedicated gateway profile or explicitly reconcile that configuration first.
+  Remote-gateway integrations should bootstrap with an absent alias-catalog
+  path, then run `pi-gateway connect`, rather than adopt stale local aliases.
 - Existing gateway/legacy launcher configurations are refused, not overwritten.
   Setup does not stop or uninstall any already-running service. Do not remove a
   receipt to force a migration; reconcile the old installation first.

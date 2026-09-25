@@ -243,7 +243,7 @@ def initialize_direct(path, preference=None, check=False):
     return config
 
 
-def refresh(path, config, check=False):
+def refresh(path, config, check=False, *, write=True):
     """Re-render both outputs in memory, protecting manual models edits before writes."""
     from pi_catalog import render_models, _dump, _load_omlx_status
     gen = config["generation"]
@@ -253,7 +253,8 @@ def refresh(path, config, check=False):
         if updated != config:
             if check:
                 raise ValueError("Direct-only launcher is stale; run --launcher-refresh")
-            atomic_write(path, dump(updated))
+            if write:
+                atomic_write(path, dump(updated))
         return updated
     raw = read_owned(Path(values["--aliases"]), missing="--allow-empty-catalog" in values)
     aliases = json.loads(raw) if raw else {}
@@ -283,7 +284,7 @@ def refresh(path, config, check=False):
         if changed:
             raise ValueError("Launcher catalog is stale; run --launcher-refresh")
         return config
-    if changed:
+    if changed and write:
         # Check every output before writing either one.
         if path.exists():
             read_owned(path)
@@ -291,6 +292,40 @@ def refresh(path, config, check=False):
             atomic_write(models, content)
         atomic_write(path, dump(updated))
     return updated
+
+
+def enable_gateway(path, args, *, check=False):
+    """Add gateway routes to a generated native launcher, never adopt user models.
+
+    Called only by the installer's explicit gateway-enable path. Existing mixed
+    launchers use normal refresh/configure instead. Preflight renders in memory
+    so a malformed catalog or customized launcher fails before installer writes.
+    """
+    previous = load_config(path)
+    values = generation_values(previous["generation"]["args"])
+    if "--direct-only" not in values:
+        return False
+    canonical = make_config({}, previous["generation"]["args"], {}, "unmanaged", digest(b""))
+    if previous != canonical:
+        raise ValueError("Customized direct launcher requires explicit reconciliation before adding a gateway")
+    if not any(flag in args for flag in ("--direct-launchers", "--no-direct-launchers")):
+        args = [*args, "--direct-launchers" if "--direct-launchers" in values else "--no-direct-launchers"]
+    target_values = generation_values(args)
+    if "--direct-only" in target_values or "--models-out" not in target_values:
+        raise ValueError("Gateway enable requires gateway generation settings and a models output")
+    for flag in ("--aliases", "--models-out", "--omlx-status"):
+        if flag in target_values and Path(target_values[flag]).resolve() == path.resolve():
+            raise ValueError("Launcher input/output paths overlap")
+    models = Path(target_values["--models-out"])
+    if models.exists() or models.is_symlink():
+        raise ValueError("Refusing to adopt an existing models output while adding a gateway; select a new dedicated profile")
+    candidate = make_config({}, args, {}, "unmanaged", digest(b""))
+    updated = refresh(path, candidate, write=not check)
+    if not check:
+        # An empty-catalog bootstrap may equal candidate, but still replaces the
+        # on-disk direct-only policy so a later remote connect can add models.
+        atomic_write(path, dump(updated))
+    return True
 
 
 def configure(path, overrides):

@@ -78,7 +78,31 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
       continue;
     }
 
-    const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+    // Canonical vendor agents sometimes have a Markdown title instead of YAML.
+    // Only opted-in symlinks receive this compatibility path: ordinary files
+    // still require metadata, and any explicit YAML block remains authoritative.
+    const heading = entry.isSymbolicLink() ? /^\s*# +([^\r\n]+)(?:\r?\n|$)/.exec(content) : null;
+    const inferredName = entry.name.replace(/\.md$/, "");
+    if (heading?.[1].trim() && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(inferredName)) {
+      agents.push({
+        name: inferredName,
+        description: heading[1].trim(),
+        systemPrompt: content,
+        source,
+        filePath,
+      });
+      continue;
+    }
+
+    let parsed: ReturnType<typeof parseFrontmatter<Record<string, unknown>>>;
+    try {
+      parsed = parseFrontmatter<Record<string, unknown>>(content);
+    } catch {
+      // One malformed agent must not hide other discovered agents. Never infer
+      // replacement metadata for an explicitly supplied but invalid YAML block.
+      continue;
+    }
+    const { frontmatter, body } = parsed;
     const name = typeof frontmatter.name === "string" ? frontmatter.name.trim() : "";
     const description = typeof frontmatter.description === "string" ? frontmatter.description.trim() : "";
     if (!name || !description) continue;

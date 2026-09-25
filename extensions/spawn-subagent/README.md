@@ -70,6 +70,14 @@ model: optional-model-pattern
 System prompt for the agent.
 ```
 
+Canonical vendor Markdown can also be linked into an agents directory without
+copying or modifying it. For symlinks only, a document beginning with a level-one
+Markdown heading can omit YAML: the link basename (minus `.md`, preserving case)
+becomes the agent name, and the heading becomes its description. Names must use
+letters, digits, `_`, or `-`. The original document is retained verbatim as the
+system prompt; model and tools use the normal inherited defaults. Explicit YAML
+remains authoritative: invalid or incomplete metadata is skipped, never inferred.
+
 ## Command
 
 ```text

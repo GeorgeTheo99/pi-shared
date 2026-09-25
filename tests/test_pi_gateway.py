@@ -138,6 +138,31 @@ def test_connect_check_refresh_and_secret_reference(machine, server):
     assert len(server["requests"]) == 2
 
 
+def test_direct_bootstrap_then_remote_connect_preserves_native_route(machine, server):
+    from pi_cli import atomic_write, dump, enable_gateway, initialize_direct
+    # Replace the fixture's empty gateway bootstrap with a fresh native policy.
+    direct = machine["home"] / "direct-launcher.json"
+    initialize_direct(direct)
+    machine["cli"] = direct
+    native = machine["home"] / ".pi/agent"
+    native.mkdir(parents=True)
+    settings = native / "settings.json"
+    atomic_write(settings, dump({"defaultProvider": "custom", "defaultModel": "native"}))
+    before = settings.read_bytes()
+    args = ["--shared-dir", str(ROOT), "--aliases", str(machine["home"] / "absent-remote-bootstrap.json"),
+            "--models-out", str(machine["models"]), "--pi-agent-dir", str(machine["models"].parent),
+            "--provider-name", "model-gateway", "--gateway-url", "http://localhost:9111",
+            "--gateway-api-key", "cloud", "--allow-empty-catalog"]
+    assert enable_gateway(direct, args)
+    result = invoke(machine, server)
+    assert result.returncode == 0, result.stderr
+    config = json.loads(direct.read_text())
+    assert config["routes"]["openai"]["gateway"] is False
+    assert config["defaultProfile"] is None
+    assert settings.read_bytes() == before
+    assert invoke(machine, server, "check").returncode == 0
+
+
 @pytest.mark.parametrize("status,body", [(302, {}), (401, b"SECRET server detail"),
     (404, {}), (200, b"not json"), (200, b"x" * (gateway.LIMIT + 1)),
     (200, {"data": []}), (200, {"data": [{"id": "bad", "available": True}]})],
