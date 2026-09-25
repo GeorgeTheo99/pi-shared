@@ -1213,6 +1213,39 @@ def test_installer_defaults_to_pi_owned_paths():
     assert "model-gateway-runtime" not in installer
 
 
+def test_installer_replaces_existing_registration_for_same_package(tmp_path):
+    home = tmp_path / "home"
+    agent = home / ".pi" / "agent"
+    agent.mkdir(parents=True)
+    previous = tmp_path / "previous-pi-shared"
+    previous.mkdir()
+    (previous / "package.json").write_text('{"name":"pi-shared"}\n')
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    (unrelated / "package.json").write_text('{"name":"unrelated"}\n')
+    settings = agent / "settings.json"
+    settings.write_text(json.dumps({"packages": [
+        {"source": os.path.relpath(previous, agent), "enabled": True},
+        os.path.relpath(unrelated, agent),
+    ]}))
+    env = dict(os.environ)
+    env.update({
+        "HOME": str(home),
+        "PI_SHARED_BIN_DIR": str(home / ".local" / "bin"),
+        "PI_SHARED_AGENT_DIR": str(agent),
+    })
+    result = subprocess.run(
+        [str(SHARED_ROOT / "bin" / "pi-shared-install"), "--no-deps", "--no-catalog"],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    packages = json.loads(settings.read_text())["packages"]
+    assert len(packages) == 2
+    assert packages[0]["enabled"] is True
+    assert (agent / packages[0]["source"]).resolve() == SHARED_ROOT.resolve()
+    assert (agent / packages[1]).resolve() == unrelated.resolve()
+
+
 def test_installer_renders_from_default_pi_alias_catalog(tmp_path):
     home = tmp_path / "home"
     aliases = home / ".pi" / "model-aliases.json"

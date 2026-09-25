@@ -82,7 +82,7 @@ export async function loopCall(tool, args, beforeToolCall) {
 	const messages = await core.runAgentLoop(
 		[{ role: "user", content: "Offline contract fixture", timestamp: Date.now() }],
 		{ systemPrompt: "Offline test", messages: [], tools: [tool] },
-		{ model, convertToLlm: (messages) => messages, shouldStopAfterTurn: () => true, beforeToolCall },
+		{ model, convertToLlm: (messages) => messages, shouldStopAfterTurn: () => true, finishTurn: () => ({ action: "end" }), beforeToolCall },
 		() => {}, undefined, streamFn,
 	);
 	const result = messages.find((message) => message.role === "toolResult");

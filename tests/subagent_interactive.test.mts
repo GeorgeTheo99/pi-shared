@@ -7,6 +7,7 @@ import test from "node:test";
 import {
 	createInteractivePiAgent,
 	getFinalAssistantOutput,
+	getPiInvocation,
 	getSubagentThinkingArgs,
 	runPiAgent,
 	type InteractivePiAgentSession,
@@ -67,6 +68,20 @@ async function cancelAfter(session: InteractivePiAgentSession | undefined) {
 	if (!session) return;
 	await session.cancel("test cleanup").catch(() => undefined);
 }
+
+test("generic runtimes do not interpret a shell Pi wrapper as JavaScript", (t) => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-shell-wrapper-test-"));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const wrapper = path.join(dir, "pi");
+	fs.writeFileSync(wrapper, "#!/bin/bash\nexec echo pi\n");
+	const original = process.argv[1];
+	process.argv[1] = wrapper;
+	try {
+		assert.deepEqual(getPiInvocation(["--version"]), { command: "pi", args: ["--version"] });
+	} finally {
+		process.argv[1] = original;
+	}
+});
 
 test("child thinking defaults high while explicit overrides and model suffixes retain precedence", () => {
 	assert.deepEqual(getSubagentThinkingArgs(undefined), ["--thinking", "high"]);

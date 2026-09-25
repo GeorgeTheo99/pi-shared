@@ -248,6 +248,22 @@ def package_source(entry):
 def resolve_source(source: str) -> Path:
     return (settings_dir / Path(source).expanduser()).resolve()
 
+def package_name(path: Path):
+    try:
+        value = json.loads((path / "package.json").read_text()).get("name")
+        return value if isinstance(value, str) and value else None
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+
+def replace_source(entry, source):
+    if isinstance(entry, str):
+        return source
+    updated = dict(entry)
+    updated["source" if "source" in updated else "path"] = source
+    return updated
+
+repo_name = package_name(repo)
+rel = os.path.relpath(repo, settings_dir.resolve())
 seen_repo = False
 new_packages = []
 seen_resolved = set()
@@ -258,10 +274,13 @@ for entry in packages:
             resolved = resolve_source(source)
         except OSError:
             resolved = None
-        if resolved == repo:
+        if resolved == repo or (repo_name is not None and resolved is not None and package_name(resolved) == repo_name):
             if seen_repo:
                 continue
             seen_repo = True
+            if resolved != repo:
+                entry = replace_source(entry, rel)
+            resolved = repo
         key = str(resolved) if resolved else json.dumps(entry, sort_keys=True)
         if key in seen_resolved:
             continue
@@ -269,7 +288,6 @@ for entry in packages:
     new_packages.append(entry)
 
 if not seen_repo:
-    rel = os.path.relpath(repo, settings_dir.resolve())
     new_packages.append(rel)
 settings["packages"] = new_packages
 settings_path.parent.mkdir(parents=True, exist_ok=True)

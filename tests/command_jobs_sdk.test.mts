@@ -68,7 +68,7 @@ test("installed Pi finalizes failed waits/subagents as errors, and safe_edit use
 			const message={role:"assistant",content:[{type:"toolCall",id:"fixture_call",name:toolName,arguments:args}],api:model.api,provider:model.provider,model:model.id,usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:"toolUse",timestamp:Date.now()};
 			stream.push({type:"done",reason:"toolUse",message}); return stream;
 		};
-		const messages=await core.runAgentLoop([{role:"user",content:"local fixture",timestamp:Date.now()}],{systemPrompt:"test",messages:[],tools:[tool]}, {model,convertToLlm:(m:any)=>m,shouldStopAfterTurn:()=>true},()=>{},undefined,streamFn);
+		const messages=await core.runAgentLoop([{role:"user",content:"local fixture",timestamp:Date.now()}],{systemPrompt:"test",messages:[],tools:[tool]}, {model,convertToLlm:(m:any)=>m,shouldStopAfterTurn:()=>true,finishTurn:()=>({action:"end" as const})},()=>{},undefined,streamFn);
 		return messages.find((m:any)=>m.role==="toolResult");
 	}
 	const badStatus=await finalized({id:"cmd_00000000-0000-0000-0000-000000000000",max_bytes:8192},"command_status");

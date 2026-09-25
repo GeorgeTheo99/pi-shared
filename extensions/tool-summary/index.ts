@@ -316,12 +316,17 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 	const activeSummaryRecords = (ctx: ExtensionContext) => {
 		const manager = ctx.sessionManager as ExtensionContext["sessionManager"] & {
 			buildContextEntries?: () => SessionEntryLike[];
+			buildSessionProjection?: () => { messages: unknown[] };
 		};
-		const entries = manager.buildContextEntries?.() ?? (manager.getBranch() as SessionEntryLike[]);
+		// Count only summaries matching model-visible content, not omitted or
+		// replaced originals. Older Pi releases have no canonical projection API.
+		const messages = manager.buildSessionProjection?.().messages ??
+			(manager.buildContextEntries?.() ?? (manager.getBranch() as SessionEntryLike[]))
+				.flatMap((entry) => entry.type === "message" ? [entry.message] : []);
 		const active = new Map<string, CompletedSummaryRecord>();
-		for (const entry of entries) {
-			if (entry.type !== "message" || !isToolResultMessage(entry.message)) continue;
-			const candidate = candidateForToolResult(entry.message, {
+		for (const message of messages) {
+			if (!isToolResultMessage(message)) continue;
+			const candidate = candidateForToolResult(message, {
 				standard: state.config.standardThreshold,
 				highFidelity: state.config.highFidelityThreshold,
 			});
