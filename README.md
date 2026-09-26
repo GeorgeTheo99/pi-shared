@@ -19,9 +19,10 @@ pi
 
 `brew install` installs the CLI and pinned stock Pi runtime. **Setup is explicit:**
 it shows the selected components and asks before provisioning them. Package
-**0.1.16+** includes a full interactive questionnaire: model connection, browser,
-search, and optional integrations. No model
-weights are downloaded automatically. If another installation owns `pi`, resolve
+**0.1.17+** is CLI-first: flags and saved/default settings resolve the plan, with
+one final approval. Use `pi-shared setup --guided` for optional arrow-key menus
+and a model-access additions checklist—no typed option names or repeating prompts.
+No model weights are downloaded automatically. If another installation owns `pi`, resolve
 that conflict deliberately—do not blindly use `brew link --overwrite`.
 
 ## Choose your model connection
@@ -45,19 +46,21 @@ updated shared module.** Run `pi-shared update` on an existing managed install;
 See [connecting to a server gateway](docs/existing-gateway.md) for prerequisites,
 credentials, TLS/private-network options, and explicit catalog refresh.
 
-With package **0.1.16+** and the updated shared module, the setup wizard asks
-whether to install browser-worker/Chromium and whether to install local Brave
-search, connect to an existing compatible search MCP server, or skip search
-setup. It collects local keys securely before approval and accepts an optional
-private bearer-token file for existing servers. Older packages default to
-browser-worker and require manual search provisioning; run `pi-shared update`
-before using the improved setup.
+With package **0.1.17+**, normal setup keeps saved choices; fresh defaults are
+direct providers, browser-worker/Chromium enabled, and search skipped. Use
+`--without-browser` to omit browsing. `--guided` offers keyboard choices for
+browser installation, local Brave search, an existing compatible search MCP
+server, or skipping search provisioning. It collects local keys securely before
+approval; CLI flags accept private key-file paths instead. Missing required inputs
+produce actionable errors, not more questions. Run `pi-shared update` before
+using the improved setup.
 Cloud login/provider credentials and actual model inference remain separate checks.
 
 Preview a setup without changing anything:
 
 ```bash
 pi-shared setup --mode cloud --plan
+pi-shared setup --guided --plan  # also read-only; never opens menus
 ```
 
 Full component choices and prerequisites live in the
@@ -140,7 +143,7 @@ for detailed capabilities and activation requirements.
 | Repository | Responsibility |
 |---|---|
 | **pi-shared** (this repository) | Main entry point, shared Pi resources, model catalog/launcher integration |
-| [pi-setup](https://github.com/GeorgeTheo99/pi-setup) | Setup wizard, component installation, saved selections, updates |
+| [pi-setup](https://github.com/GeorgeTheo99/pi-setup) | Setup CLI and optional guided menus, component installation, saved selections, updates |
 | [model-gateway](https://github.com/GeorgeTheo99/model-gateway) | Model routing, provider authentication, federation |
 | [Homebrew tap](https://github.com/GeorgeTheo99/homebrew-tap) | Package formula and release pins |
 
