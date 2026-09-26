@@ -183,7 +183,11 @@ def test_discovery_failure_preserves_outputs(machine, server, status, body):
     ("http://100.64.0.1:9111", False), ("http://8.8.8.8:9111", True),
     ("http://gateway.example.com", True), ("https://u:p@example.com", False),
     ("https://example.com/?key=secret", False), ("https://example.com/#fragment", False),
-    ("https://example.com/admin", False), ("https://example.com:0", False),
+    ("https://example.com/../admin", False), ("https://example.com:0", False),
+    ("https://example.com/a/./b", False), ("https://example.com/a//b", False),
+    ("https://example.com/a//", False), ("https://example.com/%2e%2e", False),
+    ("https://example.com/a%2fb", False), ("https://example.com/é", False),
+    ("https://example.com/v1/v1", False), ("https://example.com/?", False),
     ("https://example.com\n", False), ("file:///secret", False),
 ])
 def test_bad_urls(url, allow):
@@ -199,6 +203,30 @@ def test_private_http_requires_explicit_opt_in(url):
 
 def test_https_normalizes_v1():
     assert gateway.gateway_url("https://server.tailnet.ts.net/v1") == "https://server.tailnet.ts.net"
+
+
+@pytest.mark.parametrize("suffix", ["", "/", "/v1", "/v1/"])
+@pytest.mark.parametrize("base,allow", [("https://gateway.example/model-gateway", False),
+                                       ("http://100.125.111.48/model-gateway", True),
+                                       ("https://gateway.example/services/model-gateway", False)])
+def test_proxy_prefix_normalization(base, allow, suffix):
+    normalized = gateway.gateway_url(base + suffix, allow)
+    assert normalized == base
+    assert gateway.gateway_url(normalized, allow) == normalized
+
+
+def test_proxy_prefix_connect_check_and_refresh(machine, server):
+    server["url"] += "/model-gateway"
+    assert invoke(machine, server).returncode == 0
+    assert server["requests"] == [("/model-gateway/v1/models/canonical", "Bearer private-test-token")]
+    models = json.loads(machine["models"].read_text())["providers"]["model-gateway"]
+    assert models["baseUrl"] == server["url"] + "/v1"
+    assert invoke(machine, server, "check").returncode == 0
+    result = subprocess.run([str(ROOT / "bin/pi-launch"), "--launcher-refresh"],
+                            env={**os.environ, "PI_LAUNCHER_CONFIG": str(machine["cli"])},
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert len(server["requests"]) == 1
 
 
 @pytest.mark.parametrize("mode", [0o644, 0o640, 0o400, 0o666])
@@ -282,7 +310,9 @@ def test_aliases_stable_and_unique():
 
 
 @pytest.mark.skipif(not os.environ.get("PI_GATEWAY_TEST_SDK_ROOT"), reason="opt-in installed Pi SDK smoke")
-def test_installed_pi_loads_models_and_resolves_file_key(machine, server):
+@pytest.mark.parametrize("prefix", ["", "/model-gateway"])
+def test_installed_pi_loads_models_and_resolves_file_key(machine, server, prefix):
+    server["url"] += prefix
     assert invoke(machine, server).returncode == 0
     sdk = Path(os.environ["PI_GATEWAY_TEST_SDK_ROOT"]) / "dist/index.js"
     script = """
@@ -313,7 +343,7 @@ console.log('Installed Pi model/auth and fake gateway transport passed; no real 
     assert len(server["requests"]) == 1
     assert len(server["inference"]) == 1
     path, auth, request = server["inference"][0]
-    assert (path, auth) == ("/v1/responses", "Bearer private-test-token")
+    assert (path, auth) == (prefix + "/v1/responses", "Bearer private-test-token")
     assert request["model"] == "org/model-x"
     assert request["reasoning"]["effort"] == "high"
     assert request["tools"][0]["name"] == "echo"

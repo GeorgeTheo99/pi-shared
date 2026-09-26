@@ -44,15 +44,21 @@ See [direct-provider setup](docs/direct-providers.md).
 updated shared module.** Run `pi-shared update` on an existing managed install;
 `pi-shared setup --help` lists the connection options.
 See [connecting to a server gateway](docs/existing-gateway.md) for prerequisites,
-credentials, TLS/private-network options, and explicit catalog refresh.
+credentials, TLS/private-network options, and explicit catalog refresh. The
+0.1.18+ setup release adds a focused connection flow:
+`pi-shared setup --gateway-url https://server.example/model-gateway`
+asks for the credential-file
+path and confirmation, preserves native providers, and skips unrelated menus.
+Reverse-proxy path prefixes require the updated shared module.
 
 With package **0.1.17+**, normal setup keeps saved choices; fresh defaults are
 direct providers, browser-worker/Chromium enabled, and search skipped. Use
 `--without-browser` to omit browsing. `--guided` offers keyboard choices for
 browser installation, local Brave search, an existing compatible search MCP
 server, or skipping search provisioning. It collects local keys securely before
-approval; CLI flags accept private key-file paths instead. Missing required inputs
-produce actionable errors, not more questions. Run `pi-shared update` before
+approval; CLI flags accept private key-file paths instead. Except for the focused
+remote-connection prompts, missing required inputs produce actionable errors.
+Run `pi-shared update` before
 using the improved setup.
 Cloud login/provider credentials and actual model inference remain separate checks.
 

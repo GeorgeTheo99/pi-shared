@@ -30,18 +30,24 @@ PRIVATE_NETWORKS = tuple(ipaddress.ip_network(net) for net in (
 
 
 def gateway_url(value, allow_private_http=False):
-    if not isinstance(value, str) or any(ord(c) < 33 or ord(c) == 127 for c in value):
+    if not isinstance(value, str) or any(ord(c) < 33 or ord(c) > 126 for c in value):
         raise ValueError("Gateway URL must not contain whitespace/control characters")
     try:
         url = urllib.parse.urlsplit(value)
         port = url.port
+        # Keep reverse-proxy prefixes literal; reject traversal and encoded or
+        # empty segments rather than relying on a proxy's normalization rules.
+        path = url.path.removesuffix("/")
+        segments = path.split("/")[1:] if path else []
         if (url.scheme not in {"https", "http"} or not url.hostname or url.username is not None
-                or url.password is not None or url.query or url.fragment or "\\" in value
+                or url.password is not None or any(c in value for c in "?#\\%")
                 or (port is not None and not 1 <= port <= 65535)
-                or url.path.rstrip("/") not in {"", "/v1"}):
+                or path.endswith("/v1/v1")
+                or any(not re.fullmatch(r"[A-Za-z0-9._~-]+", part) or part in {".", ".."}
+                       for part in segments)):
             raise ValueError()
     except ValueError:
-        raise ValueError("Use a gateway HTTP(S) origin (optional /v1), without credentials/query/fragment") from None
+        raise ValueError("Use a gateway HTTP(S) base URL with a safe optional path prefix (/v1 optional), without credentials/query/fragment") from None
     if url.scheme == "http":
         try:
             address = ipaddress.ip_address(url.hostname)
@@ -49,7 +55,7 @@ def gateway_url(value, allow_private_http=False):
             raise ValueError("Private HTTP requires a numeric private/Tailscale IP; use HTTPS for hostnames") from None
         if not allow_private_http or not any(address in net for net in PRIVATE_NETWORKS):
             raise ValueError("HTTP requires --allow-private-http and a private/Tailscale IP; prefer HTTPS")
-    return urllib.parse.urlunsplit((url.scheme, url.netloc, "", "", ""))
+    return urllib.parse.urlunsplit((url.scheme, url.netloc, path.removesuffix("/v1"), "", ""))
 
 
 def key_path(value):

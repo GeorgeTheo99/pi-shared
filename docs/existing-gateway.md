@@ -39,25 +39,36 @@ opt-in means you trust that transport—Pi does not establish a VPN for you.
 
 ## Setup
 
-Choose **Existing gateway** in `pi-shared setup`, or pass explicit choices:
+Pass the endpoint directly; setup adds remote access while preserving native
+providers. In a terminal, it asks for any missing endpoint/credential-file path,
+then confirmation—not unrelated component choices:
 
 ```bash
-pi-shared setup --mode existing-gateway \
-  --gateway-url https://server.example-tailnet.ts.net \
-  --gateway-key-file "$HOME/.config/pi-shared/gateway.key"
+pi-shared setup --gateway-url https://server.example-tailnet.ts.net
+# Or start with the endpoint prompt:
+pi-shared setup --with existing-gateway
 ```
+
+These focused prompts require setup 0.1.18+ and an updated shared
+module. With older packages, supply `--with existing-gateway`, `--gateway-url`,
+and `--gateway-key-file` explicitly. `--yes`, `--plan`, and noninteractive use
+require all missing connection inputs as flags; no credential value is accepted
+in arguments. Existing browser/search selections are preserved, and fresh
+component defaults remain visible in the approval plan.
 
 For a gateway listening directly on a Tailscale IP (replace this example IP):
 
 ```bash
-pi-shared setup --mode existing-gateway \
-  --gateway-url http://100.100.1.2:9111 \
+pi-shared setup --gateway-url http://100.100.1.2:9111 \
   --gateway-key-file "$HOME/.config/pi-shared/gateway.key" \
   --allow-private-http
 ```
 
-An optional trailing `/v1` is normalized. URL paths other than `/v1`, embedded
-credentials, query strings, and fragments are rejected. Add `--plan` for a
+An optional trailing `/v1` is normalized. Reverse-proxy prefixes such as
+`https://server.example-tailnet.ts.net/model-gateway` are preserved for both
+discovery and inference. Prefix segments may contain ASCII letters, digits,
+`-`, `_`, `.`, and `~`; traversal segments, empty segments, encoded paths,
+embedded credentials, query strings, and fragments are rejected. Add `--plan` for a
 read-only preview, `--without-browser` to omit browser-worker/Chromium, or `--yes`
 for noninteractive approval of explicit choices.
 
