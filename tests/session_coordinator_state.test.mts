@@ -647,12 +647,12 @@ function responseFixture() {
 	return { target, envelope, binding, ledgerPath, status };
 }
 
-async function childClaim(binding: ResponseRequestBinding) {
+async function childClaim(binding: ResponseRequestBinding, operation: "claimRequestReply" | "claimPeerWake" = "claimRequestReply") {
 	const sourceUrl = new URL("../extensions/session-coordinator/state.ts", import.meta.url).href;
 	const source = `
 		const state = await import(${JSON.stringify(sourceUrl)});
 		const binding = ${JSON.stringify(binding)};
-		const result = await state.claimRequestReply(binding);
+		const result = await state[${JSON.stringify(operation)}](binding);
 		process.stdout.write(JSON.stringify({result, pid:process.pid}));
 	`;
 	return new Promise<{ result: string | boolean; pid: number }>((resolve, reject) => {
@@ -665,7 +665,7 @@ async function childClaim(binding: ResponseRequestBinding) {
 		child.stderr.on("data", (data) => { stderr += data; });
 		child.on("error", reject);
 		child.on("close", (code) => {
-			if (code !== 0) return reject(new Error(`Response claim child exited ${code}: ${stderr}`));
+			if (code !== 0) return reject(new Error(`${operation} child exited ${code}: ${stderr}`));
 			try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
 		});
 	});
@@ -822,4 +822,136 @@ test("malformed existing ledgers fail closed for every operation and status read
 	}
 	fs.writeFileSync(ledgerPath, JSON.stringify(valid));
 	assert.equal(await coordinator.claimRequestReply(binding), false);
+});
+
+function wakeFixture() {
+	const fixture = responseFixture();
+	const ledgerPath = path.join(stateDir, "peer-wake-claims", path.basename(fixture.ledgerPath));
+	return { ...fixture, ledgerPath };
+}
+
+test("auto-wake presence capability is retained only with durable response support", async () => {
+	const target = presence({ requestResponseVersion: 1, autoWakeVersion: 1 });
+	assert.equal(coordinator.normalizePresence(target)?.autoWakeVersion, 1);
+	assert.equal(coordinator.normalizePresence(presence())?.autoWakeVersion, undefined);
+	for (const overrides of [{ autoWakeVersion: 2 }, { autoWakeVersion: "1" }, { autoWakeVersion: null },
+		{ requestResponseVersion: undefined }, { requestResponseVersion: 2 }, { ephemeral: true },
+		{ ephemeral: true, requestResponseVersion: undefined }]) {
+		assert.equal(coordinator.normalizePresence({ ...target, ...overrides }), undefined);
+	}
+	await coordinator.writePresence(target);
+	assert.equal(coordinator.listActivePeers(target.roomId).find((peer) => peer.runtimeId === target.runtimeId)?.autoWakeVersion, 1);
+});
+
+test("wake attempts are private, body-free, durable, read-only on lookup, and independent of replies", async () => {
+	const { binding, ledgerPath, envelope, status } = wakeFixture();
+	assert.equal(coordinator.hasPeerWakeClaim(binding), false);
+	assert.equal(fs.existsSync(ledgerPath), false, "lookup must not create a claim");
+	await coordinator.persistOutgoingMessageStatus({ envelope, trackingSupported: true });
+	assert.equal(await coordinator.claimPeerWake({ ...binding, message: envelope.message } as ResponseRequestBinding), true);
+	assert.equal(coordinator.hasPeerWakeClaim(binding), true);
+	assert.equal(fs.statSync(ledgerPath).mode & 0o777, 0o600);
+	assert.equal(fs.statSync(path.dirname(ledgerPath)).mode & 0o777, 0o700);
+	assert.equal(fs.readFileSync(ledgerPath, "utf8").includes(envelope.message), false);
+	assert.equal(status().responseStatus, "pending", "wake scheduling is not a reply attempt or an answer");
+	const reloaded = await import(`../extensions/session-coordinator/state.ts?wakeReload=${crypto.randomUUID()}`);
+	assert.equal(reloaded.hasPeerWakeClaim(binding), true);
+	assert.equal(await reloaded.claimPeerWake(binding), false, "uncertain scheduling must never be retried");
+	assert.equal(await coordinator.claimRequestReply(binding), true, "wake does not consume the reply ledger");
+	await coordinator.markRequestReplyQueued(binding);
+	assert.equal(await coordinator.claimPeerWake(binding), false);
+	assert.equal(status().responseStatus, "answered");
+
+	const reply = coordinator.createEnvelope({ roomId: envelope.roomId, targetRuntimeId: envelope.sender.runtimeId,
+		targetSessionId: binding.senderSessionId,
+		sender: { runtimeId: envelope.targetRuntimeId, sessionId: binding.recipientSessionId, worktreeRoot: process.cwd() },
+		message: "reply body", inReplyTo: binding.messageId, hops: 1 });
+	const replyBinding = { messageId: reply.id, senderSessionId: reply.sender.sessionId,
+		recipientSessionId: reply.targetSessionId!, expiresAt: reply.expiresAt };
+	assert.equal(await coordinator.claimPeerWake(replyBinding), true, "reply message IDs are independently wakeable");
+	assert.equal(coordinator.hasPeerWakeClaim(replyBinding), true);
+	assert.equal(await coordinator.claimPeerWake(replyBinding), false);
+});
+
+test("independent processes cannot duplicate exact-session wake attempts", async () => {
+	const { binding } = wakeFixture();
+	const claims = await Promise.all(Array.from({ length: 6 }, () => childClaim(binding, "claimPeerWake")));
+	assert.equal(claims.filter((item) => item.result === true).length, 1);
+	assert.equal(claims.filter((item) => item.result === false).length, 5);
+	assert.equal(coordinator.hasPeerWakeClaim(binding), true);
+	assert.equal(coordinator.readResponseRequestStatus(binding), "pending");
+});
+
+test("wake bindings validate identities and reject sender or expiry mismatches", async () => {
+	const { binding, ledgerPath } = wakeFixture();
+	for (const overrides of [{ messageId: "invalid" }, { senderSessionId: "" }, { recipientSessionId: "" },
+		{ senderSessionId: 1 }, { recipientSessionId: null }, { senderSessionId: "x".repeat(1025) },
+		{ recipientSessionId: "x".repeat(1025) }, { expiresAt: 0 }, { expiresAt: NaN }, { expiresAt: Infinity }]) {
+		const invalid = { ...binding, ...overrides } as ResponseRequestBinding;
+		await assert.rejects(coordinator.claimPeerWake(invalid), /Invalid peer wake binding/);
+		assert.throws(() => coordinator.hasPeerWakeClaim(invalid), /Invalid peer wake binding/);
+	}
+	assert.equal(fs.existsSync(ledgerPath), false);
+	assert.equal(await coordinator.claimPeerWake(binding), true);
+	const original = fs.readFileSync(ledgerPath, "utf8");
+	for (const overrides of [{ senderSessionId: "wrong" }, { expiresAt: binding.expiresAt + 1 }, { expiresAt: 1 }]) {
+		const mismatch = { ...binding, ...overrides };
+		await assert.rejects(coordinator.claimPeerWake(mismatch), /binding mismatch/);
+		assert.throws(() => coordinator.hasPeerWakeClaim(mismatch), /binding mismatch/);
+	}
+	assert.equal(fs.readFileSync(ledgerPath, "utf8"), original);
+	const otherSession = { ...binding, recipientSessionId: crypto.randomUUID() };
+	assert.equal(coordinator.hasPeerWakeClaim(otherSession), false);
+	assert.equal(await coordinator.claimPeerWake(otherSession), true, "different exact sessions have separate guards");
+});
+
+test("wake ledger capacity retains every unexpired claim and prunes only expired attempts", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+	const { binding, ledgerPath } = wakeFixture();
+	assert.equal(await coordinator.claimPeerWake({ ...binding, expiresAt: Date.now() }), false);
+	assert.equal(fs.existsSync(ledgerPath), false);
+	assert.equal(coordinator.MAX_PEER_WAKE_CLAIMS, 100);
+	const bindings = [binding, ...Array.from({ length: coordinator.MAX_PEER_WAKE_CLAIMS - 1 }, () => ({ ...binding, messageId: crypto.randomUUID() }))];
+	for (const item of bindings) assert.equal(await coordinator.claimPeerWake(item), true);
+	const extra = { ...binding, messageId: crypto.randomUUID(), expiresAt: binding.expiresAt + 1000 };
+	const full = fs.readFileSync(ledgerPath, "utf8");
+	await assert.rejects(coordinator.claimPeerWake(extra), /ledger is full/);
+	assert.equal(fs.readFileSync(ledgerPath, "utf8"), full);
+	for (const item of bindings) assert.equal(coordinator.hasPeerWakeClaim(item), true);
+	assert.equal(await coordinator.claimPeerWake(binding), false, "duplicate remains false even at capacity");
+	t.mock.timers.setTime(binding.expiresAt);
+	assert.equal(coordinator.hasPeerWakeClaim(binding), false);
+	assert.equal(await coordinator.claimPeerWake(binding), false);
+	assert.equal(await coordinator.claimPeerWake(extra), true);
+	assert.equal(JSON.parse(fs.readFileSync(ledgerPath, "utf8")).claims.length, 1);
+	assert.equal(await coordinator.claimPeerWake(binding), false, "pruning must not revive expired attempts");
+});
+
+test("corrupt or unreadable wake ledgers fail closed without resetting consumed attempts", async () => {
+	const { binding, ledgerPath } = wakeFixture();
+	await coordinator.claimPeerWake(binding);
+	const valid = JSON.parse(fs.readFileSync(ledgerPath, "utf8"));
+	const corruptions = ["{", "null", "{}", JSON.stringify({ ...valid, version: 2 }),
+		JSON.stringify({ ...valid, recipientSessionId: "wrong-recipient" }),
+		JSON.stringify({ ...valid, claims: {} }),
+		JSON.stringify({ ...valid, claims: [binding, binding] }),
+		JSON.stringify({ ...valid, claims: [{ ...binding, recipientSessionId: "wrong-recipient" }] }),
+		JSON.stringify({ ...valid, claims: [{ ...binding, senderSessionId: "" }] }),
+		JSON.stringify({ ...valid, claims: [{ ...binding, messageId: "invalid" }] }),
+		JSON.stringify({ ...valid, claims: [{ ...binding, expiresAt: null }] }),
+		JSON.stringify({ ...valid, claims: Array(coordinator.MAX_PEER_WAKE_CLAIMS + 1).fill(binding) })];
+	for (const corrupt of corruptions) {
+		fs.writeFileSync(ledgerPath, corrupt);
+		await assert.rejects(coordinator.claimPeerWake(binding), /corrupt/i);
+		assert.throws(() => coordinator.hasPeerWakeClaim(binding), /corrupt/i);
+		assert.equal(fs.readFileSync(ledgerPath, "utf8"), corrupt);
+	}
+	fs.unlinkSync(ledgerPath);
+	fs.mkdirSync(ledgerPath);
+	await assert.rejects(coordinator.claimPeerWake(binding), /Unreadable or corrupt/);
+	assert.throws(() => coordinator.hasPeerWakeClaim(binding), /Unreadable or corrupt/);
+	fs.rmdirSync(ledgerPath);
+	fs.writeFileSync(ledgerPath, JSON.stringify(valid));
+	assert.equal(await coordinator.claimPeerWake(binding), false);
+	assert.equal(coordinator.hasPeerWakeClaim(binding), true);
 });

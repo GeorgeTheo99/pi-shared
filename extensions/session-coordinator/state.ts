@@ -17,6 +17,7 @@ export const MAX_WORKSPACE_CHANGES = 10;
 export const MAX_OUTGOING_STATUS_RECORDS = 100;
 export const MAX_SESSION_RECEIPTS = 100;
 export const MAX_RESPONSE_REQUESTS = 100;
+export const MAX_PEER_WAKE_CLAIMS = 100;
 const STALE_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const RUNTIME_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ROOM_ID_RE = /^(?:git|cwd)-[0-9a-f]{32}$/;
@@ -53,6 +54,7 @@ export interface PeerPresence {
 	capabilities: ["messages"];
 	protocolVersion?: 2;
 	requestResponseVersion?: 1;
+	autoWakeVersion?: 1;
 	ephemeral?: true;
 	workspaceChanges?: string[];
 	workspaceChangesOmitted?: number;
@@ -419,6 +421,7 @@ export function normalizePresence(value: unknown): PeerPresence | undefined {
 		value.capabilities[0] !== "messages" ||
 		(value.protocolVersion !== undefined && value.protocolVersion !== 2) ||
 		(value.requestResponseVersion !== undefined && value.requestResponseVersion !== 1) ||
+		(value.autoWakeVersion !== undefined && (value.autoWakeVersion !== 1 || value.requestResponseVersion !== 1 || value.ephemeral === true)) ||
 		(value.ephemeral !== undefined && value.ephemeral !== true) ||
 		(value.ephemeral === true && value.requestResponseVersion !== undefined) ||
 		(value.workspaceChangesOmitted !== undefined &&
@@ -444,6 +447,7 @@ export function normalizePresence(value: unknown): PeerPresence | undefined {
 		capabilities: ["messages"],
 		protocolVersion: value.protocolVersion === 2 ? 2 : undefined,
 		requestResponseVersion: value.requestResponseVersion === 1 ? 1 : undefined,
+		autoWakeVersion: value.autoWakeVersion === 1 ? 1 : undefined,
 		ephemeral: value.ephemeral === true ? true : undefined,
 		workspaceChanges: normalizeWorkspaceChanges(value.workspaceChanges),
 		workspaceChangesOmitted:
@@ -646,6 +650,77 @@ export function readResponseRequestStatus(binding: ResponseRequestBinding, now =
 	if (binding.expiresAt <= now) return "expired";
 	if (request?.replyAttempted) return "unanswered";
 	return "pending";
+}
+
+interface PeerWakeLedger {
+	version: 1;
+	recipientSessionId: string;
+	claims: ResponseRequestBinding[];
+}
+
+function peerWakeLedgerPath(sessionId: string): string {
+	return path.join(coordinatorConfig().stateDir, "peer-wake-claims", `${receiptKey(sessionId)}.json`);
+}
+
+function readPeerWakeLedger(sessionId: string): PeerWakeLedger {
+	let value: unknown;
+	try {
+		value = JSON.parse(fs.readFileSync(peerWakeLedgerPath(sessionId), "utf8"));
+	} catch (error: any) {
+		// Only absence permits initialization; corruption must not allow a retry.
+		if (error?.code === "ENOENT") return { version: 1, recipientSessionId: sessionId, claims: [] };
+		throw new Error("Unreadable or corrupt peer wake ledger", { cause: error });
+	}
+	const corrupt = () => new Error("Corrupt peer wake ledger");
+	if (!isRecord(value) || value.version !== 1 || value.recipientSessionId !== sessionId
+		|| !Array.isArray(value.claims) || value.claims.length > MAX_PEER_WAKE_CLAIMS) throw corrupt();
+	const ids = new Set<string>();
+	const claims: ResponseRequestBinding[] = [];
+	for (const item of value.claims) {
+		if (!validResponseBinding(item) || item.recipientSessionId !== sessionId || ids.has(item.messageId)) throw corrupt();
+		ids.add(item.messageId);
+		claims.push({ messageId: item.messageId, senderSessionId: item.senderSessionId,
+			recipientSessionId: sessionId, expiresAt: item.expiresAt });
+	}
+	return { version: 1, recipientSessionId: sessionId, claims };
+}
+
+function boundPeerWake(ledger: PeerWakeLedger, binding: ResponseRequestBinding): ResponseRequestBinding | undefined {
+	const record = ledger.claims.find((item) => item.messageId === binding.messageId);
+	if (record && (record.senderSessionId !== binding.senderSessionId || record.expiresAt !== binding.expiresAt
+		|| record.recipientSessionId !== binding.recipientSessionId)) throw new Error("Peer wake binding mismatch");
+	return record;
+}
+
+/** Claim before scheduling a request or reply wake. Uncertain sends consume the
+ * attempt; this is not evidence of a model invocation or an answered request. */
+export async function claimPeerWake(binding: ResponseRequestBinding): Promise<boolean> {
+	if (!validResponseBinding(binding)) throw new Error("Invalid peer wake binding");
+	const filePath = peerWakeLedgerPath(binding.recipientSessionId);
+	ensurePrivateDir(coordinatorConfig().stateDir);
+	ensurePrivateDir(path.dirname(filePath));
+	return withInterprocessLock(`${filePath}.lock`, async () => {
+		const ledger = readPeerWakeLedger(binding.recipientSessionId);
+		const record = boundPeerWake(ledger, binding);
+		const now = Date.now();
+		if (record || binding.expiresAt <= now) return false;
+		// Never evict an unexpired attempt to make room for a new one.
+		ledger.claims = ledger.claims.filter((item) => item.expiresAt > now);
+		if (ledger.claims.length >= MAX_PEER_WAKE_CLAIMS) {
+			throw new Error(`Peer wake ledger is full (${MAX_PEER_WAKE_CLAIMS} claims).`);
+		}
+		ledger.claims.push({ messageId: binding.messageId, senderSessionId: binding.senderSessionId,
+			recipientSessionId: binding.recipientSessionId, expiresAt: binding.expiresAt });
+		await atomicWriteJson(filePath, ledger);
+		return true;
+	}, { timeoutMs: 10_000, staleMs: 30_000, retryMs: 25 });
+}
+
+/** Read-only unexpired attempt guard; never claims a wake or implies success. */
+export function hasPeerWakeClaim(binding: ResponseRequestBinding): boolean {
+	if (!validResponseBinding(binding)) throw new Error("Invalid peer wake binding");
+	const record = boundPeerWake(readPeerWakeLedger(binding.recipientSessionId), binding);
+	return Boolean(record && record.expiresAt > Date.now());
 }
 
 function requestResponseStatus(record: PeerMessageStatusRecord, now: number): PeerMessageStatusView["responseStatus"] {

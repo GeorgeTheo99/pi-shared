@@ -51,6 +51,7 @@ function createHarness(
 		persistMessage?: (entry: any) => void;
 		onSendMessage?: () => void;
 		failAppendEntry?: boolean;
+		failWake?: boolean;
 		ephemeral?: boolean;
 		mode?: "tui" | "rpc";
 	} = {},
@@ -112,6 +113,7 @@ function createHarness(
 		},
 		sendMessage(message: any, deliveryOptions?: any) {
 			sentMessages.push({ message, options: deliveryOptions });
+			if (options.failWake && deliveryOptions?.triggerTurn) throw new Error("simulated wake failure");
 			const entry = { type: "custom_message", customType: message.customType, content: message.content, details: message.details };
 			entries.push(entry);
 			// The SDK mutates memory before persisting, and ExtensionAPI.sendMessage
@@ -167,11 +169,12 @@ async function responsePair() {
 
 const responseWakes = (harness: ReturnType<typeof createHarness>) => harness.sentMessages.filter((item) => item.options?.triggerTurn === true);
 
-test("response requests never wake agents and show pending then answered after a normal-turn reply", async () => {
+test("requests and correlated replies automatically wake idle peers without restricting normal work", async () => {
 	const pair = await responsePair();
 	const { sender, recipient, senderPeer } = pair;
 	try {
 		assert.equal(pair.recipientPeer.requestResponseVersion, 1);
+		assert.equal(pair.recipientPeer.autoWakeVersion, 1);
 		const result = await pair.request();
 		const requestId = result.details.message.id;
 		assert.match(result.content[0].text, /PEER RESPONSE REQUEST QUEUED/);
@@ -181,12 +184,13 @@ test("response requests never wake agents and show pending then answered after a
 		recipient.setIdle(true);
 		await emit(recipient, "agent_settled");
 		await waitUntil(() => state.readOutgoingMessageStatuses(senderPeer.sessionId, requestId)[0]?.effectiveStatus === "surfaced");
-		assert.equal(responseWakes(recipient).length, 0);
+		assert.equal(responseWakes(recipient).length, 1);
+		assert.deepEqual(responseWakes(recipient)[0].options, { triggerTurn: true, deliverAs: "followUp" });
 		const card = recipient.sentMessages.find((item) => item.message.customType === "pi-peer-message")!;
 		assert.equal(card.options.triggerTurn, false, "card insertion itself must not start a turn");
 		assert.equal(card.message.details.requestResponse, true);
 		assert.match(card.message.content, /Response requested/);
-		assert.match(card.message.content, /next normal turn/);
+		assert.match(card.message.content, /no user prompt is required/);
 		assert.equal(recipient.handlers.has("input"), false, "requests must not change user-input admission");
 		assert.equal(recipient.handlers.has("tool_call"), false, "normal user work must retain its tools");
 		const replyArgs = { target: senderPeer.runtimeId, inReplyTo: requestId, message: "I have not changed any files." };
@@ -197,12 +201,12 @@ test("response requests never wake agents and show pending then answered after a
 		await emit(recipient, "agent_settled");
 		await waitUntil(() => sender.widgets.get("pi-peer-responses")?.join("\n").includes("answered") === true);
 		assert.equal(state.readOutgoingMessageStatuses(senderPeer.sessionId, requestId)[0].responseStatus, "answered");
-		assert.equal(responseWakes(sender).length, 0, "replies never wake the sender");
-		assert.equal(responseWakes(recipient).length, 0);
+		await waitUntil(() => responseWakes(sender).length === 1);
+		assert.equal(responseWakes(recipient).length, 1, "settled/poll cycles must not repeat a wake");
 	} finally { await pair.close(); }
 });
 
-test("a pending response request survives reload without waking the recipient", async () => {
+test("a consumed wake attempt survives reload without repeating or claiming an answer", async () => {
 	const pair = await responsePair();
 	let successor: ReturnType<typeof createHarness> | undefined;
 	try {
@@ -218,7 +222,7 @@ test("a pending response request survives reload without waking the recipient", 
 		await emit(successor, "session_start");
 		await emit(successor, "agent_settled");
 		assert.equal(responseWakes(successor).length, 0);
-		assert.equal(responseWakes(pair.recipient).length, 0);
+		assert.equal(responseWakes(pair.recipient).length, 1);
 		assert.equal(state.readOutgoingMessageStatuses(pair.senderPeer.sessionId, request.details.message.id)[0].responseStatus, "pending");
 	} finally {
 		if (successor) await emit(successor, "session_shutdown");
@@ -226,7 +230,7 @@ test("a pending response request survives reload without waking the recipient", 
 	}
 });
 
-test("multiple pending requests surface as cards without any waking batch", async () => {
+test("multiple pending requests surface as cards with one automatic waking batch", async () => {
 	const pair = await responsePair();
 	try {
 		await pair.request("First question");
@@ -234,15 +238,156 @@ test("multiple pending requests surface as cards without any waking batch", asyn
 		pair.recipient.setIdle(true);
 		await emit(pair.recipient, "agent_settled");
 		await waitUntil(() => pair.recipient.sentMessages.filter((item) => item.message.customType === "pi-peer-message").length === 2);
-		assert.equal(responseWakes(pair.recipient).length, 0);
+		await waitUntil(() => responseWakes(pair.recipient).length === 1);
+		assert.equal(responseWakes(pair.recipient)[0].message.details.requests.length, 2);
 	} finally { await pair.close(); }
+});
+
+test("old surfaced requests get one wake on upgrade without requiring a user prompt", async () => {
+	const pair = await responsePair();
+	let successor: ReturnType<typeof createHarness> | undefined;
+	try {
+		const result = await pair.request();
+		await emit(pair.recipient, "session_shutdown");
+		const envelope = result.details.message;
+		const entry = { type: "custom_message", customType: "pi-peer-message", content: "Legacy pending request", details: {
+			messageId: envelope.id, hops: 0, senderRuntimeId: pair.senderPeer.runtimeId,
+			senderSessionId: pair.senderPeer.sessionId, recipientSessionId: pair.recipientPeer.sessionId,
+			requestResponse: true, expiresAt: envelope.expiresAt,
+		} };
+		successor = createHarness({ sessionId: pair.recipientPeer.sessionId, entries: [entry] });
+		await emit(successor, "session_start");
+		assert.equal(responseWakes(successor).length, 1);
+		await emit(successor, "agent_settled");
+		assert.equal(responseWakes(successor).length, 1);
+	} finally {
+		if (successor) await emit(successor, "session_shutdown");
+		await pair.close();
+	}
+});
+
+for (const evidence of ["sent card", "successful tool result"] as const) {
+	test(`valid replies wake after status eviction and reload using ${evidence}`, async () => {
+		const pair = await responsePair();
+		let successor: ReturnType<typeof createHarness> | undefined;
+		try {
+			const result = await pair.request();
+			const parent = result.details.message;
+			for (let i = 0; i < state.MAX_OUTGOING_STATUS_RECORDS; i++) {
+				const envelope = state.createEnvelope({ roomId: pair.recipientPeer.roomId, targetRuntimeId: pair.recipientPeer.runtimeId,
+					targetSessionId: pair.recipientPeer.sessionId, sender: parent.sender, message: `Newer notification ${i}` });
+				envelope.createdAt = parent.createdAt + i + 1;
+				await state.persistOutgoingMessageStatus({ envelope, trackingSupported: true });
+			}
+			assert.equal(state.readOutgoingMessageStatuses(pair.senderPeer.sessionId, parent.id).length, 0);
+			await emit(pair.sender, "session_shutdown");
+			const entries = evidence === "sent card" ? structuredClone(pair.sender.entries) : [{
+				type: "message", message: { role: "toolResult", toolName: "peer_send", isError: false, details: result.details },
+			}];
+			successor = createHarness({ sessionId: pair.senderPeer.sessionId, entries });
+			await emit(successor, "session_start");
+			const target = state.listAllActivePeers().find((peer) => peer.sessionId === pair.senderPeer.sessionId)!;
+			const reply = state.createEnvelope({ roomId: target.roomId, targetRuntimeId: target.runtimeId, targetSessionId: target.sessionId,
+				sender: { runtimeId: pair.recipientPeer.runtimeId, sessionId: pair.recipientPeer.sessionId, worktreeRoot: workspace },
+				message: "Delayed valid reply", inReplyTo: parent.id, hops: 1 });
+			await state.enqueueMessage(reply);
+			await waitUntil(() => responseWakes(successor!).length === 1);
+			await emit(successor, "agent_settled");
+			assert.equal(responseWakes(successor).length, 1);
+			assert.deepEqual(responseWakes(successor)[0].message.details.replies, [reply.id]);
+		} finally {
+			if (successor) await emit(successor, "session_shutdown");
+			await pair.close();
+		}
+	});
+}
+
+test("transcript fallback rejects forked, mismatched, expired, hop-1, malformed and failed evidence", async () => {
+	for (const evidence of ["card", "tool result"] as const) {
+		for (const scenario of ["fork", "wrong sender", "expired", "hop-1", "malformed", "failed result"] as const) {
+			if (evidence === "card" && scenario === "failed result") continue;
+			const sender = createHarness();
+			await emit(sender, "session_start");
+			try {
+				const self = state.listAllActivePeers().find((peer) => peer.sessionId === sender.ctx.sessionManager.getSessionId())!;
+				const targetSessionId = crypto.randomUUID();
+				const targetRuntimeId = crypto.randomUUID();
+				const parent: any = state.createEnvelope({ roomId: self.roomId, targetRuntimeId, targetSessionId,
+					sender: { runtimeId: self.runtimeId, sessionId: self.sessionId, worktreeRoot: workspace }, message: "Original message" });
+				if (scenario === "fork") parent.sender.sessionId = crypto.randomUUID();
+				if (scenario === "expired") { parent.createdAt = Date.now() - 2000; parent.expiresAt = Date.now() - 1000; }
+				if (scenario === "hop-1") { parent.hops = 1; parent.inReplyTo = crypto.randomUUID(); }
+				if (scenario === "malformed") parent.version = 99;
+				sender.entries.push(evidence === "card"
+					? { type: "custom", customType: "pi-peer-message-sent", data: { message: parent } }
+					: { type: "message", message: { role: "toolResult", toolName: "peer_send", isError: scenario === "failed result", details: { message: parent } } });
+				const reply = state.createEnvelope({ roomId: self.roomId, targetRuntimeId: self.runtimeId, targetSessionId: self.sessionId,
+					sender: { runtimeId: targetRuntimeId, sessionId: scenario === "wrong sender" ? crypto.randomUUID() : targetSessionId, worktreeRoot: workspace },
+					message: "Reply", inReplyTo: parent.id, hops: 1 });
+				await state.enqueueMessage(reply);
+				await waitUntil(() => sender.sentMessages.some((item) => item.message.details?.messageId === reply.id));
+				await emit(sender, "agent_settled");
+				assert.equal(responseWakes(sender).length, 0, `${evidence}: ${scenario}`);
+			} finally { await emit(sender, "session_shutdown"); }
+		}
+	}
+});
+
+test("reply wakes require an outgoing record bound to the actual replying session", async () => {
+	const pair = await responsePair();
+	try {
+		const result = await pair.request();
+		const reply = state.createEnvelope({
+			roomId: pair.senderPeer.roomId, targetRuntimeId: pair.senderPeer.runtimeId, targetSessionId: pair.senderPeer.sessionId,
+			sender: { runtimeId: pair.recipientPeer.runtimeId, sessionId: crypto.randomUUID(), worktreeRoot: workspace },
+			message: "Uncorrelated reply", inReplyTo: result.details.message.id, hops: 1,
+		});
+		await state.enqueueMessage(reply);
+		await waitUntil(() => pair.sender.sentMessages.some((item) => item.message.details?.messageId === reply.id));
+		await emit(pair.sender, "agent_settled");
+		assert.equal(responseWakes(pair.sender).length, 0);
+	} finally { await pair.close(); }
+});
+
+test("non-persistent senders cannot request auto-wake responses", async () => {
+	const sender = createHarness({ ephemeral: true });
+	const recipient = createHarness();
+	await emit(sender, "session_start");
+	await emit(recipient, "session_start");
+	try {
+		const target = state.listAllActivePeers().find((peer) => peer.sessionId === recipient.ctx.sessionManager.getSessionId())!;
+		await assert.rejects(sender.tools.get("peer_send").execute("request", {
+			target: target.runtimeId, message: "Question", requestResponse: true,
+		}, undefined, undefined, sender.ctx), /senders cannot request/);
+	} finally {
+		await emit(recipient, "session_shutdown");
+		await emit(sender, "session_shutdown");
+	}
+});
+
+test("a failed wake consumes its attempt without automatic retries or fabricated answers", async () => {
+	const pair = await responsePair();
+	let successor: ReturnType<typeof createHarness> | undefined;
+	try {
+		const result = await pair.request();
+		await emit(pair.recipient, "session_shutdown");
+		successor = createHarness({ sessionId: pair.recipientPeer.sessionId, failWake: true });
+		await emit(successor, "session_start");
+		assert.equal(responseWakes(successor).length, 1);
+		await emit(successor, "agent_settled");
+		assert.equal(responseWakes(successor).length, 1);
+		assert.equal(state.readOutgoingMessageStatuses(pair.senderPeer.sessionId, result.details.message.id)[0].responseStatus, "pending");
+	} finally {
+		if (successor) await emit(successor, "session_shutdown");
+		await pair.close();
+	}
 });
 
 test("response requests fail explicitly on legacy peers and cannot be attached to replies", async () => {
 	const pair = await responsePair();
 	try {
-		await state.writePresence({ ...pair.recipientPeer, requestResponseVersion: undefined });
-		await assert.rejects(pair.request(), /does not support response requests/);
+		await state.writePresence({ ...pair.recipientPeer, autoWakeVersion: undefined });
+		await assert.rejects(pair.request(), /does not support automatic response requests/);
 		await assert.rejects(pair.sender.tools.get("peer_send").execute("bad-reply", {
 			target: pair.recipientPeer.runtimeId, inReplyTo: crypto.randomUUID(), message: "loop", requestResponse: true,
 		}, undefined, undefined, pair.sender.ctx), /reply cannot request another response/);
@@ -302,14 +447,14 @@ test("incoming requests notify once, survive reload, and clear after a confirmed
 		assert.equal(pair.recipient.notifications.length, 0, "busy recipients are not prompted");
 		pair.recipient.setIdle(true);
 		await emit(pair.recipient, "agent_settled");
-		assert.match(pair.recipient.widgets.get("pi-peer-incoming-responses")!.join("\n"), /waiting for your next turn/);
+		assert.match(pair.recipient.widgets.get("pi-peer-incoming-responses")!.join("\n"), /automatic turn attempted/);
 		assert.equal(pair.recipient.notifications.length, 1);
 		await emit(pair.recipient, "agent_settled");
 		assert.equal(pair.recipient.notifications.length, 1, "polling must not repeat the toast");
 		await emit(pair.recipient, "session_shutdown");
 		successor = createHarness({ sessionId: pair.recipientPeer.sessionId, entries: structuredClone(pair.recipient.entries) });
 		await emit(successor, "session_start");
-		assert.match(successor.widgets.get("pi-peer-incoming-responses")!.join("\n"), /waiting for your next turn/);
+		assert.match(successor.widgets.get("pi-peer-incoming-responses")!.join("\n"), /automatic turn attempted/);
 		await successor.tools.get("peer_send").execute("reply", {
 			target: pair.senderPeer.runtimeId, inReplyTo: result.details.message.id, message: "No overlap",
 		}, undefined, undefined, successor.ctx);
@@ -334,6 +479,7 @@ test("incoming reply UI excludes forks, expired requests and notifications; fail
 		await emit(fork, "session_start");
 		assert.equal(fork.widgets.has("pi-peer-incoming-responses"), false);
 		assert.equal(fork.notifications.length, 0);
+		assert.equal(responseWakes(fork).length, 0, "forks cannot inherit wake authority");
 		await state.claimRequestReply({ messageId: result.details.message.id, senderSessionId: pair.senderPeer.sessionId,
 			recipientSessionId: pair.recipientPeer.sessionId, expiresAt: result.details.message.expiresAt });
 		await emit(pair.recipient, "agent_settled");
@@ -369,7 +515,7 @@ test("incoming UI failures do not block delivery and RPC sessions receive no TUI
 			await emit(pair.recipient, "agent_settled");
 			assert.equal(state.readOutgoingMessageStatuses(pair.senderPeer.sessionId, result.details.message.id)[0].effectiveStatus, "surfaced");
 			assert.equal(pair.recipient.notifications.length, 0);
-			assert.equal(responseWakes(pair.recipient).length, 0);
+			assert.equal(responseWakes(pair.recipient).length, 1);
 		} finally { await pair.close(); }
 	}
 });
@@ -394,9 +540,9 @@ test("a throwing incoming notification cannot prevent durable receipt cleanup", 
 		assert.equal(state.readSessionReceipts(sessionId).length, 0);
 		await emit(recipient, "agent_settled");
 		assert.equal(notificationAttempts, 1);
-		assert.match(recipient.widgets.get("pi-peer-incoming-responses")!.join("\n"), /waiting for your next turn/);
+		assert.match(recipient.widgets.get("pi-peer-incoming-responses")!.join("\n"), /automatic turn attempted/);
 		assert.equal(state.readOutgoingMessageStatuses(sender.ctx.sessionManager.getSessionId(), result.details.message.id)[0].effectiveStatus, "surfaced");
-		assert.equal(responseWakes(recipient).length, 0);
+		assert.equal(responseWakes(recipient).length, 1);
 	} finally {
 		await emit(recipient, "session_shutdown");
 		await emit(sender, "session_shutdown");
@@ -498,7 +644,7 @@ test("extension publishes status, discovers peers, and delivers notification-onl
 		assert.match(renderedSent.text, /^PEER MESSAGE SENT/);
 		assert.match(renderedSent.text, /THIS PI SESSION → ANOTHER PI SESSION/);
 		assert.match(renderedSent.text, /To: Peer worker/);
-		assert.match(renderedSent.text, /Queued for asynchronous delivery/);
+		assert.match(renderedSent.text, /Notification queued/);
 		assert.match(renderedSent.text, /Message:\nI am updating the presence lifecycle\./);
 		assert.equal(harness.sentMessages.filter((item) => item.message.customType === "pi-peer-message-sent").length, 0);
 		const reloaded = createHarness({ entries: structuredClone(harness.entries) });

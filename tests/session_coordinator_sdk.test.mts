@@ -91,15 +91,79 @@ async function request(sender: any, recipient: any) {
 
 const status = (sender: any) => state.readOutgoingMessageStatuses(sender.sessionManager.getSessionId())[0];
 
-test("real SDK: request waits for a normal turn; one reply updates status without terminating normal work", { timeout: 20000 }, async () => {
+test("real SDK: a busy recipient finishes its task before automatically answering", { timeout: 20000 }, async () => {
+	await fixture(async ({ makeSession }) => {
+		const sender = await makeSession();
+		const recipient = await makeSession();
+		let calls = 0;
+		let senderCalls = 0;
+		let finish!: () => void;
+		sender.agent.streamFunction = (model: any) => { senderCalls++; return completion(model, [{ type: "text", text: "Received." }]); };
+		recipient.agent.streamFunction = (model: any) => {
+			calls++;
+			if (calls === 1) {
+				const stream = createAssistantMessageEventStream();
+				finish = () => {
+					void (async () => {
+						for await (const event of completion(model, [{ type: "text", text: "Original task finished." }])) stream.push(event);
+						stream.end();
+					})();
+				};
+				return stream;
+			}
+			return completion(model, calls === 2
+				? [{ type: "toolCall", id: "busy-reply", name: "peer_send", arguments: { target: peer(sender).runtimeId, inReplyTo: status(sender).messageId, message: "Done with my files." } }]
+				: [{ type: "text", text: "Answered." }]);
+		};
+		const work = recipient.prompt("Do my existing work.");
+		await waitUntil(() => calls === 1);
+		try {
+			await request(sender, recipient);
+			await waitUntil(() => status(sender)?.effectiveStatus === "delivered");
+			assert.equal(calls, 1);
+			assert.equal(recipient.isIdle, false);
+			assert.equal(recipient.sessionManager.getEntries().some((entry: any) => entry.customType === "pi-peer-wake"), false);
+		} finally { finish(); }
+		await work;
+		await waitUntil(() => senderCalls === 1 && recipient.isIdle && sender.isIdle);
+		assert.equal(calls, 3);
+		assert.equal(status(sender).responseStatus, "answered");
+	});
+});
+
+test("real SDK: notifications and acknowledgment requests stay silent", { timeout: 20000 }, async () => {
+	await fixture(async ({ makeSession }) => {
+		const sender = await makeSession();
+		const recipient = await makeSession();
+		let calls = 0;
+		for (const session of [sender, recipient]) session.agent.streamFunction = (model: any) => {
+			calls++; return completion(model, [{ type: "text", text: "Unexpected wake" }]);
+		};
+		const sent = await sender.extensionRunner.getToolDefinition("peer_send").execute("notice", {
+			target: peer(recipient).runtimeId, message: "Please wake up! (still only notification content)", requestAcknowledgment: true,
+		}, undefined, undefined, sender.extensionRunner.createContext());
+		await waitUntil(() => status(sender)?.effectiveStatus === "surfaced");
+		await recipient.extensionRunner.getToolDefinition("peer_acknowledge").execute("ack", { messageId: sent.details.message.id }, undefined, undefined, recipient.extensionRunner.createContext());
+		await recipient.extensionRunner.emit({ type: "agent_settled" });
+		await sender.extensionRunner.emit({ type: "agent_settled" });
+		assert.equal(calls, 0);
+		assert.equal(status(sender).effectiveStatus, "acknowledged");
+	});
+});
+
+test("real SDK: idle request and reply wake both sessions without any user prompt", { timeout: 20000 }, async () => {
 	await fixture(async ({ makeSession, stats }) => {
 		const sender = await makeSession();
 		const recipient = await makeSession();
 		let senderCalls = 0;
 		let recipientCalls = 0;
-		sender.agent.streamFunction = (selected: any) => { senderCalls++; return completion(selected, [{ type: "text", text: "Unexpected wake" }]); };
+		sender.agent.streamFunction = (selected: any, context: any) => {
+			senderCalls++;
+			assert(JSON.stringify(context.messages).includes("No files changed."));
+			return completion(selected, [{ type: "text", text: "Reply received." }]);
+		};
 		recipient.agent.streamFunction = (selected: any, context: any) => {
-			assert(JSON.stringify(context.messages).includes("next normal turn"));
+			assert(JSON.stringify(context.messages).includes("Automatic peer coordination turn"));
 			const turn = ++recipientCalls;
 			return completion(selected, turn === 1
 				? [{ type: "toolCall", id: "reply-1", name: "peer_send", arguments: { target: peer(sender).runtimeId, inReplyTo: status(sender).messageId, message: "No files changed." } }]
@@ -107,15 +171,15 @@ test("real SDK: request waits for a normal turn; one reply updates status withou
 				: [{ type: "text", text: "Normal work complete." }]);
 		};
 		await request(sender, recipient);
-		await waitUntil(() => status(sender)?.effectiveStatus === "surfaced");
-		assert.equal(recipientCalls, 0);
-		assert.equal(status(sender).responseStatus, "pending");
-		await recipient.prompt("Continue my normal work and answer the pending coordination request.");
-		await waitUntil(() => sender.sessionManager.getEntries().some((entry: any) => entry.customType === "pi-peer-message" && entry.details?.inReplyTo));
+		await waitUntil(() => senderCalls === 1 && sender.isIdle && recipient.isIdle);
 		assert.equal(status(sender).responseStatus, "answered");
 		assert.equal(recipientCalls, 3);
 		assert.equal(stats.work, 1, "the reply must not terminate the normal task or restrict its tools");
-		assert.equal(senderCalls, 0, "a reply never wakes the sender");
+		assert.equal(senderCalls, 1, "a correlated reply wakes the sender without a user prompt");
+		await sender.extensionRunner.emit({ type: "agent_settled" });
+		await recipient.extensionRunner.emit({ type: "agent_settled" });
+		assert.equal(senderCalls, 1);
+		assert.equal(recipientCalls, 3, "no automatic wake/reply loop");
 	});
 });
 
@@ -132,7 +196,7 @@ test("real SDK: non-persistent sessions remain discoverable but reject response 
 });
 
 for (const hook of ["input", "before_agent_start"] as const) {
-	test(`real SDK: requests do not race a user prompt held in an earlier ${hook} handler`, { timeout: 20000 }, async () => {
+	test(`real SDK: a peer wake may precede user input held in ${hook}, without restricting either turn`, { timeout: 20000 }, async () => {
 		await fixture(async ({ makeSession }) => {
 			let enter!: () => void;
 			let release!: () => void;
@@ -152,11 +216,12 @@ for (const hook of ["input", "before_agent_start"] as const) {
 				assert.equal(recipient.isIdle, true);
 				await request(sender, recipient);
 				await waitUntil(() => status(sender)?.effectiveStatus === "surfaced");
-				assert.equal(calls, 0, "no model call may start ahead of the held user input");
+				await waitUntil(() => calls === 1 && recipient.isIdle);
+				assert.equal(calls, 1, "automatic scheduling is not gated on atomic user-input admission");
 			} finally { release(); }
 			await userTurn;
-			assert.equal(calls, 1);
-			assert.equal(status(sender).responseStatus, "pending", "an ordinary turn without a reply is not an answer");
+			assert.equal(calls, 2);
+			assert.equal(status(sender).responseStatus, "pending", "a wake without a reply is not an answer");
 		});
 	});
 }
