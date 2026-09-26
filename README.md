@@ -18,7 +18,9 @@ pi
 ```
 
 `brew install` installs the CLI and pinned stock Pi runtime. **Setup is explicit:**
-it shows the selected components and asks before provisioning them. No model
+it shows the selected components and asks before provisioning them. Package
+**0.1.16+** includes a full interactive questionnaire: model connection, browser,
+search, and optional integrations. No model
 weights are downloaded automatically. If another installation owns `pi`, resolve
 that conflict deliberately—do not blindly use `brew link --overwrite`.
 
@@ -43,9 +45,14 @@ updated shared module.** Run `pi-shared update` on an existing managed install;
 See [connecting to a server gateway](docs/existing-gateway.md) for prerequisites,
 credentials, TLS/private-network options, and explicit catalog refresh.
 
-Browser-worker is selected by default; `--without-browser` omits it and Chromium.
-Search is optional and needs its Brave key provisioned first. Cloud login/provider
-credentials and actual model inference remain separate checks.
+With package **0.1.16+** and the updated shared module, the setup wizard asks
+whether to install browser-worker/Chromium and whether to install local Brave
+search, connect to an existing compatible search MCP server, or skip search
+setup. It collects local keys securely before approval and accepts an optional
+private bearer-token file for existing servers. Older packages default to
+browser-worker and require manual search provisioning; run `pi-shared update`
+before using the improved setup.
+Cloud login/provider credentials and actual model inference remain separate checks.
 
 Preview a setup without changing anything:
 

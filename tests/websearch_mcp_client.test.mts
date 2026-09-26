@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
 	DEFAULT_LOCAL_MCP,
@@ -336,4 +340,82 @@ test("caller cancellation is rethrown rather than converted to a broker error", 
 	);
 	controller.abort(reason);
 	await assert.rejects(pending, (error) => error === reason);
+});
+
+
+test("saved broker token is private, endpoint-scoped, and redacted on errors", async () => {
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "pi-search-token-")));
+	try {
+		const path = join(dir, "token");
+		writeFileSync(path, "private-file-token\n", { mode: 0o600 });
+		const config = { websearchMcpKeyFile: path, websearchMcpKeyUrl: "https://search.example/mcp" };
+		const seen: Array<string | undefined> = [];
+		const fetchImpl = (async (_input: URL | RequestInfo, init?: RequestInit) => {
+			seen.push((init?.headers as Record<string, string>).Authorization);
+			return Response.json({ result: { isError: true, content: [{ text: "denied private-file-token" }] } });
+		}) as typeof fetch;
+		const result = await mcpToolCall(["https://other.example/mcp", config.websearchMcpKeyUrl], "web_search", {}, { config, env: {}, fetchImpl });
+		assert.deepEqual(seen, [undefined, "Bearer private-file-token"]);
+		assert.ok(!result.error?.includes("private-file-token"));
+		assert.match(result.error!, /redacted/);
+		seen.length = 0;
+		await mcpToolCall([config.websearchMcpKeyUrl], "web_fetch", {}, { config, env: { SEARCH_MCP_API_KEY: "environment-token" }, fetchImpl });
+		assert.deepEqual(seen, ["Bearer environment-token"]);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("unsafe or missing broker key files fail closed before fetch", async () => {
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "pi-search-token-")));
+	try {
+		const path = join(dir, "token");
+		const config = { websearchMcpKeyFile: path, websearchMcpKeyUrl: "https://search.example/mcp" };
+		let called = false;
+		const fetchImpl = (async () => { called = true; return new Response(); }) as typeof fetch;
+		const rejected = async (value = config) => {
+			const result = await mcpToolCall([config.websearchMcpKeyUrl], "web_search", {}, { config: value, env: {}, fetchImpl });
+			assert.match(result.error!, /bearer-token/);
+			assert.equal(called, false);
+		};
+		await rejected();
+		writeFileSync(path, "secret", { mode: 0o644 });
+		await rejected();
+		chmodSync(path, 0o600);
+		await rejected({ ...config, websearchMcpKeyUrl: "http://remote.example/mcp" });
+		await rejected({ ...config, websearchMcpKeyUrl: "https://user:secret@remote.example/mcp" });
+		const link = join(dir, "link");
+		symlinkSync(path, link);
+		await rejected({ ...config, websearchMcpKeyFile: link });
+		writeFileSync(path, "secret\nInjected-Header: bad");
+		await rejected();
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test("fresh client process loads wizard config and token reference from isolated HOME", () => {
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "pi-search-home-")));
+	try {
+		const research = join(home, ".pi", "research");
+		mkdirSync(research, { recursive: true, mode: 0o700 });
+		const key = join(research, "key");
+		writeFileSync(key, "wizard-token\n", { mode: 0o600 });
+		writeFileSync(join(research, "config.json"), JSON.stringify({
+			websearchMcpUrl: "https://search.example/mcp", websearchMcpKeyFile: key,
+			websearchMcpKeyUrl: "https://search.example/mcp", browserWorkerEnabled: true,
+		}), { mode: 0o600 });
+		const source = new URL("../extensions/websearch/mcp-client.ts", import.meta.url).href;
+		const script = `
+			import { readConfiguredMcpUrls, mcpToolCall } from ${JSON.stringify(source)};
+			const result = await mcpToolCall(readConfiguredMcpUrls(), "web_search", {}, {
+				env: {}, fetchImpl: async (url, init) => {
+					if (url !== "https://search.example/mcp" || init.headers.Authorization !== "Bearer wizard-token") throw Error("routing/auth mismatch");
+					return Response.json({result:{content:[{text:"ok"}]}});
+				}
+			});
+			if (result.text !== "ok") throw Error(result.error);
+		`;
+		const env: Record<string, string | undefined> = { ...process.env, HOME: home };
+		for (const name of ["PI_WEBSEARCH_MCP_URL", "SEARCH_MCP_URL", "WEBSEARCH_MCP_URL"]) delete env[name];
+		const result = spawnSync(process.execPath, ["--no-warnings", "--input-type=module", "-e", script], { env, encoding: "utf8", timeout: 10000 });
+		assert.equal(result.status, 0, result.stderr);
+	} finally { rmSync(home, { recursive: true, force: true }); }
 });

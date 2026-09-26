@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, parse } from "node:path";
 
 export const CONFIG_PATH = join(homedir(), ".pi", "research", "config.json");
 export const DEFAULT_LOCAL_MCP = ["http://127.0.0.1:8889/mcp"];
@@ -25,6 +25,7 @@ export interface McpToolCallOptions {
 	timeoutMs?: number;
 	requestId?: string;
 	env?: Environment;
+	config?: Record<string, unknown>;
 	fetchImpl?: typeof fetch;
 }
 
@@ -77,10 +78,44 @@ export function isLoopbackEndpoint(endpointUrl: string): boolean {
 	}
 }
 
+function configuredBrokerToken(config: Record<string, unknown>): { url: string; token: string } | undefined {
+	const path = config.websearchMcpKeyFile;
+	if (path === undefined) return undefined;
+	const url = config.websearchMcpKeyUrl;
+	if (typeof path !== "string" || !isAbsolute(path) || typeof url !== "string") {
+		throw new Error("Search bearer-token configuration needs an absolute private file and scoped endpoint URL");
+	}
+	let fd: number | undefined;
+	try {
+		const endpoint = new URL(url);
+		if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
+			!(endpoint.protocol === "https:" || endpoint.protocol === "http:" && isLoopbackEndpoint(url))) throw new Error();
+		// Setup stores canonical paths; reject later symlink substitutions.
+		const directory = lstatSync(dirname(path));
+		if (directory.uid !== process.getuid?.() || (directory.mode & 0o022)) throw new Error();
+		for (let parent = dirname(path); parent !== parse(parent).root; parent = dirname(parent)) {
+			const info = lstatSync(parent);
+			if (info.isSymbolicLink()) throw new Error();
+		}
+		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		const info = fstatSync(fd);
+		if (!info.isFile() || info.nlink !== 1 || info.size > 16384 || info.size === 0 ||
+			(info.mode & 0o777) !== 0o600 || info.uid !== process.getuid?.()) throw new Error();
+		const token = readFileSync(fd, "utf8").trim();
+		if (!token || /[\s\x00-\x1f\x7f]/.test(token)) throw new Error();
+		return { url: normalizeBaseUrl(url), token };
+	} catch {
+		throw new Error("Cannot read search bearer-token file: require an owned regular 0600 file without symlinks and a secure scoped endpoint");
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+}
+
 export function mcpRequestHeaders(
 	endpointUrl: string,
 	env: Environment = process.env,
 	includeTavilyKey = true,
+	broker?: { url: string; token: string },
 ): Record<string, string> {
 	const headers: Record<string, string> = {
 		Accept: "application/json",
@@ -98,6 +133,7 @@ export function mcpRequestHeaders(
 		const brokerToken = firstNonEmpty([
 			env.PI_WEBSEARCH_MCP_API_KEY,
 			env.SEARCH_MCP_API_KEY,
+			normalizeBaseUrl(endpointUrl) === broker?.url ? broker.token : undefined,
 		]);
 		if (brokerToken) headers.Authorization = `Bearer ${brokerToken}`;
 	}
@@ -143,8 +179,8 @@ function validateEndpoint(endpointUrl: string): ValidatedEndpoint {
 	return { url: endpointUrl, label: safeLabel };
 }
 
-function safeError(message: string, endpoints: string[], env: Environment): string {
-	const secrets = new Set<string>();
+function safeError(message: string, endpoints: string[], env: Environment, brokerToken?: string): string {
+	const secrets = new Set<string>(brokerToken ? [brokerToken] : []);
 	for (const endpoint of endpoints) {
 		const validated = validateEndpoint(endpoint);
 		message = message.split(endpoint).join(validated.label);
@@ -245,6 +281,7 @@ export async function mcpToolCall(
 		timeoutMs = 20_000,
 		requestId = "pi-websearch",
 		env = process.env,
+		config = readSearchConfig(),
 		fetchImpl = fetch,
 	} = options;
 	const checked: string[] = [];
@@ -258,7 +295,13 @@ export async function mcpToolCall(
 	const timeoutError = `MCP request deadline exceeded after ${timeoutMs}ms`;
 	let lastError: string | undefined;
 
+	let broker: { url: string; token: string } | undefined;
 	try {
+		try {
+			broker = configuredBrokerToken(config);
+		} catch (error) {
+			return { checked, error: error instanceof Error ? error.message : "Invalid search bearer-token configuration" };
+		}
 		for (const [endpointIndex, endpointUrl] of endpointUrls.entries()) {
 			throwIfCallerAborted(callerSignal);
 			if (deadline.didTimeout()) {
@@ -274,7 +317,7 @@ export async function mcpToolCall(
 			try {
 				const response = await fetchImpl(endpoint.url, {
 					method: "POST",
-					headers: mcpRequestHeaders(endpoint.url, env, toolName === "web_search"),
+					headers: mcpRequestHeaders(endpoint.url, env, toolName === "web_search", broker),
 					body: JSON.stringify(payload),
 					redirect: "error",
 					signal: deadline.signal,
@@ -336,7 +379,7 @@ export async function mcpToolCall(
 				lastError = error instanceof Error ? error.message : String(error);
 			}
 		}
-		return { checked, error: safeError(lastError ?? "MCP broker unavailable", endpointUrls, env) };
+		return { checked, error: safeError(lastError ?? "MCP broker unavailable", endpointUrls, env, broker?.token) };
 	} finally {
 		deadline.dispose();
 	}

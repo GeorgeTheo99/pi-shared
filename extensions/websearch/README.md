@@ -17,7 +17,7 @@ This extension does **not** install or run local-search. Using these tools requi
 
 Recommended local URL: `http://127.0.0.1:8889/mcp`.
 
-Provision the standalone broker's owner-only Brave key before its first started install, following the `local_web_search` README. Provider credentials belong to the service, not Pi settings. Alternative brokers/overlays may implement the same tool contract.
+The `pi-setup` questionnaire in package 0.1.16+ can provision the standalone broker's owner-only Brave key before installation or connect to an existing compatible MCP endpoint. On older releases, provision the key following the `local_web_search` README. Provider credentials belong to the service, not Pi settings. Alternative brokers/overlays may implement the same tool contract; an arbitrary MCP server is not sufficient.
 
 These are native Pi wrappers that contact MCP directly, not registrations in `pi-mcp-adapter`. Consequently `/mcp` does not list them. Use `/mcp-connections` or `dev_doctor` for both integration paths; registered tools are not proof of service readiness.
 
@@ -46,8 +46,27 @@ Config file example:
 
 Broker authentication and legacy Tavily forwarding use separate credentials. Tavily forwarding remains client compatibility for other brokers; it is **not** a requirement or search-provider choice for the Brave-only `local_web_search` service:
 
-- Broker token (`Authorization: Bearer ...`): `PI_WEBSEARCH_MCP_API_KEY`, then `SEARCH_MCP_API_KEY`.
+- Broker token (`Authorization: Bearer ...`): `PI_WEBSEARCH_MCP_API_KEY`, then `SEARCH_MCP_API_KEY`, then the private file configured below.
 - Tavily key (`X-Tavily-Key`): `PI_WEBSEARCH_TAVILY_API_KEY`, then `TAVILY_API_KEY`.
+
+The setup wizard (package 0.1.16+ with the updated shared module) can save a private token-file reference in `~/.pi/research/config.json`:
+
+```json
+{
+  "websearchMcpUrl": "https://search.example/mcp",
+  "websearchMcpKeyFile": "/absolute/private/search-token",
+  "websearchMcpKeyUrl": "https://search.example/mcp"
+}
+```
+
+No token value is stored in JSON. The file must be owned by you, regular, mode
+`0600`, with no symlink path components; use its canonical absolute path. Its
+parent must not be group/world writable. Missing or unsafe configured files fail
+closed. The file token is sent only to the exact scoped endpoint (trailing slashes
+normalized), never another configured fallback. The scoped URL must use HTTPS or
+loopback HTTP and contain no credentials, query, or fragment. Existing environment
+tokens retain precedence and their existing cross-endpoint behavior. Setup does
+not override environment URLs; remove conflicting endpoint overrides deliberately.
 
 Pi forwards a Tavily key only for `web_search` calls to a loopback broker (`localhost`, `127.0.0.0/8`, or `::1`); `web_fetch` never receives it. Broker authentication may be sent to loopback HTTP or any HTTPS endpoint. No credential headers are sent to a non-loopback plain-HTTP endpoint, MCP redirects are rejected, embedded URL credentials are refused, and sensitive endpoint query parameters are redacted from diagnostics.
 
