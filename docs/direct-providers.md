@@ -56,7 +56,14 @@ Anthropic default (fallback: `claude-sonnet-4-6`), while `pi-anthropic` uses
 that fallback unless overridden with `--model` and scopes its picker to
 `anthropic/*`. Direct launchers are opt-in; `PI_SHARED_DIRECT_LAUNCHERS=0` omits
 both shortcuts, and an existing opt-out is preserved on reruns. `pi models`
-lists configured shortcuts, not every native Pi model.
+lists configured shortcuts, not every native Pi model. A preset label appears even
+before authentication; the `/model` picker only shows models with available
+credentials. The shared [Anthropic schema hook](../extensions/anthropic-schema/index.ts)
+removes numeric bounds unsupported by Anthropic from outgoing tool definitions;
+Pi still validates actual tool arguments against their original local schemas.
+If OAuth requests report `claude_code_version_too_old`, update the managed Pi
+runtime through an approved package release. Updating the separate Claude CLI
+or editing the installed Homebrew runtime does not update Pi.
 
 ## Isolation contract
 

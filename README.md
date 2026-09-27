@@ -76,6 +76,10 @@ Codex subscription context overrides for verified long-context models (up to
 `pi openai --set-context=standard|max` explicitly saves 272K or 872K for all six
 reviewed Codex models in the selected profile, for future sessions only; it
 replaces those six existing context values but leaves direct API models alone.
+The preset label is shown before authentication, but Claude appears in `/model`
+only after Anthropic credentials are available. The [Anthropic tool-schema
+compatibility hook](extensions/anthropic-schema/index.ts) removes unsupported
+numeric bounds from outbound tool definitions while retaining local validation.
 Login remains required. [Direct-provider contract](docs/direct-providers.md).
 
 ### Local gateway and local models
