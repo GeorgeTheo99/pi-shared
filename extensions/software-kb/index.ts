@@ -1,9 +1,10 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadPrivateCorpus, type PrivateCorpus } from "./corpus.ts";
+import { resolveKnowledgeRoot } from "./paths.ts";
 
 interface SourceRecord {
 	id: string;
@@ -80,12 +81,8 @@ function currentFileDir() {
 
 const extensionDir = currentFileDir();
 const packageRoot = resolve(extensionDir, "../..");
-const kbRoot = join(packageRoot, "knowledge/software-engineering");
-const corpusRoot = join(kbRoot, "corpus");
-const sourcesPath = join(kbRoot, "sources.json");
-
-function readManifest(): SourceManifest {
-	return JSON.parse(readFileSync(sourcesPath, "utf8")) as SourceManifest;
+function readManifest(kbRoot: string): SourceManifest {
+	return JSON.parse(readFileSync(join(kbRoot, "sources.json"), "utf8")) as SourceManifest;
 }
 
 function walkMarkdown(dir: string): string[] {
@@ -182,8 +179,9 @@ function sourceToChunk(source: SourceRecord): Chunk {
 	};
 }
 
-function buildChunks(privateCorpus: PrivateCorpus): Chunk[] {
-	const manifest = readManifest();
+function buildChunks(kbRoot: string, privateCorpus: PrivateCorpus): Chunk[] {
+	const corpusRoot = join(kbRoot, "corpus");
+	const manifest = readManifest(kbRoot);
 	const sourcesById = new Map(manifest.sources.map((source) => [source.id, source]));
 	const chunks: Chunk[] = manifest.sources.map(sourceToChunk);
 
@@ -201,7 +199,7 @@ function buildChunks(privateCorpus: PrivateCorpus): Chunk[] {
 				sourceTitle: source?.title ?? sourceId,
 				title: section.title,
 				text: section.text,
-				path: relative(packageRoot, file),
+				path: file,
 				url: source?.canonical_url,
 				access: source?.access,
 				tags: source?.tags ?? [],
@@ -219,7 +217,7 @@ function buildChunks(privateCorpus: PrivateCorpus): Chunk[] {
 				id: `${doc.file}:page:${page.page}`, kind: "document_page",
 				sourceId: doc.source_id, sourceTitle: source.title, title: `PDF page ${page.page}`,
 				text: page.text.replace(/\s+/g, " ").trim(),
-				path: relative(packageRoot, join(corpusRoot, "pdf-downloads", doc.file)),
+				path: join(corpusRoot, "pdf-downloads", doc.file),
 				page: page.page, method: doc.method, note: doc.note,
 				access: "private_local_text", tags: source.tags ?? [], licenseStatus: source.license_status,
 				ingestPolicy: "Private local copy; completeness, edition, and redistribution rights unverified.",
@@ -279,7 +277,7 @@ function makeSnippet(text: string, query: string, maxLength: number) {
 
 function formatSearchResults(results: Array<{ chunk: Chunk; score: number }>, query: string) {
 	if (results.length === 0) {
-		return `No local software KB results for ${JSON.stringify(query)}. Try broader terms, /kb-sources, or add text to ${relative(process.cwd(), corpusRoot)}.`;
+		return `No local software KB results for ${JSON.stringify(query)}. Try broader terms or use kb_sources to inspect the selected KB root and local coverage.`;
 	}
 	return results
 		.map(({ chunk, score }, index) => {
@@ -309,6 +307,8 @@ function privateStatus(corpus: PrivateCorpus) {
 }
 
 export default function softwareKnowledgeBase(pi: ExtensionAPI) {
+	const kbRoot = resolveKnowledgeRoot(packageRoot);
+	const corpusRoot = join(kbRoot, "corpus");
 	pi.registerTool({
 		name: "kb_search",
 		label: "Software KB Search",
@@ -335,7 +335,7 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 			const sourceId = params.source_id?.trim();
 			if (!params.query.trim()) throw new Error("Search query must not be blank");
 			const privateCorpus = loadPrivateCorpus(kbRoot);
-			const chunks = buildChunks(privateCorpus).filter((chunk) => (!sourceId || chunk.sourceId === sourceId) && (!params.content_only || chunk.kind === "document_page"));
+			const chunks = buildChunks(kbRoot, privateCorpus).filter((chunk) => (!sourceId || chunk.sourceId === sourceId) && (!params.content_only || chunk.kind === "document_page"));
 			const results = chunks
 				.map((chunk) => ({ chunk, score: scoreChunk(chunk, params.query, mode) }))
 				.filter((result) => result.score > 0)
@@ -346,6 +346,7 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 				content: [{ type: "text", text: `${privateStatus(privateCorpus)}\n\n${formatSearchResults(results, params.query)}` }],
 				details: {
 					query: params.query,
+					kb_root: kbRoot,
 					private_index: privateCorpus.state,
 					warning: privateCorpus.warning,
 					local_documents: documentStatus(privateCorpus),
@@ -390,11 +391,11 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 			if (!page) throw new Error("Page has no indexed text or is outside this PDF. Use kb_sources to inspect local coverage.");
 			const limit = Math.min(12000, Math.max(200, params.max_chars ?? 6000));
 			const text = page.text.slice(0, limit);
-			const path = relative(packageRoot, join(corpusRoot, "pdf-downloads", doc.file));
+			const path = join(corpusRoot, "pdf-downloads", doc.file);
 			const truncated = text.length < page.text.length;
 			return {
 				content: [{ type: "text", text: `${doc.source_id} — PDF page ${page.page}\npath: ${path}\nextraction: ${doc.method}; private local text; completeness/edition/rights unverified.${doc.note ? ` ${doc.note}` : ""}\n\n${text}${truncated ? "\n[Page text truncated; raise max_chars, up to 12000.]" : ""}` }],
-				details: { kind: "document_page", source_id: doc.source_id, page: page.page, path, method: doc.method,
+				details: { kb_root: kbRoot, kind: "document_page", source_id: doc.source_id, page: page.page, path, method: doc.method,
 					note: doc.note, access: "private_local_text", truncated, total_chars: page.text.length, text },
 			};
 		},
@@ -411,7 +412,7 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 			tag: Type.Optional(Type.String({ description: "Optional tag filter, e.g. architecture, testing, sre." })),
 		}),
 		async execute(_toolCallId, params) {
-			const manifest = readManifest();
+			const manifest = readManifest(kbRoot);
 			const privateCorpus = loadPrivateCorpus(kbRoot);
 			const access = params.access?.trim().toLowerCase();
 			const tag = params.tag?.trim().toLowerCase();
@@ -422,6 +423,7 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 			});
 			const text = [
 				`Software KB sources (${sources.length}/${manifest.sources.length})`,
+				`KB root: ${kbRoot}`,
 				privateStatus(privateCorpus),
 				manifest.selection_method ? `Selection: ${manifest.selection_method}` : undefined,
 				manifest.runtime_policy ? `Policy: ${manifest.runtime_policy}` : undefined,
@@ -447,7 +449,7 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 
 			return {
 				content: [{ type: "text", text }],
-				details: { private_index: privateCorpus.state, warning: privateCorpus.warning,
+				details: { kb_root: kbRoot, private_index: privateCorpus.state, warning: privateCorpus.warning,
 					sources: sources.map((source) => ({ ...source, local_documents: documentStatus(privateCorpus).filter((doc) => doc.source_id === source.id) })) },
 			};
 		},

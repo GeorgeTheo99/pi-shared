@@ -1,6 +1,6 @@
 # Software Engineering Knowledge Base
 
-The shared repository ships a source catalog, editorial source cards, and search/ingestion tools. **It does not ship the private book PDFs or extracted book text.** A fresh clone works as a metadata-only KB until that machine supplies and indexes its own documents.
+The shared repository ships a source catalog, editorial source cards, and search/ingestion tools. **It does not ship the private book PDFs or extracted book text.** A fresh installation works as a metadata-only KB until that machine supplies and indexes its own documents.
 
 ## Tools
 
@@ -31,21 +31,36 @@ extensions/software-kb/
 
 Normal Git clones/archives and npm's default ignore rules exclude both private directories. Do not force-add them or distribute a raw folder copy containing them. `package.json` remains private. The historical local Git objects used in recovery are **not** a supported distribution channel or a rights grant; ignore rules do not erase existing Git history.
 
+## Machine-local storage
+
+The extension selects one **complete KB layout** at load time, in this order:
+
+1. `PI_SOFTWARE_KB_ROOT`, when set to an absolute path (no literal `~`).
+2. `~/.pi/knowledge/software-engineering/`, when that path exists.
+3. The bundled `knowledge/software-engineering/` catalog, for fresh installs and legacy source checkouts.
+
+A complete layout contains `sources.json`, `documents.json`, `corpus/` (including source cards and any private PDFs), and `private/index.json` after ingestion. Catalog, mappings, originals, and index stay together: package updates cannot invalidate the local index by replacing its catalog. The local catalog is a snapshot; update it deliberately and re-ingest after changing it. Invalid/incomplete selected layouts are reported, not silently replaced with the bundled corpus.
+
+For personal use, copy an existing complete layout to `~/.pi/knowledge/software-engineering/` **outside the managed installation**. Keep the original until verification passes, preserve all files byte-for-byte (including OCR output), and restrict the destination directories to `0700` and files to `0600`. Do not copy private data into a Homebrew keg or `~/.local/share/pi-shared/modules/`. If the destination already exists, inspect it rather than overwriting it.
+
+No environment variable or per-profile wiring is needed for the default machine-local location; it is shared across Pi profiles on that machine. Run `/reload` after installing the updated extension or changing the selected location. Index replacements within the selected location are picked up on each tool call. `kb_sources` displays the selected root; all tools include `kb_root` in structured results, and result file paths are absolute.
+
 ## Private ingestion
 
 Prerequisites: Python 3.9+, Poppler's `pdfinfo` and `pdftotext`. On macOS, install Poppler separately with `brew install poppler`. Existing catalog/search tools need neither Python nor Poppler at runtime. OCR additionally needs macOS and a working Swift toolchain; it uses system PDFKit/Vision frameworks without cloud calls.
 
-1. Supply copies you are entitled to index privately under `corpus/pdf-downloads/`.
-2. Map each filename to a catalog `source_id` in `documents.json`. Do not treat filenames as verified edition metadata.
-3. From the repository root, run:
+1. Prepare a complete layout at the machine-local location above (a new layout can start with copies of the bundled catalog, mappings, and source cards).
+2. Supply copies you are entitled to index privately under that layout's `corpus/pdf-downloads/`.
+3. Map each filename to a catalog `source_id` in its `documents.json`. Do not treat filenames as verified edition metadata.
+4. From the repository or installed package root, run:
 
 ```sh
-python3 extensions/software-kb/ingest.py --private
+python3 extensions/software-kb/ingest.py --private --root "$HOME/.pi/knowledge/software-engineering"
 # Optional: OCR documents with effectively no extractable text (100-page document cap).
-python3 extensions/software-kb/ingest.py --private --ocr
+python3 extensions/software-kb/ingest.py --private --root "$HOME/.pi/knowledge/software-engineering" --ocr
 ```
 
-The converter never downloads documents, fetches old Git blobs, or publishes content. The explicit `--private` flag requests local indexing; it does not confer copyright permissions. `--root` supports a separate complete KB layout (primarily for testing); the Pi extension reads the layout relative to its own package, not that override automatically.
+The converter never downloads documents, fetches old Git blobs, or publishes content. The explicit `--private` flag requests local indexing; it does not confer copyright permissions. Always pass `--root` for external storage; without it the converter retains its legacy package-relative default and does not consult `PI_SOFTWARE_KB_ROOT`. A custom root must match the extension's selected location.
 
 The index is atomically replaced, with directory permissions `0700` and file permissions `0600`. Each document records its input SHA-256, extraction method, physical page count, nonempty page records, and status:
 
@@ -85,8 +100,10 @@ npm run test:software-kb
 # Optional local audit: searches and reads a page from every indexed document,
 # and rechecks all recovered original hashes without printing book text.
 PI_KB_LIVE_SMOKE=1 npm run test:software-kb
+# Optional: verify an installed extension against the same selected local layout.
+PI_KB_LIVE_SMOKE=1 PI_KB_LIVE_EXTENSION=/absolute/path/to/installed/extensions/software-kb/index.ts npm run test:software-kb
 ```
 
-Tests use original synthetic content: real installed-Pi SDK/tool-loop schema and error checks, page retrieval/citations, blank/short pages, corrupt/stale indexes, changed originals, source-card/PDF separation, Poppler extraction, private permissions, and ignore rules. Poppler-specific tests explicitly skip when it is not installed. The real recovered corpus is verified locally, not committed as a test fixture.
+Tests use original synthetic content: real installed-Pi SDK/tool-loop schema and error checks, page retrieval/citations, blank/short pages, corrupt/stale indexes, changed originals, source-card/PDF separation, Poppler extraction, private permissions, and ignore rules. Poppler-specific tests explicitly skip when it is not installed. Root-selection and real-SDK tests cover external-layout isolation, absolute citations, missing/invalid layouts, and package-catalog updates. The real recovered corpus is verified locally, not committed as a test fixture. The opt-in live smoke uses the same root selection as the extension and also checks the historical recovery manifest.
 
 After installing this updated extension, use `/reload` in Pi once to expose the new `kb_read` tool and parameters. Later index rebuilds are visible without another reload.

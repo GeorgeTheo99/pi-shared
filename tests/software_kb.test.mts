@@ -8,6 +8,7 @@ import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-codin
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import { loadPrivateCorpus } from "../extensions/software-kb/corpus.ts";
+import { resolveKnowledgeRoot } from "../extensions/software-kb/paths.ts";
 
 const digest = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 function fixture(t: any) {
@@ -35,14 +36,25 @@ function fixture(t: any) {
   return { root, kb, index, save };
 }
 
-async function tools(root: string) {
+async function tools(root: string, kbRoot: string | null = join(root, "knowledge/software-engineering"), home?: string) {
   const extensionDir = join(root, "extensions/software-kb");
   cpSync(resolve("extensions/software-kb"), extensionDir, { recursive: true });
   const agentDir = join(root, "profile"); mkdirSync(agentDir);
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [], extensions: [join(extensionDir, "index.ts")] }));
   const loader = new DefaultResourceLoader({ cwd: root, agentDir, noContextFiles: true,
     settingsManager: SettingsManager.create(root, agentDir, { projectTrusted: false }) });
-  await loader.reload();
+  const previous = { PI_SOFTWARE_KB_ROOT: process.env.PI_SOFTWARE_KB_ROOT, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  if (kbRoot === null) delete process.env.PI_SOFTWARE_KB_ROOT;
+  else process.env.PI_SOFTWARE_KB_ROOT = kbRoot;
+  if (home) { process.env.HOME = home; process.env.USERPROFILE = home; }
+  try {
+    await loader.reload();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
   assert.deepEqual(loader.getExtensions().errors, []);
   return new Map(loader.getExtensions().extensions.flatMap(e => [...e.tools.values()]).map(t => [t.definition.name, t.definition]));
 }
@@ -97,6 +109,66 @@ test("SDK loads all KB tools; page citations, metadata distinction, read bounds,
   assert.equal((await finalize(registered.get("kb_read"), { source_id: "test-book", page: 1 })).isError, true);
   rmSync(join(f.kb, "private/index.json"));
   assert.equal((await search({ query: "Distinctive Engineering" })).details.private_index, "missing");
+});
+
+test("KB root precedence is explicit override, machine-local layout, then bundled catalog", t => {
+  const f = fixture(t);
+  const home = join(f.root, "home");
+  const local = join(home, ".pi/knowledge/software-engineering");
+  assert.equal(resolveKnowledgeRoot(f.root, {}, home), f.kb);
+  mkdirSync(local, { recursive: true });
+  assert.equal(resolveKnowledgeRoot(f.root, {}, home), local);
+  const override = join(f.root, "not-created");
+  assert.equal(resolveKnowledgeRoot(f.root, { PI_SOFTWARE_KB_ROOT: override }, home), override);
+  for (const path of ["", "relative", "~/books"]) {
+    assert.throws(() => resolveKnowledgeRoot(f.root, { PI_SOFTWARE_KB_ROOT: path }, home), /absolute path/);
+  }
+});
+
+test("SDK selects the default home layout or package fallback without an environment override", async t => {
+  for (const useLocal of [false, true]) {
+    const f = fixture(t);
+    const home = join(f.root, "home");
+    mkdirSync(home);
+    const local = join(home, ".pi/knowledge/software-engineering");
+    if (useLocal) cpSync(f.kb, local, { recursive: true });
+    const registered = await tools(f.root, null, home);
+    const selected = useLocal ? local : f.kb;
+    const sources = await finalize(registered.get("kb_sources"), {});
+    assert.equal(sources.isError, false);
+    assert.equal(sources.details.kb_root, selected);
+    const search = await finalize(registered.get("kb_search"), { query: "quorum", content_only: true });
+    assert.equal(search.details.count, 1);
+    const page = await finalize(registered.get("kb_read"), { source_id: "test-book", page: 1 });
+    assert.equal(page.details.path, join(selected, "corpus/pdf-downloads/book.pdf"));
+  }
+});
+
+test("SDK tools use one external layout, report absolute paths, and never mix in bundled content", async t => {
+  const bundled = fixture(t);
+  const external = fixture(t);
+  external.index.documents[0].pages[0].text = "External-only evidence token."; external.save();
+  const registered = await tools(bundled.root, external.kb);
+  const search = await finalize(registered.get("kb_search"), { query: "External-only", content_only: true });
+  assert.equal(search.isError, false);
+  assert.equal(search.details.kb_root, external.kb);
+  assert.equal(search.details.count, 1);
+  const pdf = join(external.kb, "corpus/pdf-downloads/book.pdf");
+  assert.equal(search.details.results[0].path, pdf);
+  const read = await finalize(registered.get("kb_read"), { source_id: "test-book", page: 1 });
+  assert.equal(read.details.path, pdf);
+  assert.equal(read.details.text, "External-only evidence token.");
+  const sources = await finalize(registered.get("kb_sources"), {});
+  assert.equal(sources.details.kb_root, external.kb);
+  assert.match(sources.content[0].text, /KB root:/);
+  assert.equal((await finalize(registered.get("kb_search"), { query: "quorum", content_only: true })).details.count, 0);
+  // An installed-package catalog update must not invalidate the independent local snapshot.
+  writeFileSync(join(bundled.kb, "sources.json"), "{}");
+  assert.equal((await finalize(registered.get("kb_sources"), {})).details.private_index, "ready");
+  rmSync(join(external.kb, "private/index.json"));
+  assert.equal((await finalize(registered.get("kb_sources"), {})).details.private_index, "missing");
+  rmSync(join(external.kb, "sources.json"));
+  assert.equal((await finalize(registered.get("kb_sources"), {})).isError, true);
 });
 
 test("private reader validates schema, mappings, physical page numbering and freshness", t => {
