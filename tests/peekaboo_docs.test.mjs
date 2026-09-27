@@ -5,8 +5,9 @@ import test from "node:test";
 const guide = readFileSync(new URL("../docs/peekaboo.md", import.meta.url), "utf8");
 const setup = readFileSync(new URL("../docs/peekaboo-setup.md", import.meta.url), "utf8");
 const instructions = readFileSync(new URL("../AGENTS.md", import.meta.url), "utf8");
-const example = JSON.parse(setup.match(/```json\n([\s\S]*?)\n```/)[1]);
-const server = example.mcpServers.peekaboo;
+const servers = [...setup.matchAll(/```json\n([\s\S]*?)\n```/g)].map(match => JSON.parse(match[1]).mcpServers.peekaboo);
+const server = servers.find(entry => entry.args.includes('--no-remote'));
+const bridge = servers.find(entry => entry.args.includes('--bridge-socket'));
 
 test("Peekaboo is the direct recommendation, not a discoverable computer-use skill", () => {
   assert.equal(existsSync(new URL("../skills/macos-computer-use", import.meta.url)), false);
@@ -29,10 +30,27 @@ test("MCP example uses a pinned local command and direct foreground-capable stdi
   assert.equal(server.url, undefined);
 });
 
-test("full catalog is exposed without extra tool filtering or approval policy", () => {
-  assert.equal(server.includeTools, undefined);
-  assert.equal(server.excludeTools, undefined);
-  assert.equal(server.approveTools, undefined);
+test("desktop Bridge example disables only browser and never falls back to direct", () => {
+  assert.equal(bridge.command, '/absolute/path/to/pinned/peekaboo');
+  assert.deepEqual(bridge.args, ['mcp', '--bridge-socket', '/absolute/path/to/Peekaboo/bridge.sock', '--allow-foreground']);
+  assert.deepEqual(bridge.env, { PEEKABOO_DISABLE_TOOLS: 'browser' });
+  assert.equal(bridge.lifecycle, 'lazy-keep-alive');
+  assert.equal(bridge.directTools, false);
+  assert.equal(bridge.requestTimeoutMs, 30000);
+  assert.equal(bridge.url, undefined);
+  assert.match(setup, /Peekaboo schema v2/);
+  assert.match(setup, /25 advertised tools without `browser`/);
+  assert.match(setup, /unavailable explicit host must be reported/);
+});
+
+test("no adapter-side tool filtering or additional approval policy in either route", () => {
+  assert.equal(servers.length, 2);
+  for (const entry of servers) {
+    assert.equal(entry.includeTools, undefined);
+    assert.equal(entry.excludeTools, undefined);
+    assert.equal(entry.approveTools, undefined);
+  }
+  assert.equal(server.env, undefined);
   assert.match(setup, /full advertised Peekaboo catalog/);
   assert.match(setup, /Existing global adapter policies still apply/);
 });

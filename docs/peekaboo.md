@@ -2,7 +2,7 @@
 
 Peekaboo is the opinionated choice for native macOS desktop interaction; always use it for this purpose rather than another desktop-control backend. This is reference documentation, not a Pi skill. It requires macOS 15+, a separately installed compatible Peekaboo CLI, a configured Pi MCP adapter, and user-granted macOS permissions.
 
-Use the adapter-managed `peekaboo` MCP server with its full advertised tool catalog. Pi normally owns the reasoning loop; prefer individual tools over launching another agent. Peekaboo's optional agent/analysis tools may require their own provider configuration and authorization for data transfer or cost. Do not configure provider credentials automatically. This documentation is guidance, not a sandbox, permission grant, or desktop lock.
+Use the adapter-managed `peekaboo` MCP server with its advertised tool catalog. For the user-approved 4.5.0 desktop-Bridge compatibility configuration, disable only Peekaboo's `browser` tool at server startup; retain all 25 other tools and use Pi's purpose-built browser tools. See [setup](peekaboo-setup.md) for the scoped workaround and removal criteria. Pi normally owns the reasoning loop; prefer individual tools over launching another agent. Peekaboo's optional agent/analysis tools may require their own provider configuration and authorization for data transfer or cost. Do not configure provider credentials automatically. This documentation is guidance, not a sandbox, permission grant, or desktop lock.
 
 ## Before starting
 

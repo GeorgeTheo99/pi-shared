@@ -5,7 +5,7 @@ import { startManagedProcess } from "../_shared/managed-process.ts";
 
 export type SetupAction = "plan" | "status" | "apply" | "check";
 export interface SetupReport {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	component: "peekaboo";
 	action: SetupAction;
 	ok: boolean;
@@ -16,6 +16,10 @@ export interface SetupReport {
 	nextSteps: string[];
 	planId?: string;
 	evidence: {
+		mode: "direct" | "bridge";
+		bridgeSocketPath: string | null;
+		bridgeSocketState: "not-applicable" | "missing" | "present" | "invalid";
+		permissionSource: "local" | "bridge" | null;
 		binaryPath: string | null;
 		binaryPresent: boolean;
 		configuration: "missing" | "matching" | "conflict" | "invalid";
@@ -34,11 +38,19 @@ export function parseReport(text: string, action: SetupAction): SetupReport {
 	try { value = JSON.parse(text); } catch { throw new Error("The setup backend did not return versioned JSON. Update the owning pi-shared installation; no automatic update was attempted."); }
 	const strings = (v: unknown) => Array.isArray(v) && v.length <= 50 && v.every(s => typeof s === "string" && s.length <= 4096);
 	const e = value?.evidence;
-	if (value?.schemaVersion !== 1 || value.component !== "peekaboo" || value.action !== action ||
+	if (value?.schemaVersion !== 2 || value.component !== "peekaboo" || value.action !== action ||
 		typeof value.ok !== "boolean" || typeof value.summary !== "string" || value.summary.length > 4096 ||
 		!["actions", "warnings", "errors", "nextSteps"].every(k => strings(value[k])) ||
 		(value.planId !== undefined && !/^[a-f0-9]{64}$/.test(value.planId)) ||
-		!e || !(e.binaryPath === null || typeof e.binaryPath === "string" && isAbsolute(e.binaryPath)) ||
+		!e || !["direct", "bridge"].includes(e.mode) ||
+		!(e.mode === "direct"
+			? e.bridgeSocketPath === null && e.bridgeSocketState === "not-applicable"
+			: (e.bridgeSocketPath === null
+				? !value.ok && e.bridgeSocketState === "invalid"
+				: typeof e.bridgeSocketPath === "string" && e.bridgeSocketPath.length <= 4096 && isAbsolute(e.bridgeSocketPath) &&
+					!/[\x00-\x1f\x7f]/.test(e.bridgeSocketPath) && ["missing", "present", "invalid"].includes(e.bridgeSocketState))) ||
+		!(e.permissionSource === null || e.permissionSource === (e.mode === "bridge" ? "bridge" : "local")) ||
+		!(e.binaryPath === null || typeof e.binaryPath === "string" && isAbsolute(e.binaryPath)) ||
 		typeof e.binaryPresent !== "boolean" || !["missing", "matching", "conflict", "invalid"].includes(e.configuration) ||
 		!["not-tested", "yes", "no"].includes(e.runnable) || !["not-tested", "connected", "failed"].includes(e.mcp) ||
 		!(e.toolCount === null || Number.isSafeInteger(e.toolCount) && e.toolCount >= 0 && e.toolCount <= 10000) ||

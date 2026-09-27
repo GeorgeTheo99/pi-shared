@@ -208,11 +208,15 @@ or a TestFlight uploader. [Apple app commands](extensions/apple-app-test/README.
 interaction. Always use its separately installed server through Pi's existing
 MCP adapter for this purpose; no separate computer-use skill is needed. [`/setup peekaboo`](extensions/setup/README.md) previews installation
 or configuration, asks before applying it, and offers a separate CLI and
-permission check. MCP connection and desktop interaction remain separate checks. It requires a compatible `pi-setup` backend and does not run
+permission check. Select direct CLI ownership or an explicit desktop-app Bridge;
+recognized existing routes are preserved. This flow requires Peekaboo backend
+schema v2, provided by Homebrew **0.1.23+** (0.1.22 has schema v1).
+MCP connection and desktop interaction remain separate checks. The wizard does not run
 desktop actions or automatically grant macOS permissions. `/setup` opens the
 full optional-capability menu; `/setup peekaboo` selects this flow directly.
 [Setup](docs/peekaboo-setup.md) covers compatible pinned
-releases, macOS permissions, the full MCP catalog, foreground-capable operation,
+releases, macOS permissions, the full direct-mode catalog and the 25-tool desktop-Bridge
+compatibility mode (only Peekaboo's browser tool disabled), foreground-capable operation,
 and read-only verification. Tool availability is not blanket action authorization;
 the integration is not a sandbox or cross-session desktop lock. Screenshots and UI text
 returned to cloud models may also remain in Pi transcripts.

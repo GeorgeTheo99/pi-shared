@@ -15,8 +15,8 @@ const backend = path.join(dir, 'backend');
 const prior = process.env.PI_SHARED_SETUP_BIN;
 let session;
 try {
-  const report = { schemaVersion:1, component:'peekaboo', action:'plan', ok:true, summary:'Offline fixture only', actions:['Configure MCP'], warnings:[],errors:[],nextSteps:[],planId:'a'.repeat(64),
-    evidence:{binaryPath:'/fixture/peekaboo',binaryPresent:true,configuration:'missing',runnable:'not-tested',permissions:{screenRecording:'unknown',accessibility:'unknown',eventSynthesizing:'unknown'},mcp:'not-tested',toolCount:null,desktop:'not-tested'} };
+  const report = { schemaVersion:2, component:'peekaboo', action:'plan', ok:true, summary:'Offline fixture only', actions:['Configure MCP'], warnings:[],errors:[],nextSteps:[],planId:'a'.repeat(64),
+    evidence:{mode:'bridge',bridgeSocketPath:'/fixture/bridge.sock',bridgeSocketState:'present',permissionSource:null,binaryPath:'/fixture/peekaboo',binaryPresent:true,configuration:'missing',runnable:'not-tested',permissions:{screenRecording:'unknown',accessibility:'unknown',eventSynthesizing:'unknown'},mcp:'not-tested',toolCount:null,desktop:'not-tested'} };
   const capabilityReport = { schemaVersion:1, component:'documents', action:'plan', ok:true, summary:'Offline capability fixture',
     status:'needs-configuration', evidence:[], actions:[], warnings:[], errors:[], nextSteps:[], handoffs:[] };
   fs.writeFileSync(backend, `#!${process.execPath}\nconst fs=require('node:fs');fs.appendFileSync(${JSON.stringify(marker)},JSON.stringify(process.argv.slice(2))+'\\n');console.log(JSON.stringify(process.argv[2]==='capability'?${JSON.stringify(capabilityReport)}:${JSON.stringify(report)}));\n`, { mode:0o700 });
