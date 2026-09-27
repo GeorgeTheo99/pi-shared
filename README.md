@@ -79,7 +79,8 @@ replaces those six existing context values but leaves direct API models alone.
 The preset label is shown before authentication, but Claude appears in `/model`
 only after Anthropic credentials are available. The [Anthropic tool-schema
 compatibility hook](extensions/anthropic-schema/index.ts) removes unsupported
-numeric bounds from outbound tool definitions while retaining local validation.
+validation constraints from outbound tool definitions and disables strict sampling
+for affected tools to avoid Anthropic's union limit; Pi retains local validation.
 Login remains required. [Direct-provider contract](docs/direct-providers.md).
 
 ### Local gateway and local models

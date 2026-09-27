@@ -59,8 +59,15 @@ both shortcuts, and an existing opt-out is preserved on reruns. `pi models`
 lists configured shortcuts, not every native Pi model. A preset label appears even
 before authentication; the `/model` picker only shows models with available
 credentials. The shared [Anthropic schema hook](../extensions/anthropic-schema/index.ts)
-removes numeric bounds unsupported by Anthropic from outgoing tool definitions;
-Pi still validates actual tool arguments against their original local schemas.
+removes validation constraints unsupported by Anthropic from outgoing tool definitions
+and disables strict sampling on affected tools to stay below Anthropic's nullable
+union limit. For strict-converted tools it unwraps generated nullable optional
+fields in the outbound schema; an originally required nullable field can look
+identical and become optional to the provider. Pi still validates actual tool
+arguments against their original local schemas, so missing required fields fail
+rather than execute. Conversely, an optional nullable type-array can remain
+provider-required; the wire transform cannot reconstruct every original
+optional/required distinction from Pi's strict-converted payload.
 If OAuth requests report `claude_code_version_too_old`, update the managed Pi
 runtime through an approved package release. Updating the separate Claude CLI
 or editing the installed Homebrew runtime does not update Pi.
