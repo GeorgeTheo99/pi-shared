@@ -7,7 +7,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-from pi_codex_context import CODEX_MAX_CONTEXT, configure
+from pi_codex_context import CODEX_MAX_CONTEXT, CODEX_STANDARD_CONTEXT, configure
 
 
 def test_new_profile_gets_only_codex_ceiling(tmp_path):
@@ -55,6 +55,41 @@ def test_invalid_existing_config_is_unchanged(tmp_path, body):
     with pytest.raises(ValueError):
         configure(path, check=True)
     assert path.read_text() == body
+
+
+def test_explicit_mode_switch_updates_only_reviewed_codex_windows(tmp_path):
+    path = tmp_path / "models.json"
+    original = {"providers": {
+        "openai": {"modelOverrides": {"gpt-6-sol": {"contextWindow": 123456}}},
+        "openai-codex": {"modelOverrides": {
+            "gpt-6-sol": {"contextWindow": 300000, "name": "Custom Sol"},
+            "custom-model": {"contextWindow": 45000}}}}}
+    path.write_text(json.dumps(original))
+    assert configure(path, mode="standard") == len(CODEX_MAX_CONTEXT)
+    providers = json.loads(path.read_text())["providers"]
+    assert providers["openai"] == original["providers"]["openai"]
+    overrides = providers["openai-codex"]["modelOverrides"]
+    assert overrides["custom-model"] == {"contextWindow": 45000}
+    assert overrides["gpt-6-sol"]["name"] == "Custom Sol"
+    assert {model: overrides[model]["contextWindow"] for model in CODEX_MAX_CONTEXT} == {
+        model: CODEX_STANDARD_CONTEXT for model in CODEX_MAX_CONTEXT}
+    before = path.read_bytes()
+    assert configure(path, mode="standard") == 0
+    assert path.read_bytes() == before
+    assert configure(path) == 0  # An installer update preserves the user's selected standard mode.
+    assert path.read_bytes() == before
+    assert configure(path, mode="max") == len(CODEX_MAX_CONTEXT)
+    overrides = json.loads(path.read_text())["providers"]["openai-codex"]["modelOverrides"]
+    assert {model: overrides[model]["contextWindow"] for model in CODEX_MAX_CONTEXT} == CODEX_MAX_CONTEXT
+
+
+@pytest.mark.parametrize("mode", ["short", "maximum", ""])
+def test_invalid_explicit_mode_does_not_change_config(tmp_path, mode):
+    path = tmp_path / "models.json"
+    path.write_text('{"providers":{}}')
+    with pytest.raises(ValueError):
+        configure(path, mode=mode)
+    assert path.read_text() == '{"providers":{}}'
 
 
 def test_refuses_symlinked_config(tmp_path):

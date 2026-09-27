@@ -22,6 +22,21 @@ pi-shared fills missing native `openai-codex` context overrides with Codex's
 published 872K opt-in ceiling for GPT-5.6 Luna/Sol/Terra and GPT-6 Astra/Luna/Sol.
 It preserves existing overrides and all `openai` API settings; unknown models
 keep Pi's defaults. This changes compaction planning, not provider entitlements.
+To persist a deliberate choice across future sessions, run one of:
+
+```sh
+pi openai --set-context=standard  # 272K
+pi openai --set-context=max       # 872K
+```
+
+This offline command saves and exits without starting Pi. It replaces the
+`contextWindow` values for all six reviewed `openai-codex` models in the selected
+profile's `models.json`, including any earlier per-model context choices, while
+preserving other override fields and direct `openai` API configuration. A later
+setup/update fills only missing overrides, so it does not undo a saved choice.
+Gateway-generated and symlinked model files are refused. Existing Pi sessions
+must restart to read the change; a larger configured window does not itself
+consume tokens or guarantee provider entitlement.
 
 The existing `pi openai` shortcut selects the **ChatGPT/Codex subscription** preset,
 not OpenAI API-key billing. It uses that profile's `/model`-saved Codex default;

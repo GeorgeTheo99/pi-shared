@@ -69,6 +69,9 @@ not OpenAI API-key billing; it follows that profile's `/model`-saved Codex defau
 (or GPT-6 Astra when none is saved). On setup/update, pi-shared adds missing
 Codex subscription context overrides for verified long-context models (up to
 872K); existing overrides and pay-as-you-go OpenAI API models are untouched.
+`pi openai --set-context=standard|max` explicitly saves 272K or 872K for all six
+reviewed Codex models in the selected profile, for future sessions only; it
+replaces those six existing context values but leaves direct API models alone.
 Login remains required. [Direct-provider contract](docs/direct-providers.md).
 
 ### Local gateway and local models

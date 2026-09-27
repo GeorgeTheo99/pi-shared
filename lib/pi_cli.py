@@ -549,6 +549,7 @@ def main(argv=None):
         if argv == ["--launcher-help"]:
             print("pi <exact-alias> [Pi options] | pi <alias> --default (save and exit)\n"
                   "pi openai: ChatGPT subscription preset (when direct routes enabled)\n"
+                  "pi openai --set-context=standard|max: save 272K or 872K for reviewed Codex models and exit\n"
                   "pi models: grouped configured aliases (see pi models --help)\n"
                   "--launcher-list: legacy tab-separated alias/route output\n"
                   "--launcher-check | --launcher-refresh | --launcher-help\n"
@@ -601,6 +602,38 @@ def main(argv=None):
                     print(f"{alias}\t{route['provider']}/{route['model']}")
             else:
                 print("Pi launcher configuration OK (offline; no inference).")
+            return 0
+        if argv[:1] == ["openai"] and len(argv) > 1 and argv[1].startswith("--set-context"):
+            if len(argv) != 2 or argv[1] not in ("--set-context=standard", "--set-context=max"):
+                raise ValueError("Usage: pi openai --set-context=standard|max (save and exit)")
+            if not path.exists():
+                raise ValueError("Pi launcher CLI mode not configured; run pi-shared setup")
+            config = refresh(path, load_config(path))
+            route = config["routes"].get("openai")
+            if not route or route["provider"] != "openai-codex" or route["gateway"]:
+                raise ValueError("The openai Codex subscription shortcut is not configured")
+            from pi_codex_context import CODEX_MAX_CONTEXT, CODEX_STANDARD_CONTEXT, configure
+            profile = Path(os.environ.get("PI_CODING_AGENT_DIR") or route["profile"]
+                           or Path.home() / ".pi/agent").expanduser()
+            model_file = profile / "models.json"
+            values = generation_values(config["generation"]["args"])
+            outputs = [Path(values["--models-out"])] if "--models-out" in values else []
+            for legacy in (Path.home() / ".pi/generated/pi-launchers.zsh",
+                           Path.home() / ".pi/model-gateway/pi-launchers.zsh"):
+                if legacy.exists() or legacy.is_symlink():
+                    try:
+                        legacy_values = generation_values(legacy_arguments(legacy))
+                    except (OSError, ValueError, KeyError) as exc:
+                        raise ValueError(f"Cannot verify legacy model output ownership: {legacy}") from exc
+                    if "--models-out" in legacy_values:
+                        outputs.append(Path(legacy_values["--models-out"]))
+            if any(model_file.resolve() == output.resolve() for output in outputs):
+                raise ValueError("Refusing to change a gateway-generated models.json")
+            mode = argv[1].split("=", 1)[1]
+            changed = configure(model_file, mode=mode)
+            size = CODEX_STANDARD_CONTEXT if mode == "standard" else next(iter(CODEX_MAX_CONTEXT.values()))
+            print(f"Saved Codex context: {mode} ({size // 1000}K) for {len(CODEX_MAX_CONTEXT)} models "
+                  f"in {model_file} ({changed} changed); future sessions only.", file=sys.stderr)
             return 0
         executable = upstream()
         env = dict(os.environ)

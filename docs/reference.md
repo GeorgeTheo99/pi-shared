@@ -197,7 +197,11 @@ Contract:
   `defaultProvider`/`defaultModel` into the profile's `settings.json` and exits.
   `pi openai` is the ChatGPT-subscription preset (when direct routes are enabled),
   follows the native profile's saved Codex model default (otherwise GPT-6 Astra),
-  and clears `OPENAI_API_KEY`/`OPENAI_BASE_URL`. Unknown positional prompts and
+  and clears `OPENAI_API_KEY`/`OPENAI_BASE_URL`. `pi openai --set-context=standard|max`
+  saves 272K or 872K for all six reviewed Codex models in that native profile
+  and exits without launching Pi; it changes existing override values only when
+  explicitly invoked and refuses the configured gateway-generated model output.
+  Unknown positional prompts and
   stock commands (`list`, `help`, `version`) pass through untouched, and
   `pi -- <literal>` bypasses alias resolution entirely. `models` is now reserved
   for alias listing; an old shortcut named `models` is omitted on refresh, but

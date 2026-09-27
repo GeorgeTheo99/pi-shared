@@ -182,6 +182,100 @@ def test_openai_preset_uses_native_saved_codex_default(machine, provider, model,
     assert inv["argv"] == ["--model", "gpt-6-astra"]
 
 
+def test_openai_context_choice_persists_all_codex_models_without_launching(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    profile = machine["home"] / ".pi/agent"
+    profile.mkdir()
+    (profile / "settings.json").write_text(json.dumps({
+        "defaultProvider": "openai-codex", "defaultModel": "gpt-6-sol"}))
+    model_file = profile / "models.json"
+    model_file.write_text(json.dumps({"providers": {
+        "openai": {"modelOverrides": {"gpt-6-sol": {"contextWindow": 1050000}}},
+        "openai-codex": {"modelOverrides": {
+            "gpt-6-sol": {"contextWindow": 872000, "name": "My Sol"},
+            "other": {"contextWindow": 40000}}}}}))
+    result = launch(machine, "openai", "--set-context=standard", upstream=False)
+    assert result.returncode == 0 and not result.stdout, result.stderr
+    assert "standard (272K) for 6 models" in result.stderr
+    data = json.loads(model_file.read_text())["providers"]
+    assert data["openai"]["modelOverrides"]["gpt-6-sol"]["contextWindow"] == 1050000
+    overrides = data["openai-codex"]["modelOverrides"]
+    assert overrides["other"] == {"contextWindow": 40000}
+    assert overrides["gpt-6-sol"] == {"contextWindow": 272000, "name": "My Sol"}
+    assert len([key for key in overrides if key != "other"]) == 6
+    assert {value["contextWindow"] for key, value in overrides.items() if key != "other"} == {272000}
+    assert json.loads((profile / "settings.json").read_text())["defaultModel"] == "gpt-6-sol"
+    assert "(0 changed)" in launch(machine, "openai", "--set-context=standard", upstream=False).stderr
+    assert launch(machine, "openai", "--set-context=max", upstream=False).returncode == 0
+    overrides = json.loads(model_file.read_text())["providers"]["openai-codex"]["modelOverrides"]
+    assert {value["contextWindow"] for key, value in overrides.items() if key != "other"} == {872000}
+    assert invocation(launch(machine, "openai"))["argv"] == [
+        "--provider", "openai-codex", "--model", "gpt-6-sol"]
+
+
+def test_openai_context_choice_uses_explicit_native_profile(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    profile = machine["home"] / "custom-native-profile"
+    profile.mkdir()
+    result = launch(machine, "openai", "--set-context=standard", upstream=False,
+                    env_extra={"PI_CODING_AGENT_DIR": str(profile)})
+    assert result.returncode == 0, result.stderr
+    overrides = json.loads((profile / "models.json").read_text())["providers"]["openai-codex"]["modelOverrides"]
+    assert len(overrides) == 6 and {item["contextWindow"] for item in overrides.values()} == {272000}
+    assert not (machine["home"] / ".pi/agent/models.json").exists()
+
+
+def test_openai_context_choice_refuses_gateway_output_and_unavailable_route(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    generated = machine["home"] / ".pi-omlx/agent/models.json"
+    before = generated.read_bytes()
+    result = launch(machine, "openai", "--set-context=standard", upstream=False,
+                    env_extra={"PI_CODING_AGENT_DIR": str(generated.parent)})
+    assert result.returncode == 1 and "gateway-generated" in result.stderr
+    assert generated.read_bytes() == before
+    assert render(machine, "--no-direct-launchers").returncode == 0
+    result = launch(machine, "openai", "--set-context=standard", upstream=False)
+    assert result.returncode == 1 and "not configured" in result.stderr
+    assert not (machine["home"] / ".pi/agent/models.json").exists()
+
+
+def test_openai_context_choice_refuses_legacy_gateway_output(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    profile = machine["home"] / ".pi/agent"
+    profile.mkdir()
+    model_file = profile / "models.json"
+    legacy = machine["home"] / ".pi/generated/pi-launchers.zsh"
+    result = subprocess.run([sys.executable, str(CATALOG), "--aliases", str(machine["aliases"]),
+                             "--models-out", str(model_file), "--provider-name", "model-gateway",
+                             "--launchers-out", str(legacy)], env=machine["env"],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    before = model_file.read_bytes()
+    result = launch(machine, "openai", "--set-context=standard", upstream=False)
+    assert result.returncode == 1 and "gateway-generated" in result.stderr
+    assert model_file.read_bytes() == before
+    legacy.write_text("# Unknown legacy launcher; ownership cannot be checked.\n")
+    result = launch(machine, "openai", "--set-context=max", upstream=False)
+    assert result.returncode == 1 and "Cannot verify legacy model output" in result.stderr
+    assert model_file.read_bytes() == before
+
+
+def test_openai_context_choice_requires_exact_command_and_safe_file(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    for args in [("--set-context=short",), ("--set-context=max", "--model", "gpt-6-sol"),
+                 ("--set-context",)]:
+        result = launch(machine, "openai", *args, upstream=False)
+        assert result.returncode == 1 and "Usage: pi openai --set-context" in result.stderr
+    profile = machine["home"] / ".pi/agent"
+    profile.mkdir()
+    target = machine["home"] / "unrelated.json"
+    target.write_text('{"providers":{}}')
+    (profile / "models.json").symlink_to(target)
+    result = launch(machine, "openai", "--set-context=max", upstream=False)
+    assert result.returncode == 1 and "symlinked" in result.stderr
+    assert target.read_text() == '{"providers":{}}'
+
+
 def test_openai_preset_respects_explicit_profile_default(machine):
     assert render(machine, "--direct-launchers").returncode == 0
     profile = machine["home"] / "other-profile"

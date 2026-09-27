@@ -15,6 +15,7 @@ import sys
 from pi_cli import atomic_write, dump, read_owned
 
 
+CODEX_STANDARD_CONTEXT = 272000
 CODEX_MAX_CONTEXT = {
     "gpt-5.6-luna": 872000,
     "gpt-5.6-sol": 872000,
@@ -25,8 +26,10 @@ CODEX_MAX_CONTEXT = {
 }
 
 
-def configure(path: Path, *, check: bool = False) -> int:
-    """Fill only absent Codex context overrides; do not touch other providers."""
+def configure(path: Path, *, check: bool = False, mode: str | None = None) -> int:
+    """Fill absent Codex ceilings, or explicitly set all reviewed Codex contexts."""
+    if mode not in (None, "standard", "max") or (check and mode is not None):
+        raise ValueError("Codex context mode must be standard or max")
     if path.is_symlink():
         raise ValueError(f"Refusing symlinked native model config: {path}")
     ancestor = path.resolve().parent
@@ -51,20 +54,25 @@ def configure(path: Path, *, check: bool = False) -> int:
     for model, value in overrides.items():
         if model in CODEX_MAX_CONTEXT and not isinstance(value, dict):
             raise ValueError(f"Expected {model} override object: {path}")
-    missing = [model for model in CODEX_MAX_CONTEXT
-               if "contextWindow" not in overrides.get(model, {})]
-    if missing and not check:
+    targets = ({model: CODEX_STANDARD_CONTEXT for model in CODEX_MAX_CONTEXT}
+               if mode == "standard" else CODEX_MAX_CONTEXT)
+    if mode is None:
+        changes = [model for model in targets if "contextWindow" not in overrides.get(model, {})]
+    else:
+        changes = [model for model, size in targets.items()
+                   if overrides.get(model, {}).get("contextWindow") != size]
+    if changes and not check:
         config = dict(config)
         providers = dict(providers)
         codex = dict(codex)
         overrides = {**overrides}
-        for model in missing:
-            overrides[model] = {**overrides.get(model, {}), "contextWindow": CODEX_MAX_CONTEXT[model]}
+        for model in changes:
+            overrides[model] = {**overrides.get(model, {}), "contextWindow": targets[model]}
         codex["modelOverrides"] = overrides
         providers["openai-codex"] = codex
         config["providers"] = providers
         atomic_write(path, dump(config))
-    return len(missing)
+    return len(changes)
 
 
 if __name__ == "__main__":
