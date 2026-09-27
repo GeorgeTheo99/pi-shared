@@ -21,6 +21,33 @@ The `pi-setup` questionnaire in package 0.1.16+ can provision the standalone bro
 
 These are native Pi wrappers that contact MCP directly, not registrations in `pi-mcp-adapter`. Consequently `/mcp` does not list them. Use `/mcp-connections` or `dev_doctor` for both integration paths; registered tools are not proof of service readiness.
 
+## Compatibility contract for another search server
+
+The native client sends HTTP POST JSON-RPC `tools/call` requests and reads a JSON
+response containing `result`. It does not launch stdio servers, perform MCP
+initialization/session negotiation, parse SSE streams, or run OAuth onboarding.
+Matching tool names alone is therefore insufficient. A server requiring those
+features needs a compatible bridge, not just a different URL.
+
+For research-compatible search, return a JSON payload shaped like:
+
+```json
+{"results":[{"title":"Example","url":"https://example.com/page","snippet":"Relevant summary"}]}
+```
+
+Supply that payload as JSON-encoded MCP text content, or as `structuredContent`
+when no nonempty text content is present. Text content takes precedence. Basic
+`web_search` can display prose, but `deep_research` requires a parseable `results`
+array with usable HTTP(S) URLs. `web_fetch` should return nonempty retrieved page
+text; standard `result.isError: true` indicates failure. Limits and error handling
+are described below; a successful response is not proof of factual accuracy or
+complete retrieval.
+
+Adding any search server to `pi-mcp-adapter` exposes that server's tools through
+the adapter only. It does not route these native tools to it. Setup's
+`--search existing` configures this broker connection; it is not general MCP
+adapter onboarding. See the root [search and MCP overview](../../README.md#search-and-mcp).
+
 ## MCP URL resolution
 
 Configured URLs are collected in this order:
