@@ -195,7 +195,8 @@ Contract:
   profile) before the user's args; an explicit `--provider`/`--model` wins and
   suppresses the implicit profile switch. `pi <alias> --default` saves
   `defaultProvider`/`defaultModel` into the profile's `settings.json` and exits.
-  `pi openai` is the ChatGPT-subscription preset (when direct routes are enabled)
+  `pi openai` is the ChatGPT-subscription preset (when direct routes are enabled),
+  follows the native profile's saved Codex model default (otherwise GPT-6 Astra),
   and clears `OPENAI_API_KEY`/`OPENAI_BASE_URL`. Unknown positional prompts and
   stock commands (`list`, `help`, `version`) pass through untouched, and
   `pi -- <literal>` bypasses alias resolution entirely. `models` is now reserved

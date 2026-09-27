@@ -18,10 +18,16 @@ Direct mode installs shared resources and any separately selected browser/search
 components, **not model-gateway or oMLX**. Pi owns provider authentication and model
 selection. Use `/login` and `/model` inside Pi, or its native `--provider` and
 `--model` options. Provider/API credentials are not collected by this setup.
+pi-shared fills missing native `openai-codex` context overrides with Codex's
+published 872K opt-in ceiling for GPT-5.6 Luna/Sol/Terra and GPT-6 Astra/Luna/Sol.
+It preserves existing overrides and all `openai` API settings; unknown models
+keep Pi's defaults. This changes compaction planning, not provider entitlements.
 
 The existing `pi openai` shortcut selects the **ChatGPT/Codex subscription** preset,
-not OpenAI API-key billing. `pi models` lists configured shortcuts, not every
-native Pi model. General native-provider aliases are not added by this change.
+not OpenAI API-key billing. It uses that profile's `/model`-saved Codex default;
+without one, it falls back to GPT-6 Astra. Switching models without saving the
+default (Ctrl+S in `/model`) affects only the current session. `pi models` lists
+configured shortcuts, not every native Pi model. General native-provider aliases are not added by this change.
 `PI_SHARED_DIRECT_LAUNCHERS=0` omits the subscription shortcut; native Pi remains
 usable. An existing shortcut opt-out is preserved on reruns.
 
@@ -29,7 +35,10 @@ usable. An existing shortcut opt-out is preserved on reruns.
 
 - The launcher records `--direct-only` generation policy. It reads no gateway
   alias catalog, probes no gateway, and creates no gateway profile or generated
-  `models.json`. Existing native model/auth configuration stays Pi-owned.
+  gateway `models.json`. The installer may add only missing Codex context
+  overrides to the native profile's `models.json`, preserving user-defined model
+  entries and override values. Symlinked or gateway-generated native catalogs
+  are never modified; auth remains Pi-owned.
   The packaged launcher uses the native profile saved by setup, including a custom
   `PI_SHARED_AGENT_DIR`; an explicit `PI_CODING_AGENT_DIR` still takes precedence.
 - `pi models`, launcher checks, and launcher refresh run offline. Direct launches

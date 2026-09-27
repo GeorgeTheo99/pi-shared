@@ -65,8 +65,11 @@ browser, or desktop actions run as checks. [Flows and boundaries](extensions/set
 `pi-shared setup --with direct` uses Pi's own provider authentication and model
 selection, without requiring a gateway or oMLX. Use `/login` and `/model` inside Pi.
 The optional `pi openai` preset selects the ChatGPT/Codex subscription provider,
-not OpenAI API-key billing; login remains required.
-[Direct-provider contract](docs/direct-providers.md).
+not OpenAI API-key billing; it follows that profile's `/model`-saved Codex default
+(or GPT-6 Astra when none is saved). On setup/update, pi-shared adds missing
+Codex subscription context overrides for verified long-context models (up to
+872K); existing overrides and pay-as-you-go OpenAI API models are untouched.
+Login remains required. [Direct-provider contract](docs/direct-providers.md).
 
 ### Local gateway and local models
 

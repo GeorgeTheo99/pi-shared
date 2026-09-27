@@ -159,6 +159,42 @@ def test_openai_preset_unsets_api_key_env(machine):
     assert inv["env"]["OPENAI_API_KEY"] is None and inv["env"]["OPENAI_BASE_URL"] is None
 
 
+@pytest.mark.parametrize("provider,model,expected", [
+    ("openai-codex", "gpt-6-sol", "gpt-6-sol"),
+    ("openai-codex", "gpt-6-luna", "gpt-6-luna"),
+    ("anthropic", "claude-sonnet", "gpt-6-astra"),
+])
+def test_openai_preset_uses_native_saved_codex_default(machine, provider, model, expected):
+    assert render(machine, "--direct-launchers").returncode == 0
+    profile = machine["home"] / ".pi/agent"
+    profile.mkdir()
+    (profile / "settings.json").write_text(json.dumps({"defaultProvider": provider, "defaultModel": model}))
+    inv = invocation(launch(machine, "openai"))
+    assert inv["argv"] == ["--provider", "openai-codex", "--model", expected]
+    listing = json.loads(launch(machine, "models", "--json", upstream=False).stdout)
+    route = next(row for row in listing["models"] if row["alias"] == "openai")
+    assert route["model"] == expected
+    assert route["default"] is (provider == "openai-codex")
+    legacy_listing = launch(machine, "--launcher-list", upstream=False)
+    assert f"openai\topenai-codex/{expected}" in legacy_listing.stdout
+    # An explicit stock selection still wins over the shortcut and saved default.
+    inv = invocation(launch(machine, "openai", "--model", "gpt-6-astra"))
+    assert inv["argv"] == ["--model", "gpt-6-astra"]
+
+
+def test_openai_preset_respects_explicit_profile_default(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    profile = machine["home"] / "other-profile"
+    profile.mkdir()
+    (profile / "settings.json").write_text(json.dumps({
+        "defaultProvider": "openai-codex", "defaultModel": "gpt-6-sol"}))
+    env = {"PI_CODING_AGENT_DIR": str(profile)}
+    inv = invocation(launch(machine, "openai", env_extra=env))
+    assert inv["argv"] == ["--provider", "openai-codex", "--model", "gpt-6-sol"]
+    listing = json.loads(launch(machine, "models", "--json", upstream=False, env_extra=env).stdout)
+    assert next(row for row in listing["models"] if row["alias"] == "openai")["default"] is True
+
+
 # --- defaults + save -------------------------------------------------------
 
 def test_default_saves_settings_and_default_profile_then_exits(machine):

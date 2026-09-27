@@ -414,9 +414,9 @@ MODEL_GROUPS = {
 MODELS_USAGE = "Usage: pi models [--local | --cloud | --direct] [--verbose] [--json]"
 
 
-def saved_model_default(config):
+def saved_model_default(config, profile=None):
     """Read only the selected profile's saved default, not project overrides/auth."""
-    profile = Path(os.environ.get("PI_CODING_AGENT_DIR") or config.get("defaultProfile")
+    profile = Path(profile or os.environ.get("PI_CODING_AGENT_DIR") or config.get("defaultProfile")
                    or Path.home() / ".pi/agent").expanduser().resolve()
     try:
         raw = read_owned(profile / "settings.json", missing=True)
@@ -427,8 +427,16 @@ def saved_model_default(config):
         if isinstance(provider, str) and provider and isinstance(model, str) and model:
             return {"provider": provider, "model": model, "profile": str(profile)}
     except (OSError, ValueError):
-        print("pi models: unable to read saved profile default; no default marked.", file=sys.stderr)
+        print("pi-launch: unable to read saved profile default; using shortcut fallback.", file=sys.stderr)
     return None
+
+
+def openai_default_route(route, config, profile):
+    """Use the native profile's selected Codex model, if it has one."""
+    default = saved_model_default(config, profile)
+    if default and default["provider"] == route["provider"]:
+        return {**route, "model": default["model"]}
+    return route
 
 
 def model_listing(config):
@@ -441,7 +449,10 @@ def model_listing(config):
         if digest(raw) != config["generation"]["aliasesSha256"]:
             raise ValueError("Catalog changed while listing models; retry pi models")
         aliases = json.loads(raw) if raw else {}
-    routes, rows, covered = config["routes"], [], set()
+    routes, rows, covered = config["routes"].copy(), [], set()
+    if "openai" in routes and routes["openai"]["provider"] == "openai-codex" and not routes["openai"]["gateway"]:
+        native_profile = os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi/agent"
+        routes["openai"] = openai_default_route(routes["openai"], config, native_profile)
     default = saved_model_default(config)
 
     def add(names, name, group):
@@ -584,6 +595,9 @@ def main(argv=None):
             config = refresh(path, config, check=argv == ["--launcher-check"])
             if argv == ["--launcher-list"]:
                 for alias, route in config["routes"].items():
+                    if alias == "openai" and route["provider"] == "openai-codex" and not route["gateway"]:
+                        profile = os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi/agent"
+                        route = openai_default_route(route, config, profile)
                     print(f"{alias}\t{route['provider']}/{route['model']}")
             else:
                 print("Pi launcher configuration OK (offline; no inference).")
@@ -605,7 +619,7 @@ def main(argv=None):
                 route = config["routes"].get(argv[0])
         save = route is not None and argv[1:] == ["--default"]
         if route:
-            argv.pop(0)
+            alias = argv.pop(0)
             if "--default" in options(argv) and not save:
                 raise ValueError("--default must be used alone after an exact alias")
             if explicit_model:
@@ -614,6 +628,8 @@ def main(argv=None):
             profile = env.get("PI_CODING_AGENT_DIR", route["profile"] or str(Path.home() / ".pi/agent"))
             if "PI_CODING_AGENT_DIR" not in env and route["profile"]:
                 env["PI_CODING_AGENT_DIR"] = profile
+            if alias == "openai" and route["provider"] == "openai-codex" and not route["gateway"]:
+                route = openai_default_route(route, config, profile)
             if save:
                 settings_path = Path(profile).expanduser() / "settings.json"
                 raw = read_owned(settings_path, missing=True)

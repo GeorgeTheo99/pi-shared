@@ -34,6 +34,9 @@ def _make_repo(tmp_path: Path, extensions: dict[str, dict | None]) -> Path:
     (repo / "package.json").write_text(json.dumps({"name": "pi-shared", "pi": {"extensions": ["./extensions"]}}))
     shutil.copy(SHARED_ROOT / "bin" / "pi-shared-install", repo / "bin" / "pi-shared-install")
     shutil.copy(SHARED_ROOT / "bin" / "pi-shared-check-deps", repo / "bin" / "pi-shared-check-deps")
+    (repo / "lib").mkdir()
+    for name in ("pi_cli.py", "pi_codex_context.py"):
+        shutil.copy(SHARED_ROOT / "lib" / name, repo / "lib" / name)
     helpers = repo / "extensions/dev-doctor"
     helpers.mkdir(parents=True)
     shutil.copy(SHARED_ROOT / "extensions/dev-doctor/doctor_common.py", helpers / "doctor_common.py")

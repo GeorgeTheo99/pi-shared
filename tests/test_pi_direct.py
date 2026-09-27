@@ -1,6 +1,7 @@
 """Native-only bootstrap must not depend on a gateway catalog, profile or service."""
 import json
 import subprocess
+import sys
 
 import pytest
 
@@ -33,7 +34,10 @@ def test_direct_install_ignores_catalog_and_preserves_native_models(machine):
     result = install_direct(machine)
     assert result.returncode == 0, result.stderr
     assert not (home / ".pi-omlx").exists()
-    assert models.read_bytes() == before
+    policy = models.read_bytes()
+    updated = json.loads(policy)
+    assert updated["providers"]["custom"] == json.loads(before)["providers"]["custom"]
+    assert {v["contextWindow"] for v in updated["providers"]["openai-codex"]["modelOverrides"].values()} == {872000}
     assert json.loads(settings.read_text())["defaultProvider"] == "zai"
     assert not (home / ".zshrc").exists()
     config = json.loads(machine["config"].read_text())
@@ -42,14 +46,71 @@ def test_direct_install_ignores_catalog_and_preserves_native_models(machine):
     for args in [("models",), ("--launcher-check",), ("--launcher-refresh",)]:
         check = launch(machine, *args, upstream=False)
         assert check.returncode == 0, check.stderr
-    assert models.read_bytes() == before
+    assert models.read_bytes() == policy
     inv = invocation(launch(machine, "--provider", "zai", "--model", "native-model"))
     assert inv["argv"] == ["--provider", "zai", "--model", "native-model"]
     assert inv["env"]["PI_CODING_AGENT_DIR"] is None
     assert invocation(launch(machine, "openai"))["argv"][0:2] == ["--provider", "openai-codex"]
     assert not (home / ".pi-omlx").exists()
     assert install_direct(machine).returncode == 0
-    assert models.read_bytes() == before
+    assert models.read_bytes() == policy
+
+
+def test_context_preflight_rejects_unsafe_native_directory_before_writes(machine):
+    profile = machine["home"] / ".pi/agent"
+    profile.mkdir()
+    profile.chmod(0o777)
+    try:
+        result = install_direct(machine)
+        assert result.returncode != 0 and "Unsafe native model config directory" in result.stderr
+        assert not (machine["home"] / ".local/bin").exists()
+        assert not machine["config"].exists()
+    finally:
+        profile.chmod(0o700)
+
+
+def test_saved_gateway_model_output_is_never_modified_on_rerun(machine):
+    native = machine["home"] / ".pi/agent/models.json"
+    native.parent.mkdir()
+    catalog = ROOT / "lib/pi_catalog.py"
+    result = subprocess.run([sys.executable, str(catalog), "--aliases", str(machine["aliases"]),
+                             "--models-out", str(native), "--cli-out", str(machine["config"])],
+                            env=machine["env"], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    before = native.read_bytes()
+    decoy = machine["home"] / "elsewhere/models.json"
+    result = subprocess.run([str(ROOT / "bin/pi-shared-install"), "--no-deps", "--bootstrap-launchers"],
+                            env={**machine["env"], "PI_SHARED_AGENT_DIR": str(native.parent),
+                                 "PI_SHARED_CLI_OUT": str(machine["config"]),
+                                 "PI_SHARED_MODELS_OUT": str(decoy),
+                                 "PI_SHARED_ALIASES": str(machine["aliases"])},
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert native.read_bytes() == before
+    assert not decoy.exists()
+    assert launch(machine, "--launcher-check", upstream=False).returncode == 0
+
+
+def test_legacy_gateway_model_output_is_never_modified(machine):
+    native = machine["home"] / ".pi/agent/models.json"
+    native.parent.mkdir()
+    legacy = machine["home"] / ".pi/generated/pi-launchers.zsh"
+    legacy.parent.mkdir()
+    result = subprocess.run([sys.executable, str(ROOT / "lib/pi_catalog.py"),
+                             "--aliases", str(machine["aliases"]),
+                             "--models-out", str(native), "--launchers-out", str(legacy)],
+                            env=machine["env"], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    before = native.read_bytes()
+    decoy = machine["home"] / "elsewhere/models.json"
+    result = subprocess.run([str(ROOT / "bin/pi-shared-install"), "--no-deps"],
+                            env={**machine["env"], "PI_SHARED_AGENT_DIR": str(native.parent),
+                                 "PI_SHARED_MODELS_OUT": str(decoy),
+                                 "PI_SHARED_LAUNCHERS_OUT": str(legacy),
+                                 "PI_SHARED_ALIASES": str(machine["aliases"])},
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert native.read_bytes() == before
 
 
 def test_direct_defaults_and_opt_out_survive_reinitialization(machine):
@@ -165,7 +226,11 @@ def test_add_gateway_preserves_native_configuration_and_is_idempotent(machine, s
     assert invocation(launch(machine, "--provider", "custom", "--model", "native"))["argv"] == [
         "--provider", "custom", "--model", "native"]
     for path, body in saved.items():
-        assert json.loads(path.read_bytes()) == json.loads(body)
+        if path.name != "models.json":
+            assert json.loads(path.read_bytes()) == json.loads(body)
+    native_models = json.loads((native / "models.json").read_bytes())["providers"]
+    assert native_models["custom"] == {"apiKey": "$USER_KEY"}
+    assert {v["contextWindow"] for v in native_models["openai-codex"]["modelOverrides"].values()} == {872000}
     gateway = machine["home"] / ".pi-omlx/agent"
     assert set(json.loads((gateway / "models.json").read_text())["providers"]) == {"model-gateway"}
     before = {path: path.read_bytes() for path in (machine["config"], gateway / "models.json", gateway / "settings.json")}
