@@ -43,6 +43,21 @@ Normal setup uses explicit flags, then saved choices, then defaults; scripts use
 service-removal or arbitrary MCP-configuration wizard.
 [Full setup guide](https://github.com/GeorgeTheo99/pi-setup/blob/main/docs/homebrew.md).
 
+### In-Pi capability setup
+
+`/setup` opens a guided menu for search/research, public and private-app browsers,
+MCP, project development tools, PowerPoint/document prerequisites, Apple development,
+a private knowledge base, models/connections, diagnostics, and Peekaboo. Each entry
+also has a direct subcommand, such as `/setup search` or `/setup diagnostics`.
+
+The hub previews evidence and changes first. Project config and private KB metadata
+creation require exact-plan approval and never overwrite existing files. Broad
+service/package installs and indexing use explicit **terminal handoffs** to their
+existing owners; slash-command handoffs are prepared but never auto-submitted.
+Requires a compatible `pi-setup` capability backend; an older CLI receives an upgrade
+instruction, not an automatic update. Configured is not tested/ready, and no model,
+browser, or desktop actions run as checks. [Flows and boundaries](extensions/setup/README.md).
+
 ## Models and connections
 
 ### Native providers and subscriptions
@@ -128,8 +143,9 @@ MCP servers independently of built-in search. Install with
 `pi install npm:pi-mcp-adapter`, restart Pi, then use `/mcp setup` for guided
 onboarding or configure `.mcp.json` per project / `~/.config/mcp/mcp.json` globally.
 It supports stdio/HTTP servers and supported bearer/OAuth flows; server dependencies
-and credentials are still required. **The pi-shared setup wizard does not install
-or configure this adapter.**
+and credentials are still required. `/setup mcp` prepares a profile-scoped install
+command and a handoff to `/mcp setup`; it does not execute the install or replace
+the adapter's own configuration flow.
 
 ### MCP discovery versus search routing
 
@@ -194,7 +210,7 @@ MCP adapter. [`/setup peekaboo`](extensions/setup/README.md) previews installati
 or configuration, asks before applying it, and offers a separate CLI and
 permission check. MCP connection and desktop interaction remain separate checks. It requires a compatible `pi-setup` backend and does not run
 desktop actions or automatically grant macOS permissions. `/setup` opens the
-optional-capability menu; only Peekaboo is implemented initially.
+full optional-capability menu; `/setup peekaboo` selects this flow directly.
 [Setup](skills/macos-computer-use/references/setup.md) covers compatible pinned
 releases, macOS permissions, the full MCP catalog, foreground-capable operation,
 and read-only verification. Tool availability is not blanket action authorization;

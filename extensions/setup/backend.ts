@@ -87,7 +87,7 @@ export function resolveSetupExecutable(env: NodeJS.ProcessEnv = process.env): st
 	throw new Error("The owning pi-shared setup CLI was not found. Install it first, or explicitly set PI_SHARED_SETUP_BIN to a trusted source installation. Project/PATH discovery is not used.");
 }
 
-export async function runBackend(command: string, action: SetupAction, extra: string[], signal: AbortSignal): Promise<SetupReport> {
+export async function runSetupProcess(command: string, args: string[], signal: AbortSignal, applying = false): Promise<{ stdout: string; exitCode: number }> {
 	if (signal.aborted) throw new Error("Setup canceled before execution.");
 	let stdout = "";
 	let bytes = 0;
@@ -95,8 +95,8 @@ export async function runBackend(command: string, action: SetupAction, extra: st
 	delete env.PYTHONPATH;
 	delete env.PYTHONHOME;
 	const handle = startManagedProcess({
-		command, args: ["peekaboo", action, "--json", ...extra], cwd: homedir(), env, signal,
-		runTimeoutMs: action === "apply" ? 600_000 : 90_000, termGraceMs: 1000,
+		command, args, cwd: homedir(), env, signal,
+		runTimeoutMs: applying ? 600_000 : 90_000, termGraceMs: 1000,
 		maxStderrBytes: 4096, maxEventBytes: MAX_OUTPUT, limitStdoutEvents: false, cleanupOnExit: true,
 		onStdoutChunk(chunk) {
 			bytes += Buffer.byteLength(chunk);
@@ -106,9 +106,15 @@ export async function runBackend(command: string, action: SetupAction, extra: st
 	});
 	const result = await handle.completion;
 	if (signal.aborted || result.terminationReason || result.cleanup !== "confirmed") {
-		throw new Error(`Setup ${result.terminationReason ?? "cleanup-unconfirmed"}. Changes may be partial; inspect /setup peekaboo before retrying. No automatic retry was attempted.`);
+		throw new Error(`Setup ${result.terminationReason ?? "cleanup-unconfirmed"}. Changes may be partial; inspect /setup before retrying. No automatic retry was attempted.`);
 	}
-	const report = parseReport(stdout, action);
+	if (result.exitCode === null) throw new Error("Setup ended without an exit status; result is unverified.");
+	return { stdout, exitCode: result.exitCode };
+}
+
+export async function runBackend(command: string, action: SetupAction, extra: string[], signal: AbortSignal): Promise<SetupReport> {
+	const result = await runSetupProcess(command, ["peekaboo", action, "--json", ...extra], signal, action === "apply");
+	const report = parseReport(result.stdout, action);
 	if ((result.exitCode === 0) !== report.ok) throw new Error("Setup exit status contradicted its report; result is unverified.");
 	return report;
 }

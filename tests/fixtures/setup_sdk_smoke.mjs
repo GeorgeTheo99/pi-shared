@@ -17,7 +17,9 @@ let session;
 try {
   const report = { schemaVersion:1, component:'peekaboo', action:'plan', ok:true, summary:'Offline fixture only', actions:['Configure MCP'], warnings:[],errors:[],nextSteps:[],planId:'a'.repeat(64),
     evidence:{binaryPath:'/fixture/peekaboo',binaryPresent:true,configuration:'missing',runnable:'not-tested',permissions:{screenRecording:'unknown',accessibility:'unknown',eventSynthesizing:'unknown'},mcp:'not-tested',toolCount:null,desktop:'not-tested'} };
-  fs.writeFileSync(backend, `#!${process.execPath}\nconst fs=require('node:fs');fs.appendFileSync(${JSON.stringify(marker)},JSON.stringify(process.argv.slice(2))+'\\n');console.log(${JSON.stringify(JSON.stringify(report))});\n`, { mode:0o700 });
+  const capabilityReport = { schemaVersion:1, component:'documents', action:'plan', ok:true, summary:'Offline capability fixture',
+    status:'needs-configuration', evidence:[], actions:[], warnings:[], errors:[], nextSteps:[], handoffs:[] };
+  fs.writeFileSync(backend, `#!${process.execPath}\nconst fs=require('node:fs');fs.appendFileSync(${JSON.stringify(marker)},JSON.stringify(process.argv.slice(2))+'\\n');console.log(JSON.stringify(process.argv[2]==='capability'?${JSON.stringify(capabilityReport)}:${JSON.stringify(report)}));\n`, { mode:0o700 });
   process.env.PI_SHARED_SETUP_BIN = backend;
   const settingsManager = sdk.SettingsManager.inMemory({ extensions:[path.join(root,'extensions/setup/index.ts')] });
   const loader = new sdk.DefaultResourceLoader({cwd:dir,agentDir:dir,settingsManager,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true});
@@ -49,8 +51,15 @@ try {
   await command.handler('peekaboo',{mode:'tui',ui,isIdle:()=>true});
   assert.equal(confirmations,1,JSON.stringify(notices));
   assert.deepEqual(fs.readFileSync(marker,'utf8').trim().split('\n').map(JSON.parse),[['peekaboo','plan','--json']]);
+  assert.equal(command.getArgumentCompletions('').length,10);
+  await command.handler('documents',{mode:'tui',cwd:dir,ui:{...ui,select:async()=> 'Done / cancel'},isIdle:()=>true});
+  const calls=fs.readFileSync(marker,'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(calls.length,2);
+  assert.deepEqual(calls[1].slice(0,4),['capability','documents','plan','--json']);
+  assert.equal(calls[1][calls[1].indexOf('--project')+1],fs.realpathSync(dir));
+  assert.ok(notices.some(text=>text.includes('Offline capability fixture')));
   assert.deepEqual(errors,[]);
-  console.log('PASS: real SDK registration, no startup/headless effects, BorderedLoader, private backend plan, canceled approval causes no apply.');
+  console.log('PASS: real SDK registration, 10 capabilities, no startup/headless effects, BorderedLoader, Peekaboo and capability backend plans, no unapproved apply.');
 } finally {
   session?.dispose();
   if(prior===undefined) delete process.env.PI_SHARED_SETUP_BIN; else process.env.PI_SHARED_SETUP_BIN=prior;

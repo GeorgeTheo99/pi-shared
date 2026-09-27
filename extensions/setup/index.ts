@@ -1,16 +1,13 @@
-import { BorderedLoader, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader, getAgentDir, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { isAbsolute } from "node:path";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { resolveSetupExecutable, runBackend, type SetupAction, type SetupReport } from "./backend.ts";
+import { CAPABILITIES, clean, isCapability, runCapabilityBackend, runCapabilityWizard } from "./capabilities.ts";
 
 type Run = (action: SetupAction, extra: string[]) => Promise<SetupReport>;
 type WizardContext = Pick<ExtensionCommandContext, "ui">;
 
-// Backend text is evidence, not terminal control sequences or agent instructions.
-function clean(value: string): string {
-	return value.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "").slice(0, 4096);
-}
 export function formatReport(report: SetupReport): string {
 	const e = report.evidence;
 	return [
@@ -78,7 +75,7 @@ export async function runWizard(ctx: WizardContext, run: Run, signal: AbortSigna
 
 export default function setupExtension(pi: ExtensionAPI) {
 	let active: AbortController | undefined;
-	let inFlight: Promise<SetupReport> | undefined;
+	let inFlight: Promise<unknown> | undefined;
 	pi.on("session_shutdown", async () => {
 		active?.abort();
 		// Pi can exit immediately after this hook. Keep it alive until the
@@ -86,40 +83,54 @@ export default function setupExtension(pi: ExtensionAPI) {
 		await inFlight?.catch(() => {});
 	});
 	pi.registerCommand("setup", {
-		description: "Guided optional setup: /setup peekaboo (Mac computer use)",
-		getArgumentCompletions: (prefix) => "peekaboo".startsWith(prefix) ? [{ value: "peekaboo", label: "peekaboo — Mac computer use" }] : null,
+		description: "Guided capability setup: search, browser, MCP, development, documents, Apple, knowledge, models, diagnostics, Peekaboo",
+		getArgumentCompletions: (prefix) => {
+			const matches = [{ id: "peekaboo", label: "Mac computer use" }, ...CAPABILITIES]
+				.filter(item => item.id.startsWith(prefix)).map(item => ({ value: item.id, label: `${item.id} — ${item.label}` }));
+			return matches.length ? matches : null;
+		},
 		handler: async (args, ctx) => {
-			if (ctx.mode !== "tui") { ctx.ui.notify("/setup requires interactive Pi. For an offline preview: pi-shared peekaboo plan --json", "error"); return; }
+			if (ctx.mode !== "tui") { ctx.ui.notify("/setup requires interactive Pi. Use pi-shared setup --plan for a terminal preview, or pi-shared capability --help for capability previews.", "error"); return; }
 			if (active || !ctx.isIdle()) { ctx.ui.notify("Wait for current work/setup to finish before opening setup.", "warning"); return; }
-			const target = args.trim();
-			if (target && target !== "peekaboo") { ctx.ui.notify("Usage: /setup [peekaboo]. Only Peekaboo setup is currently implemented.", "warning"); return; }
+			let target = args.trim();
+			if (target && target !== "peekaboo" && !isCapability(target)) { ctx.ui.notify(`Usage: /setup [peekaboo|${CAPABILITIES.map(item => item.id).join("|")}]`, "warning"); return; }
 			const controller = new AbortController();
 			active = controller;
 			try {
 				if (!target) {
-					const selected = await ctx.ui.select("Optional capability setup", ["Peekaboo — Mac computer use", "Cancel"], { signal: controller.signal });
-					if (selected !== "Peekaboo — Mac computer use" || controller.signal.aborted) return;
+					const entries = [{ id: "peekaboo", label: "Peekaboo — Mac computer use" }, ...CAPABILITIES];
+					const selected = await ctx.ui.select("Optional capability setup", [...entries.map(item => item.label), "Cancel"], { signal: controller.signal });
+					target = entries.find(item => item.label === selected)?.id ?? "";
+					if (!target || controller.signal.aborted) return;
 				}
 				const command = resolveSetupExecutable();
-				if (!pi.getAllTools().some(tool => tool.name === "mcp")) ctx.ui.notify("Pi's MCP adapter is not currently loaded. This wizard configures Peekaboo but does not install the adapter; enable the existing MCP adapter before using its tools.", "warning");
-				const run: Run = async (action, extra) => {
+				async function progress<T>(action: string, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
 					if (controller.signal.aborted) throw new Error("Setup canceled.");
-					const outcome = await ctx.ui.custom<{ report?: SetupReport; error?: string }>((tui, theme, _keys, done) => {
-						const loader = new BorderedLoader(tui, theme, `Peekaboo setup: ${action}…`);
-						// Do not close the dialog on Esc until bounded process cleanup finishes.
+					const outcome = await ctx.ui.custom<{ report?: T; error?: string }>((tui, theme, _keys, done) => {
+						const loader = new BorderedLoader(tui, theme, `${target} setup: ${action}…`);
+						// Keep the dialog open until bounded process-group cleanup finishes.
 						loader.onAbort = () => {};
 						const signal = AbortSignal.any([controller.signal, loader.signal]);
-						const operation = runBackend(command, action, extra, signal);
-						inFlight = operation;
-						void operation.then(
+						const pending = operation(signal);
+						inFlight = pending;
+						void pending.then(
 							report => done({ report }), error => done({ error: error instanceof Error ? error.message : String(error) }),
-						).finally(() => { if (inFlight === operation) inFlight = undefined; });
+						).finally(() => { if (inFlight === pending) inFlight = undefined; });
 						return loader;
 					});
-					if (!outcome?.report || controller.signal.aborted) throw new Error(outcome?.error ?? "Setup canceled.");
+					if (outcome?.report === undefined || controller.signal.aborted) throw new Error(outcome?.error ?? "Setup canceled.");
 					return outcome.report;
-				};
-				await runWizard(ctx, run, controller.signal);
+				}
+				if (target === "peekaboo") {
+					if (!pi.getAllTools().some(tool => tool.name === "mcp")) ctx.ui.notify("Pi's MCP adapter is not currently loaded. Use /setup mcp to prepare adapter installation; this flow only configures Peekaboo.", "warning");
+					await runWizard(ctx, (action, extra) => progress(action, signal => runBackend(command, action, extra, signal)), controller.signal);
+				} else if (isCapability(target)) {
+					const id = target;
+					if (id === "mcp") ctx.ui.notify(`Current-session MCP adapter tool: ${pi.getAllTools().some(tool => tool.name === "mcp") ? "registered (connections not tested)" : "not registered"}.`, "info");
+					await runCapabilityWizard(ctx, id, (action, options, extra) => progress(action, signal => runCapabilityBackend(command, id, action, options, {
+						project: realpathSync(ctx.cwd), agentDir: realpathSync(getAgentDir()), sharedRoot: realpathSync(fileURLToPath(new URL("../../", import.meta.url))), nodeExecutable: realpathSync(process.execPath),
+					}, signal, extra)), controller.signal);
+				}
 			} catch (error) {
 				ctx.ui.notify(clean(error instanceof Error ? error.message : String(error)), "error");
 			} finally {

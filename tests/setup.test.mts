@@ -106,7 +106,7 @@ test('slash entry refuses headless, busy and unsupported targets before backend 
   const commands = new Map<string, any>();
   setupExtension({ on() {}, registerCommand(name: string, command: any) { commands.set(name, command); } } as any);
   assert.deepEqual([...commands.keys()], ['setup']);
-  for (const [args, mode, idle] of [['', 'print', true], ['peekaboo', 'tui', false], ['browser', 'tui', true]] as const) {
+  for (const [args, mode, idle] of [['', 'print', true], ['peekaboo', 'tui', false], ['unknown-capability', 'tui', true]] as const) {
     const mock = ui(); await commands.get('setup').handler(args, { ...mock.ctx, mode, isIdle: () => idle });
     assert.equal(mock.notices.length, 1);
   }
