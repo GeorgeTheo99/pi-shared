@@ -2,6 +2,8 @@
 
 This is an opt-in local integration, not an automatically installed pi-shared service. Use one adapter-managed server, not a parallel native wrapper. No Pi runtime patch is needed.
 
+For guided setup, the user can run `/setup peekaboo` (or select Peekaboo from `/setup`). It uses the owning `pi-setup` backend for a static preview, explicit installation/configuration approval, and a separate CLI/permission check (not an MCP connection or desktop test). An old backend needs a normal managed update first; the command does not update itself or grant macOS permissions. See the [wizard contract](../../../extensions/setup/README.md). Agents must not inject slash-command text to invoke this user-facing workflow automatically.
+
 ## Install and check compatibility
 
 Use the official [Peekaboo releases](https://github.com/openclaw/Peekaboo/releases) or its documented Homebrew distribution. Pin and test a compatible release; verify the published checksum and Developer ID signature before execution.

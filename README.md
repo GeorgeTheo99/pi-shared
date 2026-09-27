@@ -190,7 +190,11 @@ or a TestFlight uploader. [Apple app commands](extensions/apple-app-test/README.
 
 The [`macos-computer-use` skill](skills/macos-computer-use/SKILL.md) guides native
 app interaction through a separately installed Peekaboo server and Pi's existing
-MCP adapter. It does not add a native extension or install a desktop service.
+MCP adapter. [`/setup peekaboo`](extensions/setup/README.md) previews installation
+or configuration, asks before applying it, and offers a separate CLI and
+permission check. MCP connection and desktop interaction remain separate checks. It requires a compatible `pi-setup` backend and does not run
+desktop actions or automatically grant macOS permissions. `/setup` opens the
+optional-capability menu; only Peekaboo is implemented initially.
 [Setup](skills/macos-computer-use/references/setup.md) covers compatible pinned
 releases, macOS permissions, the full MCP catalog, foreground-capable operation,
 and read-only verification. Tool availability is not blanket action authorization;
