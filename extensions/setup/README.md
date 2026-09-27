@@ -46,7 +46,7 @@ Search prompts request a **private file path**, never an API-key value. Credenti
 
 Peekaboo uses the existing MCP adapter; `/setup mcp` provides its separate onboarding handoff. The full Peekaboo catalog is configured, including foreground-capable operations. There is no custom tool allowlist/denylist or per-tool approval policy. Tool availability is not authorization for sensitive/external actions; existing user/global policies still apply.
 
-The 4.5.0 compatibility install is explicitly labeled and warned, not represented as the newest or fully certified build. See the [skill setup reference](../../skills/macos-computer-use/references/setup.md) for the 4.6.0 CLI startup defect, older-version input-safety limitations and permission boundaries. No silent downgrade, app-Bridge fallback, TCC modification, provider credential copying, or system-library patching is performed.
+The 4.5.0 compatibility install is explicitly labeled and warned, not represented as the newest or fully certified build. See the [Peekaboo setup reference](../../docs/peekaboo-setup.md) for the 4.6.0 CLI startup defect, older-version input-safety limitations and permission boundaries. No silent downgrade, app-Bridge fallback, TCC modification, provider credential copying, or system-library patching is performed.
 
 ## Lifecycle and limits
 

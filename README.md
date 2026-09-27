@@ -204,17 +204,17 @@ or a TestFlight uploader. [Apple app commands](extensions/apple-app-test/README.
 
 ### Native Mac computer use (opt-in)
 
-The [`macos-computer-use` skill](skills/macos-computer-use/SKILL.md) guides native
-app interaction through a separately installed Peekaboo server and Pi's existing
-MCP adapter. [`/setup peekaboo`](extensions/setup/README.md) previews installation
+[Peekaboo](docs/peekaboo.md) is the opinionated choice for native macOS desktop
+interaction. Always use its separately installed server through Pi's existing
+MCP adapter for this purpose; no separate computer-use skill is needed. [`/setup peekaboo`](extensions/setup/README.md) previews installation
 or configuration, asks before applying it, and offers a separate CLI and
 permission check. MCP connection and desktop interaction remain separate checks. It requires a compatible `pi-setup` backend and does not run
 desktop actions or automatically grant macOS permissions. `/setup` opens the
 full optional-capability menu; `/setup peekaboo` selects this flow directly.
-[Setup](skills/macos-computer-use/references/setup.md) covers compatible pinned
+[Setup](docs/peekaboo-setup.md) covers compatible pinned
 releases, macOS permissions, the full MCP catalog, foreground-capable operation,
 and read-only verification. Tool availability is not blanket action authorization;
-the skill is not a sandbox or cross-session desktop lock. Screenshots and UI text
+the integration is not a sandbox or cross-session desktop lock. Screenshots and UI text
 returned to cloud models may also remain in Pi transcripts.
 
 ## Agent workflows

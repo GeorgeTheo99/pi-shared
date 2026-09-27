@@ -2,7 +2,7 @@
 
 This is an opt-in local integration, not an automatically installed pi-shared service. Use one adapter-managed server, not a parallel native wrapper. No Pi runtime patch is needed.
 
-For guided setup, the user can run `/setup peekaboo` (or select Peekaboo from `/setup`). It uses the owning `pi-setup` backend for a static preview, explicit installation/configuration approval, and a separate CLI/permission check (not an MCP connection or desktop test). An old backend needs a normal managed update first; the command does not update itself or grant macOS permissions. See the [wizard contract](../../../extensions/setup/README.md). Agents must not inject slash-command text to invoke this user-facing workflow automatically.
+For guided setup, the user can run `/setup peekaboo` (or select Peekaboo from `/setup`). It uses the owning `pi-setup` backend for a static preview, explicit installation/configuration approval, and a separate CLI/permission check (not an MCP connection or desktop test). An old backend needs a normal managed update first; the command does not update itself or grant macOS permissions. See the [wizard contract](../extensions/setup/README.md). Agents must not inject slash-command text to invoke this user-facing workflow automatically.
 
 ## Install and check compatibility
 
@@ -44,7 +44,7 @@ Merge an entry into the existing `mcpServers` object in `~/.config/mcp/mcp.json`
 }
 ```
 
-This configuration exposes the full advertised Peekaboo catalog: no `includeTools` or `excludeTools` filter, and no added per-tool approval policy. `directTools:false` routes all calls through the adapter's `mcp` tool rather than adding every tool to Pi's top-level inventory; it does not hide them. Validate the live catalog after installation; adapter-prefixed names are discovered, not hardcoded in the skill. Existing global adapter policies still apply. Sensitive/external actions still require user authorization under normal agent guidance; do not describe that guidance as an enforced semantic security boundary.
+This configuration exposes the full advertised Peekaboo catalog: no `includeTools` or `excludeTools` filter, and no added per-tool approval policy. `directTools:false` routes all calls through the adapter's `mcp` tool rather than adding every tool to Pi's top-level inventory; it does not hide them. Validate the live catalog after installation; adapter-prefixed names are discovered, not hardcoded in the documentation. Existing global adapter policies still apply. Sensitive/external actions still require user authorization under normal agent guidance; do not describe that guidance as an enforced semantic security boundary.
 
 The optional agent/analysis tools may need separately configured model providers. Exposing a tool does not prove its credentials or other prerequisites exist. Do not copy Pi credentials into Peekaboo or configure a second model provider automatically.
 
@@ -52,7 +52,7 @@ The optional agent/analysis tools may need separately configured model providers
 
 This full-capability configuration explicitly passes `--allow-foreground`; applicable actions must still select foreground behavior deliberately. Prefer background delivery where it works and do not silently take over the user's keyboard, pointer, or focus. Omit the flag if the user chooses background-only operation. Changing this startup policy requires restarting the MCP server.
 
-Restart Pi or run `/reload` after changing configuration or installing the skill. Then use `mcp({connect:"peekaboo"})` and inspect the catalog. A reconnect refreshes an already known server; it is not a substitute for loading newly changed config. Do not claim the current session loaded the new configuration without evidence.
+Restart Pi or run `/reload` after changing configuration. Then use `mcp({connect:"peekaboo"})` and inspect the catalog. A reconnect refreshes an already known server; it is not a substitute for loading newly changed config. Do not claim the current session loaded the new configuration without evidence.
 
 ## Verification and limits
 
@@ -62,6 +62,6 @@ Restart Pi or run `/reload` after changing configuration or installing the skill
 4. After permissions are reported granted from the actual adapter: a disposable test window, scoped accessibility observation and screenshot; confirm image content reaches Pi rather than becoming a text-only path.
 5. With explicit test authorization: one benign action followed by application-owned state verification. Check stale targets, cancellation, unknown outcomes, and changed focus before claiming reliability.
 
-The skill and MCP adapter are not a sandbox, semantic authorization engine, cross-session lease, or artifact-retention service. The backend and Pi can retain captures/transcripts. For sensitive tasks, use a separate test account or isolated desktop and avoid unrelated logged-in apps. Published test coverage and successful permissions checks do not prove every application or delivery mode works.
+The guidance and MCP adapter are not a sandbox, semantic authorization engine, cross-session lease, or artifact-retention service. The backend and Pi can retain captures/transcripts. For sensitive tasks, use a separate test account or isolated desktop and avoid unrelated logged-in apps. Published test coverage and successful permissions checks do not prove every application or delivery mode works.
 
 References: [MCP contract](https://github.com/openclaw/Peekaboo/blob/main/docs/MCP.md), [automation targeting](https://github.com/openclaw/Peekaboo/blob/main/docs/automation.md), [permissions](https://github.com/openclaw/Peekaboo/blob/main/docs/permissions.md). Consult the documentation for the installed version when contracts differ.

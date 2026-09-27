@@ -1,18 +1,14 @@
----
-name: macos-computer-use
-description: Inspect and operate native macOS apps through Peekaboo using Pi's existing MCP adapter. Use for Mac desktop UI, app windows, menus, dialogs, clicking, typing, scrolling, and screenshots when native UI interaction is needed. Prefer existing APIs, browser tools, and Xcode test workflows when they fit; not a browser-policy bypass.
-compatibility: macOS 15+; separately installed compatible Peekaboo CLI and app; configured Pi MCP adapter; user-granted macOS permissions.
----
+# Peekaboo for native macOS interaction
 
-# macOS computer use
+Peekaboo is the opinionated choice for native macOS desktop interaction; always use it for this purpose rather than another desktop-control backend. This is reference documentation, not a Pi skill. It requires macOS 15+, a separately installed compatible Peekaboo CLI, a configured Pi MCP adapter, and user-granted macOS permissions.
 
-Use the adapter-managed `peekaboo` MCP server with its full advertised tool catalog. Pi normally owns the reasoning loop; prefer individual tools over launching another agent. Peekaboo's optional agent/analysis tools may require their own provider configuration and authorization for data transfer or cost. Do not configure provider credentials automatically. This skill is guidance, not a sandbox, permission grant, or desktop lock.
+Use the adapter-managed `peekaboo` MCP server with its full advertised tool catalog. Pi normally owns the reasoning loop; prefer individual tools over launching another agent. Peekaboo's optional agent/analysis tools may require their own provider configuration and authorization for data transfer or cost. Do not configure provider credentials automatically. This documentation is guidance, not a sandbox, permission grant, or desktop lock.
 
 ## Before starting
 
 1. Confirm the user authorized the task and the target application. Prefer APIs/files for structured work, `browser_fetch`/`browser_inspect` for public web interaction, `app_*` for configured private web apps, and Xcode/XCUITest for native app tests.
 2. Discover the configured catalog with `mcp({server:"peekaboo"})`; use `mcp({connect:"peekaboo"})` if necessary. Describe the exact returned tool names before relying on parameters. Do not assume examples from a different backend version apply.
-3. Call its `permissions` tool. Missing permissions are a user setup step: never grant them automatically, modify TCC databases, or request Full Disk Access as a workaround. See [setup](references/setup.md).
+3. Call its `permissions` tool. Missing permissions are a user setup step: never grant them automatically, modify TCC databases, or request Full Disk Access as a workaround. See [setup](peekaboo-setup.md).
 4. Check `peer_sessions` before desktop mutations. Do not run concurrent desktop-control subagents or parallel actions. Coordinate with any session using the desktop; advisory peer state is NOT a cross-process lock. Stop if another controller or the user is changing the target unexpectedly.
 5. Use `app` with `action:"list"`, then `window` with `action:"list"` and the chosen app to identify an exact window. Honor any adapter approvals configured by the user; never substitute shell commands to bypass them.
 

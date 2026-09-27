@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
-const skill = readFileSync(new URL("../skills/macos-computer-use/SKILL.md", import.meta.url), "utf8");
-const setup = readFileSync(new URL("../skills/macos-computer-use/references/setup.md", import.meta.url), "utf8");
+const guide = readFileSync(new URL("../docs/peekaboo.md", import.meta.url), "utf8");
+const setup = readFileSync(new URL("../docs/peekaboo-setup.md", import.meta.url), "utf8");
+const instructions = readFileSync(new URL("../AGENTS.md", import.meta.url), "utf8");
 const example = JSON.parse(setup.match(/```json\n([\s\S]*?)\n```/)[1]);
 const server = example.mcpServers.peekaboo;
 
-test("Mac skill has discoverable metadata and an existing setup reference", () => {
-  assert.match(skill, /^---\nname: macos-computer-use\ndescription: .+\ncompatibility: .+\n---/);
-  assert.ok(skill.match(/^description: (.+)$/m)[1].length <= 1024);
-  assert.match(skill, /references\/setup\.md/);
+test("Peekaboo is the direct recommendation, not a discoverable computer-use skill", () => {
+  assert.equal(existsSync(new URL("../skills/macos-computer-use", import.meta.url)), false);
+  assert.ok(!guide.startsWith("---"));
+  assert.match(instructions, /Always use Peekaboo through Pi's existing MCP adapter for native macOS desktop interaction/);
+  assert.match(instructions, /docs\/peekaboo\.md/);
+  assert.match(guide, /Peekaboo is the opinionated choice/);
+  assert.match(guide, /\[setup\]\(peekaboo-setup\.md\)/);
 });
 
 test("MCP example uses a pinned local command and direct foreground-capable stdio", () => {
@@ -33,9 +37,9 @@ test("full catalog is exposed without extra tool filtering or approval policy", 
   assert.match(setup, /Existing global adapter policies still apply/);
 });
 
-test("skill retains uncertainty, privacy, concurrency and browser-policy boundaries", () => {
+test("guidance retains uncertainty, privacy, concurrency and browser-policy boundaries", () => {
   for (const text of ["never blindly replay", "NOT a cross-process lock", "not a sandbox", "Pi transcripts", "CAPTCHA", "not blanket authorization", "requiresImages:true"]) {
-    assert.ok(skill.includes(text), `Missing boundary: ${text}`);
+    assert.ok(guide.includes(text), `Missing boundary: ${text}`);
   }
   assert.match(setup, /not a substitute for loading newly changed config/);
   assert.match(setup, /Sensitive\/external actions still require user authorization/);
