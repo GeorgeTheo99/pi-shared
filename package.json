@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "test": "npm run test:docs && npm run test:software-kb && npm run test:websearch && npm run test:research && npm run test:browser && npm run test:goal && npm run test:ask-user && npm run test:self-handoff && npm run test:tool-summary && npm run test:panel && npm run test:subagents && npm run test:session-coordinator && npm run test:powerpoint && npm run test:command-jobs && npm run test:job-contracts && npm run test:safe-edit && npm run test:doctor && npm run test:verification && npm run test:code-intel && npm run test:app-test && npm run test:integration-bundles",
-    "test:docs": "node --test tests/readme_contract.test.mjs",
+    "test:docs": "node --test tests/readme_contract.test.mjs tests/macos_computer_use_skill.test.mjs",
     "test:software-kb": "node --no-warnings --experimental-loader ./tests/fixtures/research_test_loader.mjs --test tests/software_kb*.test.mts && python3 -m unittest discover -s tests -p test_software_kb_ingest.py",
     "test:websearch": "node --no-warnings --test tests/websearch_mcp_client.test.mts",
     "test:research": "node --no-warnings --experimental-loader ./tests/fixtures/research_test_loader.mjs --test tests/deep_research*.test.mts",

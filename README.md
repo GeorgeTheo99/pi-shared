@@ -186,6 +186,17 @@ They require macOS/full Xcode and appropriate targets/simulators; macOS capture
 may require OS permission. These are commands, not model-callable UI-tapping tools
 or a TestFlight uploader. [Apple app commands](extensions/apple-app-test/README.md).
 
+### Native Mac computer use (opt-in)
+
+The [`macos-computer-use` skill](skills/macos-computer-use/SKILL.md) guides native
+app interaction through a separately installed Peekaboo server and Pi's existing
+MCP adapter. It does not add a native extension or install a desktop service.
+[Setup](skills/macos-computer-use/references/setup.md) covers compatible pinned
+releases, macOS permissions, the full MCP catalog, foreground-capable operation,
+and read-only verification. Tool availability is not blanket action authorization;
+the skill is not a sandbox or cross-session desktop lock. Screenshots and UI text
+returned to cloud models may also remain in Pi transcripts.
+
 ## Agent workflows
 
 ### Structured questions
