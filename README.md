@@ -66,7 +66,11 @@ browser, or desktop actions run as checks. [Flows and boundaries](extensions/set
 selection, without requiring a gateway or oMLX. Use `/login` and `/model` inside Pi.
 The optional `pi openai` preset selects the ChatGPT/Codex subscription provider,
 not OpenAI API-key billing; it follows that profile's `/model`-saved Codex default
-(or GPT-6 Astra when none is saved). On setup/update, pi-shared adds missing
+(or GPT-6 Astra when none is saved). The optional `pi anthropic` and
+`pi-anthropic` presets use Pi's native Anthropic provider: sign in with
+`/login anthropic` to use OAuth, or use an Anthropic API key. Unlike Codex,
+Pi's Claude Pro/Max OAuth usage is billed as **extra usage per token**, not
+against plan limits. On setup/update, pi-shared adds missing
 Codex subscription context overrides for verified long-context models (up to
 872K); existing overrides and pay-as-you-go OpenAI API models are untouched.
 `pi openai --set-context=standard|max` explicitly saves 272K or 872K for all six

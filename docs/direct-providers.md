@@ -41,10 +41,22 @@ consume tokens or guarantee provider entitlement.
 The existing `pi openai` shortcut selects the **ChatGPT/Codex subscription** preset,
 not OpenAI API-key billing. It uses that profile's `/model`-saved Codex default;
 without one, it falls back to GPT-6 Astra. Switching models without saving the
-default (Ctrl+S in `/model`) affects only the current session. `pi models` lists
-configured shortcuts, not every native Pi model. General native-provider aliases are not added by this change.
-`PI_SHARED_DIRECT_LAUNCHERS=0` omits the subscription shortcut; native Pi remains
-usable. An existing shortcut opt-out is preserved on reruns.
+default (Ctrl+S in `/model`) affects only the current session.
+
+`pi anthropic` and the generated zsh `pi-anthropic` helper select Pi's native
+Anthropic provider. In Pi run `/login anthropic` and select Claude Pro/Max OAuth;
+Pi stores and refreshes its own credential. **This is not the same billing as
+Codex:** Pi's provider documentation says third-party Claude Pro/Max usage draws
+from [extra usage](https://claude.ai/settings/usage) billed per token, not plan
+limits. No login or charge is triggered by setup. Alternatively use `/login
+anthropic` to store an API key, or set `ANTHROPIC_API_KEY`; Pi's saved auth
+credential takes priority over the environment. The launcher does not create
+or switch credentials. `pi anthropic` follows that profile's `/model`-saved
+Anthropic default (fallback: `claude-sonnet-4-6`), while `pi-anthropic` uses
+that fallback unless overridden with `--model` and scopes its picker to
+`anthropic/*`. Direct launchers are opt-in; `PI_SHARED_DIRECT_LAUNCHERS=0` omits
+both shortcuts, and an existing opt-out is preserved on reruns. `pi models`
+lists configured shortcuts, not every native Pi model.
 
 ## Isolation contract
 

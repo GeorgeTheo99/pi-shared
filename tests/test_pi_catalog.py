@@ -753,12 +753,14 @@ def test_ls99_extras_adds_pi_default_and_pi_openai(tmp_path):
     launchers = (tmp_path / "l.zsh").read_text()
     assert "pi-default()" in launchers
     assert "pi-openai()" in launchers
+    assert "pi-anthropic()" in launchers
     assert "-u PI_CODING_AGENT_DIR" in launchers  # both use default profile
     assert "openai-codex" in launchers
     pi_list = launchers.split("pi-list() {", 1)[1].split("\n}", 1)[0]
     assert pi_list.index("Cloud models") < pi_list.index("Direct Pi:") < pi_list.index("Management:")
     assert "pi-default" in pi_list
     assert "pi-openai" in pi_list
+    assert "pi-anthropic" in pi_list
 
 
 def test_pi_regen_baked_with_paths(tmp_path):
@@ -1053,6 +1055,16 @@ def test_launcher_aliases_reject_unsafe_or_reserved_names(tmp_path, alias):
     assert "Pi launcher alias" in r.stderr
 
 
+def test_gateway_anthropic_alias_allowed_without_direct_shortcut_and_conflicts_when_enabled(tmp_path):
+    p = _load_aliases(tmp_path, {"cloud:x": {"alias": "anthropic", "provider": "anthropic",
+                                              "provider_model_id": "claude-x"}})
+    out = tmp_path / "l.zsh"
+    assert _run("--aliases", str(p), "--launchers-out", str(out), "--no-direct-launchers").returncode == 0
+    assert "pi-anthropic() { _pi_gw_launch" in out.read_text()
+    result = _run("--aliases", str(p), "--launchers-out", str(out), "--direct-launchers")
+    assert result.returncode != 0 and "conflicts" in result.stderr
+
+
 def test_launcher_aliases_reject_unsafe_pi_compat_aliases(tmp_path):
     aliases = {
         "cloud:x": {
@@ -1160,6 +1172,7 @@ def test_no_ls99_extras_omits_default_openai(tmp_path):
     launchers = (tmp_path / "l.zsh").read_text()
     assert "pi-default()" not in launchers
     assert "pi-openai()" not in launchers
+    assert "pi-anthropic()" not in launchers
 
 
 # --- IO / drift / edge cases -------------------------------------------------

@@ -122,7 +122,8 @@ def test_connect_check_refresh_and_secret_reference(machine, server):
     assert "private-test-token" not in result.stdout + result.stderr
     config = json.loads(machine["cli"].read_text())
     assert "openai" in config["routes"]
-    assert len(config["routes"]) == 3
+    assert len(config["routes"]) == 4
+    assert config["routes"]["anthropic"]["provider"] == "anthropic"
     result = invoke(machine, server, "check")
     assert result.returncode == 0, result.stderr
     assert "offline" in result.stdout

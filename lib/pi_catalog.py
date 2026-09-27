@@ -9,7 +9,7 @@ consumes that catalog and renders the Pi-specific artifacts:
      any OpenAI-compatible endpoint) with capability-aware thinking controls
      plus the Pi protocol/tool/replay compatibility that lives here.
   2. ``pi-launchers.zsh`` — ``pi-<alias>()`` quick-start functions +
-     ``pi-list`` + ``pi-restart`` (+ optional ``pi-default`` / ``pi-openai``).
+     ``pi-list`` + ``pi-restart`` (+ optional ``pi-default`` / ``pi-openai`` / ``pi-anthropic``).
 
 The model id used in the launcher ALWAYS matches the id written to models.json
 (local models use the alias key / omlx_id; cloud models use provider_model_id),
@@ -24,7 +24,7 @@ Inputs:
   --gateway-api-key  apiKey for the Pi provider (default: cloud)
   --pi-agent-dir  PI_CODING_AGENT_DIR the launcher sets (default: none = default profile)
   --omlx-status  optional JSON from oMLX /v1/models/status for thinking_default fallback
-  --direct-launchers include pi-default + pi-openai on any machine
+  --direct-launchers include pi-default + pi-openai + pi-anthropic on any machine
   --no-direct-launchers omit them (otherwise preserve the existing selection)
   --ls99-extras  deprecated alias for --direct-launchers
   --check        drift check only; exit 1 when outputs are stale
@@ -569,7 +569,7 @@ def render_launchers(
 ) -> str:
     """Render pi-<alias>(), pi-list, and pi-restart.
 
-    Optionally appends pi-default + pi-openai on any machine. No
+    Optionally appends pi-default + pi-openai + pi-anthropic on any machine. No
     claude-*/codex-* — standardize on pi. If output paths are given, also emits
     a ``pi-regen`` function that re-runs pi-catalog with the same args, so the
     launcher can refresh itself + models.json after a catalog change.
@@ -592,6 +592,8 @@ def render_launchers(
             for launcher_alias in launcher_aliases
         )
     rows.sort(key=lambda r: r[0])
+    if direct_launchers and any(alias == "anthropic" for alias, *_ in rows):
+        raise ValueError("gateway alias 'anthropic' conflicts with the direct Anthropic shortcut; rename the gateway alias before enabling direct launchers")
     local_rows = [row for row in rows if not row[3]]
     cloud_rows = [row for row in rows if row[3]]
     # The pi invocation. If pi_agent_dir is set, wrap with env so the launcher
@@ -629,7 +631,7 @@ def render_launchers(
     ]
     if not direct_launchers:
         # Reloading after an explicit opt-out must remove previously sourced helpers.
-        lines += ["unfunction pi-default pi-openai 2>/dev/null || true", ""]
+        lines += ["unfunction pi-default pi-openai pi-anthropic 2>/dev/null || true", ""]
     # Installation wires profiles up front. Repair runs only on an actual
     # launch (not while sourcing .zshrc / running a doctor), through a baked
     # absolute path, and failures are visible instead of silently ignored.
@@ -694,6 +696,7 @@ def render_launchers(
             '  echo "Direct Pi:"',
             '  echo "  pi-default                     Pi default provider/model"',
             '  echo "  pi-openai                      OpenAI subscription (ChatGPT Plus/Pro via /login OAuth)"',
+            '  echo "  pi-anthropic                   Claude (OAuth extra usage or API key; /login anthropic)"',
         ]
     lines += [
         '  echo ""',
@@ -731,7 +734,7 @@ def render_launchers(
         aliases_path=aliases_path,
     )
     if direct_launchers:
-        lines += ["", _render_pi_default(), "", _render_pi_openai()]
+        lines += ["", _render_pi_default(), "", _render_pi_openai(), "", _render_pi_anthropic()]
 
     if launchers_out and shared_dir:
         refresh = shlex.quote(str(Path(shared_dir) / "bin/pi-launchers-refresh"))
@@ -992,6 +995,18 @@ def _render_pi_default() -> str:
     )
 
 
+def _render_pi_anthropic() -> str:
+    # Pi's anthropic provider resolves OAuth credentials stored by /login
+    # before ANTHROPIC_API_KEY; keep the latter available as an API fallback.
+    return (
+        "pi-anthropic() {\n"
+        '  echo "Pi → Claude (OAuth extra usage or API key; /login anthropic)"\n'
+        "  env -u PI_CODING_AGENT_DIR \\\n"
+        '    pi --provider anthropic --model claude-sonnet-4-6 --models "anthropic/*" "$@"\n'
+        "}"
+    )
+
+
 def _render_pi_openai() -> str:
     # pi-openai uses Pi's OWN default profile + the openai-codex subscription
     # provider (ChatGPT Plus/Pro /login OAuth), with any API-key env unset so
@@ -1182,7 +1197,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--omlx-status", type=Path, default=None, help="optional oMLX /v1/models/status JSON file for thinking_default fallback")
     parser.add_argument("--omlx-status-url", default=None, help="optional oMLX status URL (default: http://localhost:9110/v1/models/status when --omlx-status not given)")
     parser.add_argument("--direct-launchers", "--ls99-extras", dest="direct_launchers", action="store_true", default=None,
-                        help="include pi-default + pi-openai on any machine (--ls99-extras is a deprecated alias)")
+                        help="include pi-default + pi-openai + pi-anthropic on any machine (--ls99-extras is a deprecated alias)")
     parser.add_argument("--no-direct-launchers", dest="direct_launchers", action="store_false",
                         help="omit direct launchers (default: preserve existing output; off for a new file)")
     parser.add_argument("--allow-empty-catalog", action="store_true",

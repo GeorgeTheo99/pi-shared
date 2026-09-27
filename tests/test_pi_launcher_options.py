@@ -56,6 +56,7 @@ def assert_state(machine, enabled, provider="model-gateway"):
     assert list(json.loads(models.read_text())["providers"]) == [provider]
     text = launcher.read_text()
     assert ("\npi-openai() {\n" in text) is enabled
+    assert ("\npi-anthropic() {\n" in text) is enabled
     assert ("\npi-default() {\n" in text) is enabled
     assert "--ls99-extras" not in text
     assert ("--direct-launchers" if enabled else "--no-direct-launchers") in text
@@ -77,6 +78,7 @@ def test_canonical_and_legacy_flags_render_canonical_regen(machine, flag):
     text = assert_state(machine, True, "ls99-models")
     assert '-u PI_CODING_AGENT_DIR -u OPENAI_API_KEY -u OPENAI_BASE_URL' in text
     assert '--provider openai-codex --model gpt-6-astra --models "openai-codex/*"' in text
+    assert '--provider anthropic --model claude-sonnet-4-6 --models "anthropic/*"' in text
     assert render(machine, "--check").returncode == 0
 
 
@@ -102,6 +104,29 @@ def test_openai_launcher_defaults_to_astra_and_preserves_explicit_override(machi
     assert invocation["args"] == ["--provider", "openai-codex", "--model", "gpt-6-astra",
                                   "--models", "openai-codex/*", *override]
     assert all(value is None for value in invocation["env"].values())
+
+
+@pytest.mark.skipif(not shutil.which("zsh"), reason="zsh is required")
+def test_anthropic_launcher_preserves_api_key_fallback_and_model_override(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    home, _, env = machine
+    bin_dir = home / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "pi"
+    stub.write_text(f"#!{sys.executable}\n" + "import json, os, sys\n"
+                    "print(json.dumps({'args': sys.argv[1:], "
+                    "'api_key': os.environ.get('ANTHROPIC_API_KEY'), "
+                    "'profile': os.environ.get('PI_CODING_AGENT_DIR')}))\n")
+    stub.chmod(0o755)
+    result = run("zsh", "-f", "-c", f"source {shlex.quote(str(paths(machine)[2]))}; "
+                 "pi-anthropic --model claude-opus-4-6",
+                 env={**env, "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
+                      "PI_CODING_AGENT_DIR": "/unused-profile", "ANTHROPIC_API_KEY": "test-only"})
+    assert result.returncode == 0, result.stderr
+    inv = json.loads(result.stdout.splitlines()[-1])
+    assert inv["args"] == ["--provider", "anthropic", "--model", "claude-sonnet-4-6",
+                           "--models", "anthropic/*", "--model", "claude-opus-4-6"]
+    assert inv["profile"] is None and inv["api_key"] == "test-only"
 
 
 def test_legacy_output_is_preserved_without_executing_it(machine):
@@ -138,7 +163,7 @@ def test_real_regen_preserves_options_and_can_disable_sourced_helpers(machine):
 source {launcher}
 pi-regen --no-direct-launchers --quiet || exit
 source {launcher}
-(( ! $+functions[pi-openai] && ! $+functions[pi-default] )) || exit 1
+(( ! $+functions[pi-openai] && ! $+functions[pi-anthropic] && ! $+functions[pi-default] )) || exit 1
 pi-regen --check
 """, env=machine[2])
     assert result.returncode == 0, result.stderr
@@ -259,7 +284,7 @@ def test_management_bootstrap_never_creates_models_or_aliases(machine, empty_fil
     assert "# Pi catalog state: unconfigured (management-only)." in text
     result = run("zsh", "-f", "-c", f'''
 source {shlex.quote(str(paths(machine)[2]))}
-for name in pi-list pi-regen pi-shared-update pi-default pi-openai pi-restart; do
+for name in pi-list pi-regen pi-shared-update pi-default pi-openai pi-anthropic pi-restart; do
   (( $+functions[$name] )) || exit 8
 done
 pi-list
@@ -409,6 +434,7 @@ def test_python_keyword_compatibility_and_neutral_defaults():
     assert list(module.render_models(aliases)["providers"]) == ["model-gateway"]
     assert module.render_launchers(aliases, direct_launchers=True) == module.render_launchers(aliases, ls99_extras=True)
     assert "\npi-openai() {\n" not in module.render_launchers(aliases, direct_launchers=False, ls99_extras=True)
+    assert "\npi-anthropic() {\n" not in module.render_launchers(aliases, direct_launchers=False, ls99_extras=True)
 
 
 @pytest.mark.skipif(not shutil.which("zsh"), reason="zsh is required")

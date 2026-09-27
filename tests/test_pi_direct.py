@@ -42,7 +42,7 @@ def test_direct_install_ignores_catalog_and_preserves_native_models(machine):
     assert not (home / ".zshrc").exists()
     config = json.loads(machine["config"].read_text())
     assert config["generation"]["args"] == ["--direct-only", "--shared-dir", str(ROOT), "--direct-launchers"]
-    assert set(config["routes"]) == {"openai"}
+    assert set(config["routes"]) == {"openai", "anthropic"}
     for args in [("models",), ("--launcher-check",), ("--launcher-refresh",)]:
         check = launch(machine, *args, upstream=False)
         assert check.returncode == 0, check.stderr
@@ -220,7 +220,7 @@ def test_add_gateway_preserves_native_configuration_and_is_idempotent(machine, s
     assert result.returncode == 0, result.stderr
     config = json.loads(machine["config"].read_text())
     assert "--direct-only" not in config["generation"]["args"]
-    assert set(config["routes"]) == {"test", "other"} | ({"openai"} if shortcut else set())
+    assert set(config["routes"]) == {"test", "other"} | ({"openai", "anthropic"} if shortcut else set())
     assert config["defaultProfile"] is None
     assert invocation(launch(machine))["env"]["PI_CODING_AGENT_DIR"] is None
     assert invocation(launch(machine, "--provider", "custom", "--model", "native"))["argv"] == [
@@ -301,6 +301,6 @@ def test_add_gateway_bootstrap_without_catalog_retains_native_routes(machine):
     config = json.loads(machine["config"].read_text())
     assert "--direct-only" not in config["generation"]["args"]
     assert "--models-out" in config["generation"]["args"]
-    assert set(config["routes"]) == {"openai"}
+    assert set(config["routes"]) == {"openai", "anthropic"}
     assert not (machine["home"] / ".pi-omlx/agent/models.json").exists()
     assert launch(machine, "--launcher-check", upstream=False).returncode == 0

@@ -166,8 +166,12 @@ def routes_for(aliases, provider, profile, direct):
             routes[alias] = {"provider": provider, "model": _model_id_for(key, meta),
                              "profile": profile, "gateway": True}
     if direct:
+        if "anthropic" in routes:
+            raise ValueError("gateway alias 'anthropic' conflicts with the direct Anthropic shortcut; rename the gateway alias before enabling direct launchers")
         routes["openai"] = {"provider": "openai-codex", "model": "gpt-6-astra",
                             "profile": None, "gateway": False}
+        routes["anthropic"] = {"provider": "anthropic", "model": "claude-sonnet-4-6",
+                               "profile": None, "gateway": False}
     return dict(sorted(routes.items()))
 
 
@@ -431,8 +435,8 @@ def saved_model_default(config, profile=None):
     return None
 
 
-def openai_default_route(route, config, profile):
-    """Use the native profile's selected Codex model, if it has one."""
+def native_default_route(route, config, profile):
+    """Use the native profile's selected model for this provider, if it has one."""
     default = saved_model_default(config, profile)
     if default and default["provider"] == route["provider"]:
         return {**route, "model": default["model"]}
@@ -450,9 +454,10 @@ def model_listing(config):
             raise ValueError("Catalog changed while listing models; retry pi models")
         aliases = json.loads(raw) if raw else {}
     routes, rows, covered = config["routes"].copy(), [], set()
-    if "openai" in routes and routes["openai"]["provider"] == "openai-codex" and not routes["openai"]["gateway"]:
-        native_profile = os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi/agent"
-        routes["openai"] = openai_default_route(routes["openai"], config, native_profile)
+    native_profile = os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi/agent"
+    for alias, provider in (("openai", "openai-codex"), ("anthropic", "anthropic")):
+        if alias in routes and routes[alias]["provider"] == provider and not routes[alias]["gateway"]:
+            routes[alias] = native_default_route(routes[alias], config, native_profile)
     default = saved_model_default(config)
 
     def add(names, name, group):
@@ -477,7 +482,8 @@ def model_listing(config):
         add(names, name, group)
     for alias, route in routes.items():
         if alias not in covered:
-            add([alias], route["model"] + (" · ChatGPT subscription" if alias == "openai" else ""),
+            label = {"openai": " · ChatGPT subscription", "anthropic": " · Claude (OAuth or API key)"}
+            add([alias], route["model"] + (label.get(alias, "") if not route["gateway"] else ""),
                 "gateway" if route["gateway"] else "direct")
     order = list(MODEL_GROUPS)
     rows.sort(key=lambda row: (order.index(row["group"]), row["alias"]))
@@ -550,6 +556,7 @@ def main(argv=None):
             print("pi <exact-alias> [Pi options] | pi <alias> --default (save and exit)\n"
                   "pi openai: ChatGPT subscription preset (when direct routes enabled)\n"
                   "pi openai --set-context=standard|max: save 272K or 872K for reviewed Codex models and exit\n"
+                  "pi anthropic: Claude preset (OAuth sign-in or API key; when direct routes enabled)\n"
                   "pi models: grouped configured aliases (see pi models --help)\n"
                   "--launcher-list: legacy tab-separated alias/route output\n"
                   "--launcher-check | --launcher-refresh | --launcher-help\n"
@@ -596,9 +603,9 @@ def main(argv=None):
             config = refresh(path, config, check=argv == ["--launcher-check"])
             if argv == ["--launcher-list"]:
                 for alias, route in config["routes"].items():
-                    if alias == "openai" and route["provider"] == "openai-codex" and not route["gateway"]:
+                    if alias in ("openai", "anthropic") and not route["gateway"]:
                         profile = os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi/agent"
-                        route = openai_default_route(route, config, profile)
+                        route = native_default_route(route, config, profile)
                     print(f"{alias}\t{route['provider']}/{route['model']}")
             else:
                 print("Pi launcher configuration OK (offline; no inference).")
@@ -656,13 +663,18 @@ def main(argv=None):
             if "--default" in options(argv) and not save:
                 raise ValueError("--default must be used alone after an exact alias")
             if explicit_model:
+                # A Claude model override stays on Anthropic unless the caller
+                # explicitly selects a different provider as well.
+                if (alias == "anthropic" and route["provider"] == "anthropic"
+                        and not route["gateway"] and "--model" in opts and "--provider" not in opts):
+                    argv = ["--provider", "anthropic", *argv]
                 route = None  # Explicit stock selection wins, with no implicit profile switch.
         if route:
             profile = env.get("PI_CODING_AGENT_DIR", route["profile"] or str(Path.home() / ".pi/agent"))
             if "PI_CODING_AGENT_DIR" not in env and route["profile"]:
                 env["PI_CODING_AGENT_DIR"] = profile
-            if alias == "openai" and route["provider"] == "openai-codex" and not route["gateway"]:
-                route = openai_default_route(route, config, profile)
+            if alias in ("openai", "anthropic") and not route["gateway"]:
+                route = native_default_route(route, config, profile)
             if save:
                 settings_path = Path(profile).expanduser() / "settings.json"
                 raw = read_owned(settings_path, missing=True)

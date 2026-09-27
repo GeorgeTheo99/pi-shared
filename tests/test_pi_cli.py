@@ -40,7 +40,7 @@ def machine(tmp_path):
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
         "print(json.dumps({'argv': sys.argv[1:], 'env': {k: os.environ.get(k) "
-        "for k in ('PI_CODING_AGENT_DIR', 'OPENAI_API_KEY', 'OPENAI_BASE_URL')}}))\n"
+        "for k in ('PI_CODING_AGENT_DIR', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_API_KEY')}}))\n"
     )
     upstream.chmod(0o755)
     env = {k: v for k, v in os.environ.items() if not k.startswith("PI_")}
@@ -79,7 +79,7 @@ def test_models_command_capability_matches_supported_interface(machine):
     assert render(machine, "--direct-launchers").returncode == 0
     result = launch(machine, "models", "--direct", "--json", upstream=False)
     assert result.returncode == 0, result.stderr
-    assert [row["alias"] for row in json.loads(result.stdout)["models"]] == ["openai"]
+    assert [row["alias"] for row in json.loads(result.stdout)["models"]] == ["anthropic", "openai"]
 
 
 # --- generation ------------------------------------------------------------
@@ -97,13 +97,27 @@ def test_cli_out_generates_expected_schema(machine):
     assert len(config["generation"]["modelsSha256"]) == 64
 
 
-def test_direct_launchers_add_openai_subscription_route(machine):
+def test_direct_launchers_add_native_subscription_routes(machine):
     assert render(machine, "--direct-launchers").returncode == 0
     routes = json.loads(machine["config"].read_text())["routes"]
     assert routes["openai"] == {"provider": "openai-codex", "model": "gpt-6-astra",
                                 "profile": None, "gateway": False}
+    assert routes["anthropic"] == {"provider": "anthropic", "model": "claude-sonnet-4-6",
+                                   "profile": None, "gateway": False}
     assert render(machine, "--no-direct-launchers").returncode == 0
-    assert "openai" not in json.loads(machine["config"].read_text())["routes"]
+    assert not {"openai", "anthropic"} & json.loads(machine["config"].read_text())["routes"].keys()
+
+
+def test_existing_gateway_anthropic_alias_survives_without_direct_but_refuses_collision(machine):
+    aliases = {"cloud:claude": {"alias": "anthropic", "provider": "anthropic",
+                                "provider_model_id": "claude-x"}}
+    machine["aliases"].write_text(json.dumps(aliases))
+    assert render(machine, "--no-direct-launchers").returncode == 0
+    before = machine["config"].read_bytes()
+    assert json.loads(before)["routes"]["anthropic"]["gateway"] is True
+    result = render(machine, "--direct-launchers")
+    assert result.returncode != 0 and "conflicts" in result.stderr
+    assert machine["config"].read_bytes() == before
 
 
 def test_cli_and_zsh_render_identical_routes(machine):
@@ -149,6 +163,35 @@ def test_explicit_model_wins_over_alias_and_skips_profile_switch(machine):
     inv = invocation(launch(machine, "test", "--provider", "x", "--model", "y"))
     assert inv["argv"] == ["--provider", "x", "--model", "y"]
     assert inv["env"]["PI_CODING_AGENT_DIR"] is None
+
+
+def test_anthropic_preset_preserves_api_fallback_and_explicit_selection(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    inv = invocation(launch(machine, "anthropic", env_extra={"ANTHROPIC_API_KEY": "test-key"}))
+    assert inv["argv"] == ["--provider", "anthropic", "--model", "claude-sonnet-4-6"]
+    assert inv["env"]["ANTHROPIC_API_KEY"] == "test-key"
+    assert invocation(launch(machine, "anthropic", "--model", "claude-opus-4-6"))["argv"] == [
+        "--provider", "anthropic", "--model", "claude-opus-4-6"]
+    assert invocation(launch(machine, "anthropic", "--provider", "other", "--model", "custom"))["argv"] == [
+        "--provider", "other", "--model", "custom"]
+
+
+@pytest.mark.parametrize("provider,model,expected", [
+    ("anthropic", "claude-opus-4-6", "claude-opus-4-6"),
+    ("openai-codex", "gpt-6-sol", "claude-sonnet-4-6"),
+])
+def test_anthropic_preset_uses_native_saved_model(machine, provider, model, expected):
+    assert render(machine, "--direct-launchers").returncode == 0
+    profile = machine["home"] / ".pi/agent"
+    profile.mkdir()
+    (profile / "settings.json").write_text(json.dumps({"defaultProvider": provider, "defaultModel": model}))
+    assert invocation(launch(machine, "anthropic"))["argv"] == [
+        "--provider", "anthropic", "--model", expected]
+    listing = json.loads(launch(machine, "models", "--direct", "--json", upstream=False).stdout)
+    route = next(row for row in listing["models"] if row["alias"] == "anthropic")
+    assert route["model"] == expected
+    assert route["default"] is (provider == "anthropic")
+    assert f"anthropic\tanthropic/{expected}" in launch(machine, "--launcher-list", upstream=False).stdout
 
 
 def test_openai_preset_unsets_api_key_env(machine):
@@ -482,7 +525,7 @@ def test_models_missing_bootstrap_catalog(machine):
     assert render(machine, "--allow-empty-catalog", "--direct-launchers").returncode == 0
     result = launch(machine, "models", "--json", upstream=False)
     assert result.returncode == 0, result.stderr
-    assert [row["alias"] for row in json.loads(result.stdout)["models"]] == ["openai"]
+    assert [row["alias"] for row in json.loads(result.stdout)["models"]] == ["anthropic", "openai"]
 
 
 def test_models_sanitizes_terminal_controls_in_names(machine):

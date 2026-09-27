@@ -20,7 +20,7 @@ manual symlinks and sourcing `pi-launchers.zsh` are not required for that path.
 - `bin/pi-vanilla` — recovery launcher for a vanilla Pi session when shared/local harness resources break normal startup.
 - `bin/pi-omlx-repair` — repair/wiring script for the dedicated `~/.pi-omlx/agent` Pi profile used by local oMLX/cloud model launchers.
 - `bin/pi-catalog` — render Pi CLI artifacts (`models.json` + `pi-launchers.zsh`, and optionally the unified `pi-launch` CLI config via `--cli-out`) from a `model-aliases.json` catalog (the model-gateway public contract). The Pi-side of the model-gateway/Pi separation: the gateway owns the generic catalog, pi-catalog owns Pi-specific rendering. Install per-machine via a `~/.local/bin` symlink.
-- `bin/pi-launch` — unified `pi` launcher. Packaging points `pi` at this script (passing ORDINARY Pi argv, no transport `--`) and supplies the absolute stock executable via `PI_UPSTREAM_BIN` plus a sibling `pi-upstream` real symlink. It routes exact aliases to the gateway, offers a `pi <alias> --default` save, a ChatGPT-subscription `openai` preset, `pi models` for offline alias listing (`pi list` remains package listing), and offline `--launcher-check|--launcher-list|--launcher-refresh|--launcher-help|--launcher-migrate` interfaces. Its data-only config lives at `~/.pi/launcher.json` (`PI_LAUNCHER_CONFIG`).
+- `bin/pi-launch` — unified `pi` launcher. Packaging points `pi` at this script (passing ORDINARY Pi argv, no transport `--`) and supplies the absolute stock executable via `PI_UPSTREAM_BIN` plus a sibling `pi-upstream` real symlink. It routes exact aliases to the gateway, offers a `pi <alias> --default` save, direct OpenAI/Anthropic presets, `pi models` for offline alias listing (`pi list` remains package listing), and offline `--launcher-check|--launcher-list|--launcher-refresh|--launcher-help|--launcher-migrate` interfaces. Its data-only config lives at `~/.pi/launcher.json` (`PI_LAUNCHER_CONFIG`).
 - `bin/pi-shared-install` / `install.sh` — portable installer that symlinks shared helper scripts into `~/.local/bin`, wires this repo into `~/.pi/agent/settings.json`, and optionally renders initial Pi catalog artifacts (add `--cli-out PATH` / `PI_SHARED_CLI_OUT` to select JSON routing instead of zsh generation).
 - `lib/pi_catalog.py` — the importable module behind `bin/pi-catalog` (render functions + CLI).
 - `lib/pi_cli.py` — the importable module behind `bin/pi-launch` (config schema, offline resolution, and the shared `--cli-out` schema source of truth).
@@ -173,7 +173,7 @@ Current generated `pi-*` shell launchers call this automatically before writing 
 It reads the alias file and emits:
 
 - `models.json` — a Pi provider/models config with capability-aware reasoning controls, protocol/tool/replay compatibility, api_type selection, vision heuristics, and anthropic baseUrl overrides.
-- `pi-launchers.zsh` — `pi-<alias>()` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai` via `--direct-launchers`). `pi-list` groups catalog launchers into local and cloud sections from the catalog's canonical `cloud:` key namespace, with direct Pi and management commands shown separately. No `claude-*`/`codex-*` — standardize on `pi`.
+- `pi-launchers.zsh` — `pi-<alias>()` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai`/`pi-anthropic` via `--direct-launchers`). `pi-list` groups catalog launchers into local and cloud sections from the catalog's canonical `cloud:` key namespace, with direct Pi and management commands shown separately. No `claude-*`/`codex-*` — standardize on `pi`.
 
 The model id in the launcher always matches the id in `models.json` (local = alias key / omlx_id, cloud = provider_model_id), so the two can never drift.
 
@@ -201,7 +201,10 @@ Contract:
   saves 272K or 872K for all six reviewed Codex models in that native profile
   and exits without launching Pi; it changes existing override values only when
   explicitly invoked and refuses the configured gateway-generated model output.
-  Unknown positional prompts and
+  `pi anthropic` selects native Anthropic and its saved model default (otherwise
+  `claude-sonnet-4-6`); native `/login anthropic` OAuth credentials take priority
+  over `ANTHROPIC_API_KEY`. Anthropic OAuth third-party usage is billed as extra
+  usage per token, not against Claude Pro/Max plan limits. Unknown positional prompts and
   stock commands (`list`, `help`, `version`) pass through untouched, and
   `pi -- <literal>` bypasses alias resolution entirely. `models` is now reserved
   for alias listing; an old shortcut named `models` is omitted on refresh, but
@@ -273,10 +276,13 @@ pi-catalog --aliases ~/.pi/model-aliases.json \
   --pi-agent-dir ~/.pi-omlx/agent --direct-launchers
 ```
 
-`--direct-launchers` adds `pi-default` and `pi-openai` independently of the
-machine name or gateway catalog. `pi-openai` uses the **current machine's**
-default Pi profile and ChatGPT subscription login (`/login` → OpenAI Codex),
-not the gateway or an OpenAI API key. It does not sign in or copy credentials.
+`--direct-launchers` adds `pi-default`, `pi-openai`, and `pi-anthropic`
+independently of the machine name or gateway catalog. `pi-openai` uses the
+**current machine's** default Pi profile and ChatGPT subscription login
+(`/login` → OpenAI Codex), not the gateway or an OpenAI API key. `pi-anthropic`
+uses native Anthropic with `claude-sonnet-4-6` as its fallback model; sign in
+with `/login anthropic` for OAuth (extra usage billing) or configure an API key.
+Neither helper signs in or copies credentials.
 
 - Enable on an existing installation: `pi-regen --direct-launchers`.
 - Disable: `pi-regen --no-direct-launchers`. New generated `pi-regen` functions
