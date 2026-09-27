@@ -30,7 +30,7 @@ shared resources/services; it never downloads LLM weights or tests inference.
 Fresh defaults are direct providers and browser-worker/Chromium, with search
 skipped. Add `--without-browser` to omit browser installation.
 
-The setup examples below target **Homebrew package 0.1.20 and updated shared
+The setup examples below target **Homebrew package 0.1.22 and updated shared
 modules**. On older installations, run `pi-shared update` and check
 `pi-shared setup --help`. Resolve any other installation owning `pi` deliberately;
 do not blindly use `brew link --overwrite`.
@@ -54,7 +54,7 @@ The hub previews evidence and changes first. Project config and private KB metad
 creation require exact-plan approval and never overwrite existing files. Broad
 service/package installs and indexing use explicit **terminal handoffs** to their
 existing owners; slash-command handoffs are prepared but never auto-submitted.
-Requires a compatible `pi-setup` capability backend; an older CLI receives an upgrade
+Requires the `pi-setup` capability backend in **Homebrew 0.1.22+**; an older CLI receives an upgrade
 instruction, not an automatic update. Configured is not tested/ready, and no model,
 browser, or desktop actions run as checks. [Flows and boundaries](extensions/setup/README.md).
 
