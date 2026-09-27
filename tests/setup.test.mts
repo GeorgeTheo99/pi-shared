@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import setupExtension, { runWizard, formatReport } from '../extensions/setup/index.ts';
-import { parseReport, resolveSetupExecutable, runBackend, type SetupReport } from '../extensions/setup/backend.ts';
+import { parseReport, resolveSetupExecutable, runBackend, homebrewAdminAncestor, type SetupReport } from '../extensions/setup/backend.ts';
 
 function report(action: SetupReport['action'] = 'plan'): SetupReport {
   return { schemaVersion: 1, component: 'peekaboo', action, ok: true, summary: 'Fixture plan',
@@ -145,6 +145,22 @@ test('session shutdown awaits cleanup even when the setup backend ignores TERM',
     if (prior === undefined) delete process.env.PI_SHARED_SETUP_BIN; else process.env.PI_SHARED_SETUP_BIN = prior;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('Homebrew admin-writable ancestor exception is narrowly package-bound', () => {
+  const executable = '/opt/homebrew/Cellar/pi-shared/0.1.21/bin/pi-shared';
+  const allowed = (exe = executable, ancestor = '/opt/homebrew/Cellar', gid = 80, mode = 0o775, platform = 'darwin', groups = [20, 80]) =>
+    homebrewAdminAncestor(exe, ancestor, gid, mode, platform, groups);
+  assert.equal(allowed(), true);
+  assert.equal(allowed(executable, '/opt/homebrew'), true);
+  assert.equal(allowed('/usr/local/Cellar/pi-shared/0.1.21/bin/pi-shared', '/usr/local/Cellar'), true);
+  assert.equal(allowed('/tmp/source/bin/pi-shared'), false);
+  assert.equal(allowed('/opt/homebrew/Cellar/other/1/bin/pi-shared'), false);
+  assert.equal(allowed(executable, '/opt/homebrew/Cellar/pi-shared/0.1.21'), false);
+  assert.equal(allowed(executable, '/opt/homebrew/Cellar', 20), false);
+  assert.equal(allowed(executable, '/opt/homebrew/Cellar', 80, 0o777), false);
+  assert.equal(allowed(executable, '/opt/homebrew/Cellar', 80, 0o775, 'linux'), false);
+  assert.equal(allowed(executable, '/opt/homebrew/Cellar', 80, 0o775, 'darwin', [20]), false);
 });
 
 test('installer resolution requires an absolute trusted executable, never PATH/cwd', () => {

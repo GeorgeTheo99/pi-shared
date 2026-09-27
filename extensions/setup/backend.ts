@@ -49,6 +49,17 @@ export function parseReport(text: string, action: SetupAction): SetupReport {
 	return value;
 }
 
+// Homebrew commonly makes its prefix/Cellar admin-group writable on macOS.
+// Accept only those two directories for this exact package layout, never an
+// arbitrary group-writable source checkout, package subdirectory or executable.
+export function homebrewAdminAncestor(executable: string, ancestor: string, gid: number, mode: number,
+	platform: string = process.platform, groups: number[] = process.getgroups?.() ?? []): boolean {
+	const cellar = executable.match(/^(\/opt\/homebrew|\/usr\/local)\/Cellar\/pi-shared\/[^/]+\/bin\/pi-shared$/)?.[1];
+	return platform === "darwin" && cellar !== undefined &&
+		(ancestor === cellar || ancestor === `${cellar}/Cellar`) && gid === 80 && groups.includes(80) &&
+		!(mode & 0o002);
+}
+
 // Deliberately do not search the project or PATH for an installer to execute.
 export function resolveSetupExecutable(env: NodeJS.ProcessEnv = process.env): string {
 	const override = env.PI_SHARED_SETUP_BIN;
@@ -63,7 +74,8 @@ export function resolveSetupExecutable(env: NodeJS.ProcessEnv = process.env): st
 			for (let parent = dirname(resolved); parent !== dirname(parent); parent = dirname(parent)) {
 				const info = statSync(parent);
 				// A sticky temporary root is permitted for explicitly selected development fixtures.
-				if ((info.uid !== 0 && info.uid !== uid) || ((info.mode & 0o022) && !(info.mode & 0o1000))) throw new Error("Unsafe setup executable ancestor.");
+				if ((info.uid !== 0 && info.uid !== uid) || ((info.mode & 0o022) && !(info.mode & 0o1000) &&
+					!homebrewAdminAncestor(resolved, parent, info.gid, info.mode))) throw new Error("Unsafe setup executable ancestor.");
 			}
 			accessSync(resolved, constants.X_OK);
 			return resolved;
