@@ -41,8 +41,9 @@ test("handoff and summary status use canonical context, with stock old-SDK fallb
 	// compaction, branch navigation and entry conversion come from the selected SDK.
 	let generationInput = "";
 	const captureKey = "__selfHandoffProjectionCapture";
-	(globalThis as any)[captureKey] = (context: any) => {
+	(globalThis as any)[captureKey] = (context: any, options: any) => {
 		generationInput = context.messages[0].content[0].text;
+		assert.equal(options.cacheRetention, "none", "handoff generation must stay isolated from the provider session");
 		return { stopReason: "stop", content: [{ type: "text", text: "Fixture continuation" }] };
 	};
 	const hooks = registerHooks({
@@ -63,7 +64,7 @@ test("handoff and summary status use canonical context, with stock old-SDK fallb
 			};
 			if (url === "context-projection:@mariozechner/pi-ai") return {
 				format: "module", shortCircuit: true,
-				source: `export async function complete(model, context) { return globalThis.${captureKey}(context); }`,
+				source: `export async function complete(model, context, options) { return globalThis.${captureKey}(context, options); }`,
 			};
 			return nextLoad(url, context);
 		},

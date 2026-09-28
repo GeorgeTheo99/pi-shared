@@ -228,6 +228,9 @@ async function generatePrompt(
 			headers: auth.headers,
 			env: auth.env,
 			maxTokens: 6_000,
+			// This is an isolated one-off generation, not a continuation of the Pi session.
+			// The Claude bridge uses this marker to avoid resuming its shared session.
+			cacheRetention: "none",
 			signal,
 		},
 	);
