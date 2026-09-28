@@ -62,10 +62,6 @@ test("handoff and summary status use canonical context, with stock old-SDK fallb
 				source: `export { SessionManager, sessionEntryToContextMessages } from ${JSON.stringify(sdkUrl)};
 					export class BorderedLoader { signal = new AbortController().signal; }`,
 			};
-			if (url === "context-projection:@mariozechner/pi-ai") return {
-				format: "module", shortCircuit: true,
-				source: `export async function complete(model, context, options) { return globalThis.${captureKey}(context, options); }`,
-			};
 			return nextLoad(url, context);
 		},
 	});
@@ -83,15 +79,16 @@ test("handoff and summary status use canonical context, with stock old-SDK fallb
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
 		return session;
 	}
-	async function handoffInput(session: any) {
+	async function handoffInput(session: any, provider?: { model: any; registry: any }) {
 		let command: any;
 		generationInput = "";
 		const notifications: string[] = [];
 		handoff({ on() {}, events: { emit() {} }, registerCommand(_name: string, value: any) { command = value; },
 			appendEntry() { assert.fail("Cancelled review must not write handoff state"); } } as any);
 		await command.handler("Inspect this fixture", {
-			mode: "tui", hasUI: true, model: {}, sessionManager: session, waitForIdle: async () => {},
-			modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true }) },
+			mode: "tui", hasUI: true, model: provider?.model ?? {}, sessionManager: session, waitForIdle: async () => {},
+			modelRegistry: provider?.registry ?? { getApiKeyAndHeaders: async () => ({ ok: true }),
+				complete: async (_model: unknown, context: any, options: any) => (globalThis as any)[captureKey](context, options) },
 			ui: { notify: (message: string) => notifications.push(message),
 				custom: (render: any) => new Promise((done) => render({}, {}, {}, done)),
 				editor: async () => undefined }, // Stop after capturing generation; never replace sessions.
@@ -134,6 +131,34 @@ test("handoff and summary status use canonical context, with stock old-SDK fallb
 			},
 		};
 	}
+
+	await t.test(`stock ${manifest.version}: handoff generation dispatches through a registered provider`, async () => {
+		const ai = await import(pathToFileURL(join(sdkDir, "node_modules/@earendil-works/pi-ai/dist/index.js")).href);
+		const runtime = await sdk.ModelRuntime.create({ credentials: new ai.InMemoryCredentialStore(),
+			modelsPath: join(directory, "models.json"), modelsStorePath: join(directory, "models-store.json"), allowModelNetwork: false });
+		runtime.registerProvider("claude-bridge", {
+			baseUrl: "claude-bridge", apiKey: "not-used", api: "claude-bridge",
+			models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 6_000 }],
+			streamSimple: (model: any, context: any, options: any) => {
+				assert.equal(options.cacheRetention, "none");
+				generationInput = context.messages.at(-1).content[0].text;
+				const stream = ai.createAssistantMessageEventStream();
+				stream.push({ type: "done", reason: "stop", message: {
+					role: "assistant", api: model.api, provider: model.provider, model: model.id,
+					content: [{ type: "text", text: "Fixture continuation" }], stopReason: "stop", timestamp: Date.now(),
+					usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				} });
+				stream.end();
+				return stream;
+			},
+		});
+		await runtime.refresh({ allowNetwork: false });
+		const model = runtime.getModel("claude-bridge", "fixture");
+		assert.ok(model);
+		assert.match(await handoffInput(manager(), { model, registry: new sdk.ModelRegistry(runtime) }), /HANDOFF-INPUT-/);
+	});
 
 	await t.test(`stock ${manifest.version}: compaction-aware fallback preserves ordinary context`, async () => {
 		const session = manager();

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { complete, type Message } from "@mariozechner/pi-ai";
+import type { Message } from "@mariozechner/pi-ai";
 import {
 	BorderedLoader,
 	type ExtensionAPI,
@@ -220,7 +220,7 @@ async function generatePrompt(
 		],
 		timestamp: Date.now(),
 	};
-	const response = await complete(
+	const response = await ctx.modelRegistry.complete(
 		ctx.model,
 		{ systemPrompt: HANDOFF_SYSTEM_PROMPT, messages: [message] },
 		{

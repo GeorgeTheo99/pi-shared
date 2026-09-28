@@ -193,8 +193,6 @@ const hooks = registerHooks({
 		return nextResolve(specifier, context);
 	},
 	load(url, context, nextLoad) {
-		if (url === "handoff-peer-test:@mariozechner/pi-ai") return { format: "module", shortCircuit: true,
-			source: 'export async function complete() { return { stopReason: "stop", content: [{type: "text", text: "Generated continuation"}] }; }' };
 		if (url === "handoff-peer-test:@mariozechner/pi-coding-agent") return { format: "module", shortCircuit: true,
 			source: `export class BorderedLoader { signal = new AbortController().signal; }
 				export const SessionManager = { open(path) { return globalThis.__handoffPeerTestSessions.get(path); } };
@@ -235,7 +233,8 @@ async function commandScenario(directory: string, onReview: () => Promise<void>,
 	let childWarning = "";
 	const ctx: any = {
 		mode: "tui", hasUI: true, model: {}, sessionManager: parent, waitForIdle: async () => {},
-		modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true }) },
+		modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true }),
+			complete: async () => ({ stopReason: "stop", content: [{ type: "text", text: "Generated continuation" }] }) },
 		ui: {
 			notify: (message: string) => order.push(message),
 			custom: (render: any) => new Promise((resolve) => render({}, {}, {}, resolve)),

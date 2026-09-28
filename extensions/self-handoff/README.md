@@ -44,7 +44,7 @@ This is deliberately a **user-invoked command**, not an LLM tool. Stock Pi does 
 
 ## Stock Pi limits
 
-This implementation uses only public Earendil Pi `0.80.6` extension APIs and is portable as a normal Pi package for that distribution. It is not a compatibility claim for older upstream `@mariozechner` releases. The summarization call follows Pi's documented handoff example and uses the selected model directly; custom session request hooks/transports should be checked before rollout.
+This implementation uses only public Earendil Pi `0.80.6` extension APIs and is portable as a normal Pi package for that distribution. It is not a compatibility claim for older upstream `@mariozechner` releases. The one-off summarization call uses the selected model through Pi's model registry, so extension-registered providers are honored; it disables prompt-cache retention and does not join the active session. Custom provider transports should be checked before rollout.
 
 Stock session replacement is not transactional:
 
