@@ -3,6 +3,17 @@
 **Prepared, not activated or submitted.** Nothing here is a Pi extension. No installed
 Pi files, profiles, settings, context instructions, or live prompts are changed.
 
+> **Superseded for submission (2026-09-29).** The upstream candidate is a smaller
+> canonical-path fix on branch
+> [`GeorgeTheo99/pi:fix/context-file-canonical-dedup`](https://github.com/GeorgeTheo99/pi/tree/fix/context-file-canonical-dedup)
+> (commit `9cf8ad4`, based on upstream `5257d0d`): `seenPaths` stores
+> `canonicalizePath` results, first occurrence wins, plus three regressions in
+> `test/resource-loader.test.ts`. `npm run check` passes; `./test.sh` shows no new
+> failures versus unpatched `main`. Upstream accepts PRs only after a maintainer
+> `lgtm` on an issue written in the reporter's own voice (see upstream
+> `CONTRIBUTING.md`), so no issue or PR has been opened. The artifact below is
+> retained as the original, broader design record.
+
 ## Pinned source
 
 - Repository: <https://github.com/earendil-works/pi>, `packages/coding-agent` (also
