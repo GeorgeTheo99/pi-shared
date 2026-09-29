@@ -25,7 +25,7 @@ def machine(tmp_path):
     aliases.write_text(json.dumps({"cloud:test": {
         "name": "test", "alias": "test", "provider": "openai", "provider_model_id": "test",
     }}))
-    env = {k: v for k, v in os.environ.items() if not k.startswith("PI_SHARED_")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PI_SHARED_") and k != "MODEL_GATEWAY_ENDPOINT_FILE"}
     env.update(HOME=str(home), PI_INSTALL_DIR=str(tmp_path / "absent-install"))
     return home, aliases, env
 
@@ -462,3 +462,36 @@ def test_two_machines_regenerate_independently(tmp_path):
         assert paths(fixture)[2].read_bytes() == launcher
         other = "server" if fixture[0].name == "laptop" else "laptop"
         assert str(tmp_path / other) not in paths(fixture)[2].read_text()
+
+
+def test_fresh_install_uses_the_gateway_discovery_file(machine, tmp_path):
+    home, aliases, env = machine
+    published = tmp_path / "gateway-state" / "model-aliases.json"
+    published.parent.mkdir()
+    aliases.rename(published)
+    endpoint = home / "Library/Application Support/model-gateway/endpoint.json"
+    endpoint.parent.mkdir(parents=True)
+    endpoint.write_text(json.dumps({"version": 1, "service": "model-gateway",
+                                    "base_url": "http://127.0.0.1:19111/v1",
+                                    "model_aliases": str(published)}))
+    endpoint.chmod(0o600)
+    result = install(machine)
+    assert result.returncode == 0, result.stderr
+    _, models, launcher = paths(machine)
+    provider = json.loads(models.read_text())["providers"]["model-gateway"]
+    assert provider["baseUrl"] == "http://127.0.0.1:19111/v1"
+    text = launcher.read_text()
+    assert str(published) in text and "http://127.0.0.1:19111/health" in text
+
+
+def test_existing_alias_link_wins_over_discovery(machine, tmp_path):
+    home, aliases, env = machine
+    endpoint = home / "Library/Application Support/model-gateway/endpoint.json"
+    endpoint.parent.mkdir(parents=True)
+    endpoint.write_text(json.dumps({"version": 1, "service": "model-gateway",
+                                    "base_url": "http://127.0.0.1:9111/v1",
+                                    "model_aliases": str(tmp_path / "absent.json")}))
+    endpoint.chmod(0o600)
+    result = install(machine)
+    assert result.returncode == 0, result.stderr
+    assert str(aliases) in paths(machine)[2].read_text()

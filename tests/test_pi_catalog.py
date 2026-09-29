@@ -31,7 +31,8 @@ def isolate_operator_profile(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("PI_INSTALL_DIR", str(tmp_path / "pi-install"))
-    for name in ("PI_OMLX_AGENT_DIR", "PI_SHARED_AGENT_DIR", "PI_SHARED_OMLX_AGENT_DIR", "PI_SHARED_BIN_DIR"):
+    for name in ("PI_OMLX_AGENT_DIR", "PI_SHARED_AGENT_DIR", "PI_SHARED_OMLX_AGENT_DIR", "PI_SHARED_BIN_DIR",
+                 "MODEL_GATEWAY_ENDPOINT_FILE"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -1343,3 +1344,76 @@ def test_real_alias_file_renders(tmp_path):
     launchers = (tmp_path / "l.zsh").read_text()
     for m in models:
         assert f" {shlex.quote(m['id'])} " in launchers, f"launcher missing model id {m['id']!r}"
+
+
+# --- local gateway discovery (endpoint.json) ---------------------------------
+
+
+def _write_endpoint(home: Path, doc: dict, mode: int = 0o600) -> Path:
+    path = home / "Library" / "Application Support" / "model-gateway" / "endpoint.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(doc))
+    path.chmod(mode)
+    return path
+
+
+_ENDPOINT = {"version": 1, "service": "model-gateway", "base_url": "http://127.0.0.1:19111/v1",
+             "model_aliases": "/srv/gw/model-aliases.json"}
+
+
+def test_gateway_url_defaults_to_discovered_endpoint(tmp_path):
+    _write_endpoint(Path(os.environ["HOME"]), _ENDPOINT)
+    p = _load_aliases(tmp_path, {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x"}})
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"))
+    assert r.returncode == 0, r.stderr
+    provider = next(iter(json.loads((tmp_path / "m.json").read_text())["providers"].values()))
+    assert provider["baseUrl"] == "http://127.0.0.1:19111/v1"
+
+
+def test_explicit_gateway_url_beats_discovery(tmp_path):
+    _write_endpoint(Path(os.environ["HOME"]), _ENDPOINT)
+    p = _load_aliases(tmp_path, {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x"}})
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), "--gateway-url", "http://localhost:9111")
+    assert r.returncode == 0, r.stderr
+    provider = next(iter(json.loads((tmp_path / "m.json").read_text())["providers"].values()))
+    assert provider["baseUrl"] == "http://localhost:9111/v1"
+
+
+@pytest.mark.parametrize("case", ["missing", "group-writable", "symlink", "wrong-service", "bad-url", "not-json", "disabled"])
+def test_untrusted_or_invalid_discovery_falls_back(tmp_path, monkeypatch, case):
+    sys.path.insert(0, str(SHARED_ROOT / "lib"))
+    import pi_catalog
+
+    home = Path(os.environ["HOME"])
+    doc = dict(_ENDPOINT)
+    if case == "wrong-service":
+        doc["service"] = "other"
+    if case == "bad-url":
+        doc["base_url"] = "http://evil.example/v1?x=1"
+    if case != "missing":
+        path = _write_endpoint(home, doc, 0o620 if case == "group-writable" else 0o600)
+        if case == "not-json":
+            path.write_text("{")
+        if case == "symlink":
+            real = tmp_path / "real.json"
+            real.write_text(json.dumps(doc))
+            real.chmod(0o600)
+            path.unlink()
+            path.symlink_to(real)
+    if case == "disabled":
+        monkeypatch.setenv("MODEL_GATEWAY_ENDPOINT_FILE", "")
+    assert pi_catalog.default_gateway_url() == "http://localhost:9111"
+    if case != "bad-url":
+        assert pi_catalog.default_aliases_path() is None
+
+
+def test_discovery_honors_endpoint_override(tmp_path, monkeypatch):
+    sys.path.insert(0, str(SHARED_ROOT / "lib"))
+    import pi_catalog
+
+    target = tmp_path / "custom-endpoint.json"
+    target.write_text(json.dumps(_ENDPOINT))
+    target.chmod(0o600)
+    monkeypatch.setenv("MODEL_GATEWAY_ENDPOINT_FILE", str(target))
+    assert pi_catalog.default_gateway_url() == "http://127.0.0.1:19111"
+    assert pi_catalog.default_aliases_path() == "/srv/gw/model-aliases.json"
