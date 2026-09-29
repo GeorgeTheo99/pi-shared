@@ -483,7 +483,7 @@ On the maintainer server, the local bare repository is the authoritative Git rem
 ```text
 ~/local_code/pi-shared   --push origin-->   ~/repos/pi-shared.git
                                       \
-                                       --manual publish--> GitHub
+                                       --github-sync hook--> GitHub
 ```
 
 The checkout keeps two remotes:
@@ -491,14 +491,14 @@ The checkout keeps two remotes:
 - `origin` — `~/repos/pi-shared.git`, the authoritative local bare repository
 - `github` — the public GitHub mirror used for distribution to other machines
 
-GitHub publishing is intentionally **not automatic**. Update the local source of truth first, then publish the same commit explicitly:
+Publishing `main` to GitHub is automatic. The bare repository's github-sync hooks (`infra/local-ci` `github-sync/`) reject a push that is missing commits already on GitHub, then publish the accepted tip:
 
 ```bash
-git push origin main
-git push github main
+git fetch github && git merge github/main   # only if the push was rejected
+git push origin main                        # update the bare repository and publish to GitHub
 ```
 
-Confirm both refs match with `git rev-parse origin/main github/main`. Consumer machines may clone or pull the GitHub repository normally; this maintainer-only topology does not apply to them.
+GitHub outages only warn; if publishing failed, run `git push github main` once GitHub is reachable. Other branches and tags are published manually. Confirm both refs match with `git rev-parse origin/main github/main`. Consumer machines may clone or pull the GitHub repository normally; this maintainer-only topology does not apply to them.
 
 Secret scanning is enforced in three layers: tracked pre-commit/pre-push hooks,
 the local bare repository's pre-receive hook, and the pinned GitHub Gitleaks
