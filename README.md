@@ -422,13 +422,18 @@ Separately, `pptx_preview` converts `.pptx` to PNG via LibreOffice and Poppler;
 preview rendering is not guaranteed identical to Microsoft PowerPoint.
 [Preview implementation](extensions/pptx-preview/src/index.ts).
 
-### iOS screenshots and TestFlight
+### iOS screenshots, TestFlight and Mac distribution
 
 [ios-screenshots](skills/ios-screenshots/SKILL.md) captures per-screen simulator
 images using app launch-argument routing; it needs full Xcode and suitable app
 support. [ios-testflight](skills/ios-testflight/SKILL.md) guides signed builds and
 uploads; it additionally needs Apple signing/App Store Connect credentials and
-explicit approval for external publication. Neither skill provisions those accounts.
+explicit approval for external publication. [apple-release](skills/apple-release/SKILL.md)
+is the "get this ready to share" entry point: it detects the project type, routes iOS
+to ios-testflight, and signs, notarizes, staples and verifies macOS apps (.zip/.dmg)
+and installer packages from unattended Pi sessions through a dedicated signing
+keychain. It needs Developer ID certificates, which a one-time Terminal setup copies
+from the login keychain. None of these skills provisions Apple accounts or certificates.
 
 ### Custom resources
 
