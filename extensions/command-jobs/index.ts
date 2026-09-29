@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Type } from "@mariozechner/pi-ai";
-import { defineTool, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Type } from "@earendil-works/pi-ai";
+import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { commandLogs, getCommandRunner, shutdownCommandRunner } from "../_shared/command-job-runner.ts";
 import { operationTool } from "../_shared/operation-tool.ts";
 

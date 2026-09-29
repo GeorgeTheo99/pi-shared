@@ -187,13 +187,13 @@ const sessions = new Map<string, any>();
 (globalThis as any).__handoffPeerTestSessions = sessions;
 const hooks = registerHooks({
 	resolve(specifier, context, nextResolve) {
-		if (specifier === "@mariozechner/pi-ai" || specifier === "@mariozechner/pi-coding-agent") {
+		if (!context.parentURL?.includes("/node_modules/") && (specifier === "@earendil-works/pi-ai" || specifier === "@earendil-works/pi-coding-agent")) {
 			return { url: `handoff-peer-test:${specifier}`, shortCircuit: true };
 		}
 		return nextResolve(specifier, context);
 	},
 	load(url, context, nextLoad) {
-		if (url === "handoff-peer-test:@mariozechner/pi-coding-agent") return { format: "module", shortCircuit: true,
+		if (url === "handoff-peer-test:@earendil-works/pi-coding-agent") return { format: "module", shortCircuit: true,
 			source: `export class BorderedLoader { signal = new AbortController().signal; }
 				export const SessionManager = { open(path) { return globalThis.__handoffPeerTestSessions.get(path); } };
 				export function sessionEntryToContextMessages(entry) { return entry.type === "message" ? [entry.message] : []; }` };

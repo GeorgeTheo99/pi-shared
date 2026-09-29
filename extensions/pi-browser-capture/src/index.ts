@@ -1,10 +1,10 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   truncateHead,
   formatSize,
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { chromium, type BrowserContext, type Page, type Response } from "patchright";
 import fs from "node:fs/promises";

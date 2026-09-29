@@ -6,8 +6,8 @@
  * so clients do not bypass broker-level reliability, policy, and observability.
  */
 
-import { Type } from "@mariozechner/pi-ai";
-import { defineTool, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@earendil-works/pi-ai";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	CONFIG_PATH,
 	mcpToolCall,

@@ -48,7 +48,7 @@ test("handoff and summary status use canonical context, with stock old-SDK fallb
 	};
 	const hooks = registerHooks({
 		resolve(specifier, context, nextResolve) {
-			if (specifier === "@mariozechner/pi-coding-agent" || specifier === "@mariozechner/pi-ai") {
+			if (!context.parentURL?.includes("/node_modules/") && (specifier === "@earendil-works/pi-coding-agent" || specifier === "@earendil-works/pi-ai")) {
 				return { url: `context-projection:${specifier}`, shortCircuit: true };
 			}
 			if (specifier === "@earendil-works/pi-ai/compat" || specifier === "typebox") {
@@ -57,7 +57,7 @@ test("handoff and summary status use canonical context, with stock old-SDK fallb
 			return nextResolve(specifier, context);
 		},
 		load(url, context, nextLoad) {
-			if (url === "context-projection:@mariozechner/pi-coding-agent") return {
+			if (url === "context-projection:@earendil-works/pi-coding-agent") return {
 				format: "module", shortCircuit: true,
 				source: `export { SessionManager, sessionEntryToContextMessages } from ${JSON.stringify(sdkUrl)};
 					export class BorderedLoader { signal = new AbortController().signal; }`,

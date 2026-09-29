@@ -1,5 +1,5 @@
-import { validateToolArguments, type JsonObject } from "@mariozechner/pi-ai";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { validateToolArguments, type JsonObject } from "@earendil-works/pi-ai";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 // Pi also coerces primitives (including required nulls) during validation. The
 // operation boundary permits only removal of explicitly optional null fields,

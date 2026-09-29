@@ -23,12 +23,6 @@
       "@earendil-works/*": [
         "./tools/typecheck/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/*"
       ],
-      "@mariozechner/pi-coding-agent": [
-        "./tools/typecheck/node_modules/@earendil-works/pi-coding-agent"
-      ],
-      "@mariozechner/*": [
-        "./tools/typecheck/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/*"
-      ],
       "typebox": [
         "./tools/typecheck/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox"
       ]

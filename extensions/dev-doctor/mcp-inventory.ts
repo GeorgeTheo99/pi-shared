@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // Public, notification-only adapter contract. No adapter dependency or server calls.
 export const MCP_STATUS_EVENT = "pi-mcp-adapter/status/v1";

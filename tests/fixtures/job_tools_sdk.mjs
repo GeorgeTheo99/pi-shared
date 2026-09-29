@@ -62,11 +62,11 @@ export async function dependency(name) {
 export const ai = await dependency("@earendil-works/pi-ai");
 export const core = await dependency("@earendil-works/pi-agent-core");
 
-// Use the same installed SDK when reading a source export with legacy imports.
+// Resolve source-module SDK imports to the same installed SDK.
 export async function sourceModule(filename) {
 	const { createJiti } = await dependency("jiti");
 	const jiti = createJiti(import.meta.url, { fsCache: false, alias: {
-		"@mariozechner/pi-coding-agent": path.join(root, "dist/index.js"),
+		"@earendil-works/pi-coding-agent": path.join(root, "dist/index.js"),
 	} });
 	return jiti.import(filename);
 }

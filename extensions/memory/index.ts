@@ -1,5 +1,5 @@
-import { StringEnum, Type } from "@mariozechner/pi-ai";
-import { defineTool, type ExtensionAPI, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
+import { defineTool, type ExtensionAPI, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";

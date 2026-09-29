@@ -6,7 +6,7 @@
  * extension.
  */
 
-import { Type, StringEnum } from "@mariozechner/pi-ai";
+import { Type, StringEnum } from "@earendil-works/pi-ai";
 import {
 	defineTool,
 	type ExtensionAPI,
@@ -14,7 +14,7 @@ import {
 	formatSize,
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { chromium, type BrowserContext, type Page, type Response } from "patchright";
 import { mkdir } from "node:fs/promises";
 import http from "node:http";

@@ -1,10 +1,12 @@
 const stub = new URL("./ask_user_test_stub.mjs", import.meta.url).href;
 
 export async function resolve(specifier, context, nextResolve) {
+  // Stub only imports from pi-shared sources, never the SDK's own internal imports.
   if (
-    specifier === "@mariozechner/pi-ai" ||
-    specifier === "@mariozechner/pi-coding-agent" ||
-    specifier === "@mariozechner/pi-tui"
+    !context.parentURL?.includes("/node_modules/") &&
+    (specifier === "@earendil-works/pi-ai" ||
+    specifier === "@earendil-works/pi-coding-agent" ||
+    specifier === "@earendil-works/pi-tui")
   ) {
     return { url: stub, shortCircuit: true };
   }

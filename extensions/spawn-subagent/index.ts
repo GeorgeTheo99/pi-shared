@@ -8,10 +8,10 @@ import {
   type SubagentWorktree,
   type WorktreeReport,
 } from "../_shared/subagent-worktree.ts";
-import { StringEnum, type Message } from "@mariozechner/pi-ai";
-import { defineTool, type AgentToolResult, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { StringEnum, type Message } from "@earendil-works/pi-ai";
+import { defineTool, type AgentToolResult, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { operationTool } from "../_shared/operation-tool.ts";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList } from "../_shared/agents.js";
 import {

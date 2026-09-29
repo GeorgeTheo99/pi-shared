@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { Message } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { Message } from "@earendil-works/pi-ai";
 import {
 	BorderedLoader,
 	type ExtensionAPI,
@@ -9,7 +9,7 @@ import {
 	type ExtensionContext,
 	SessionManager,
 	sessionEntryToContextMessages,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
 	buildKickoffPrompt,
 	collectTransferState,
