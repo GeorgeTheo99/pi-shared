@@ -9,9 +9,13 @@
 # Usage:
 #   pi-shared-install [--force] [--no-catalog] [--bootstrap-launchers] [--enable-gateway] [--no-deps] [--aliases PATH]
 #                     [--models-out PATH] [--launchers-out PATH] [--cli-out PATH]
-#                     [--pi-agent-dir PATH|''] [--provider-name NAME]
+#                     [--pi-agent-dir PATH|''] [--provider-name NAME] [--gateway-key-file PATH]
 #                     [--direct-launchers|--no-direct-launchers] [--overlay PACKAGE_DIR ...]
 #
+# --gateway-key-file PATH authenticates gateway routes with a mode-0600 consumer key
+# file (for example the gateway's pi-runtime key) instead of the legacy shared key.
+# Pi reads the file at request time; the token is never written to generated output.
+# Requires JSON routing (--cli-out), which keeps the reference across later runs.
 # PI_SHARED_DIRECT_ONLY=1 bootstraps native-only JSON routing; no gateway catalog,
 # generated models.json or gateway profile. Requires PI_SHARED_CLI_OUT.
 # --enable-gateway (or PI_SHARED_ENABLE_GATEWAY=1) permits adding gateway routing to an
@@ -87,6 +91,7 @@ CODEX_CONTEXT_SKIP=0
 INSTALL_DEPS=1
 NPM_BIN="${PI_SHARED_NPM:-npm}"
 DIRECT_LAUNCHERS="${PI_SHARED_DIRECT_LAUNCHERS-${PI_SHARED_LS99_EXTRAS-}}"
+GATEWAY_KEY_FILE=""
 declare -a OVERLAY_DIRS=()
 declare -a CATALOG_OVERRIDES=()
 
@@ -128,6 +133,7 @@ while [ $# -gt 0 ]; do
     --cli-out) shift; [ $# -gt 0 ] || die "--cli-out requires a path"; CLI_OUT="$(expand_path "$1")" ;;
     --pi-agent-dir) shift; [ $# -gt 0 ] || die "--pi-agent-dir requires a path (or '' for the default Pi profile)"; CATALOG_PI_AGENT_DIR="$([ -n "$1" ] && expand_path "$1" || true)"; CATALOG_OVERRIDES+=(--pi-agent-dir "$CATALOG_PI_AGENT_DIR") ;;
     --provider-name) shift; [ $# -gt 0 ] || die "--provider-name requires a name"; PROVIDER_NAME="$1"; CATALOG_OVERRIDES+=(--provider-name "$1") ;;
+    --gateway-key-file) shift; [ $# -gt 0 ] || die "--gateway-key-file requires a path"; GATEWAY_KEY_FILE="$(expand_path "$1")"; CATALOG_OVERRIDES+=(--gateway-key-file "$GATEWAY_KEY_FILE") ;;
     --direct-launchers|--ls99-extras) DIRECT_LAUNCHERS=1; CATALOG_OVERRIDES+=(--direct-launchers) ;;
     --no-direct-launchers) DIRECT_LAUNCHERS=0; CATALOG_OVERRIDES+=(--no-direct-launchers) ;;
     --overlay) shift; [ $# -gt 0 ] || die "--overlay requires a package directory"; OVERLAY_DIRS+=("$(expand_path "$1")") ;;
@@ -396,10 +402,27 @@ direct_preflight() {
     || die "Cannot safely initialize direct-only routing"
 }
 
+# The Pi provider apiKey: a key-file command reference when requested, else the
+# legacy shared key.
+gateway_api_key() {
+  [ -n "$GATEWAY_KEY_FILE" ] || { printf 'cloud\n'; return 0; }
+  python3 -B - "$ROOT_DIR/lib" "$GATEWAY_KEY_FILE" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from pi_gateway import key_reference, read_key
+try:
+    read_key(sys.argv[2])
+except (OSError, ValueError) as exc:
+    raise SystemExit(f"--gateway-key-file: {exc}")
+print(key_reference(sys.argv[2]))
+PY
+}
+
 enable_gateway() {
-  local check="$1"
+  local check="$1" api_key
+  api_key="$(gateway_api_key)" || return 1
   local args=(--aliases "$ALIASES_PATH" --models-out "$MODELS_OUT" --shared-dir "$ROOT_DIR"
-    --provider-name "${PROVIDER_NAME:-model-gateway}" --gateway-url "$(gateway_discovery url)" --gateway-api-key cloud)
+    --provider-name "${PROVIDER_NAME:-model-gateway}" --gateway-url "$(gateway_discovery url)" --gateway-api-key "$api_key")
   [ -z "$CATALOG_PI_AGENT_DIR" ] || args+=(--pi-agent-dir "$CATALOG_PI_AGENT_DIR")
   [ "$BOOTSTRAP_LAUNCHERS" -eq 0 ] || args+=(--allow-empty-catalog)
   case "$DIRECT_LAUNCHERS" in
@@ -518,6 +541,11 @@ PY
   if [ -n "$PROVIDER_NAME" ]; then
     cmd+=(--provider-name "$PROVIDER_NAME")
   fi
+  if [ -n "$GATEWAY_KEY_FILE" ]; then
+    local api_key
+    api_key="$(gateway_api_key)" || die "Unusable gateway key file"
+    cmd+=(--gateway-api-key "$api_key")
+  fi
   case "$DIRECT_LAUNCHERS" in
     1) cmd+=(--direct-launchers) ;;
     0) cmd+=(--no-direct-launchers) ;;
@@ -547,6 +575,11 @@ migrate_legacy_launcher_path() {
 main() {
   [ "$(uname -s)" = "Darwin" ] || warn "pi-shared installer is intended for macOS; continuing because no launchd changes are required"
   direct_preflight
+  if [ -n "$GATEWAY_KEY_FILE" ]; then
+    [ -n "$CLI_OUT" ] || die "--gateway-key-file requires JSON routing (--cli-out); legacy zsh re-runs would drop it"
+    [ "$GENERATE_CATALOG" -eq 1 ] || die "--gateway-key-file has no effect with --no-catalog"
+    gateway_api_key >/dev/null || die "Unusable gateway key file"
+  fi
   gateway_preflight
   codex_context_policy --check
   log "Installing pi-shared from $ROOT_DIR"

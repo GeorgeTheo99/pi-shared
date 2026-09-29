@@ -780,3 +780,44 @@ def test_cli_installer_migrates_legacy_without_rewriting_or_executing_shell(mach
     config = json.loads(machine["config"].read_text())
     assert config["routes"]["test"]["provider"] == "original-provider"
     assert "openai" not in config["routes"]
+
+
+def test_gateway_key_file_override_stores_reference_not_token(machine):
+    sys.path.insert(0, str(ROOT / "lib"))
+    from pi_cli import configure
+    assert render(machine).returncode == 0
+    models_path = machine["home"] / ".pi-omlx/agent/models.json"
+    key = machine["home"] / "pi-runtime.key"
+    key.write_text("consumer-test-token\n")
+    key.chmod(0o600)
+    configure(machine["config"], ["--gateway-key-file", str(key)])
+    api_key = json.loads(models_path.read_text())["providers"]["model-gateway"]["apiKey"]
+    assert api_key.startswith("!")
+    resolved = subprocess.run(["sh", "-c", api_key[1:]], capture_output=True, text=True)
+    assert resolved.returncode == 0, resolved.stderr
+    assert resolved.stdout.strip() == "consumer-test-token"
+    for path in (machine["config"], models_path):
+        assert "consumer-test-token" not in path.read_text()
+    # Routine refresh (pi-shared update) keeps the reference.
+    result = launch(machine, "--launcher-refresh", upstream=False)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(models_path.read_text())["providers"]["model-gateway"]["apiKey"] == api_key
+    key.chmod(0o644)
+    with pytest.raises(ValueError, match="mode-0600"):
+        configure(machine["config"], ["--gateway-key-file", str(key)])
+
+
+def test_gateway_key_file_override_refuses_remote_gateway_launcher(machine):
+    sys.path.insert(0, str(ROOT / "lib"))
+    from pi_cli import configure
+    remote_aliases = machine["config"].with_name(machine["config"].stem + ".gateway-aliases.json")
+    remote_aliases.write_text(json.dumps(ALIASES))
+    machine["aliases"] = remote_aliases
+    assert render(machine).returncode == 0
+    key = machine["home"] / "pi-runtime.key"
+    key.write_text("consumer-test-token\n")
+    key.chmod(0o600)
+    before = machine["config"].read_bytes()
+    with pytest.raises(ValueError, match="pi-gateway connect"):
+        configure(machine["config"], ["--gateway-key-file", str(key)])
+    assert machine["config"].read_bytes() == before

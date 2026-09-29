@@ -304,3 +304,44 @@ def test_add_gateway_bootstrap_without_catalog_retains_native_routes(machine):
     assert set(config["routes"]) == {"openai", "anthropic"}
     assert not (machine["home"] / ".pi-omlx/agent/models.json").exists()
     assert launch(machine, "--launcher-check", upstream=False).returncode == 0
+
+
+def _key(machine, mode=0o600):
+    key = machine["home"] / "pi-runtime.key"
+    key.write_text("installer-test-token\n")
+    key.chmod(mode)
+    return key
+
+
+def _gateway_install(machine, *args, cli=True):
+    env = {**machine["env"], "PI_SHARED_ALIASES": str(machine["aliases"])}
+    if cli:
+        env["PI_SHARED_CLI_OUT"] = str(machine["config"])
+    return subprocess.run([str(ROOT / "bin/pi-shared-install"), "--no-deps", *args],
+                          env=env, capture_output=True, text=True, timeout=60)
+
+
+def test_installer_gateway_key_file_fresh_install_and_rerun_keep_reference(machine):
+    key = _key(machine)
+    result = _gateway_install(machine, "--gateway-key-file", str(key))
+    assert result.returncode == 0, result.stderr
+    models_path = machine["home"] / ".pi-omlx/agent/models.json"
+    api_key = json.loads(models_path.read_text())["providers"]["model-gateway"]["apiKey"]
+    resolved = subprocess.run(["sh", "-c", api_key[1:]], capture_output=True, text=True)
+    assert api_key.startswith("!") and resolved.stdout.strip() == "installer-test-token"
+    assert "installer-test-token" not in result.stdout + result.stderr
+    for path in machine["home"].rglob("*"):
+        if path.is_file() and path != key:
+            assert b"installer-test-token" not in path.read_bytes(), path
+    assert _gateway_install(machine).returncode == 0  # a plain update rerun
+    assert json.loads(models_path.read_text())["providers"]["model-gateway"]["apiKey"] == api_key
+
+
+@pytest.mark.parametrize("case", ["unsafe-key", "zsh-only", "no-catalog"])
+def test_installer_gateway_key_file_rejected_before_writes(machine, case):
+    key = _key(machine, 0o644 if case == "unsafe-key" else 0o600)
+    extra = ["--no-catalog"] if case == "no-catalog" else []
+    before = {p for p in machine["home"].rglob("*") if p != key}
+    result = _gateway_install(machine, "--gateway-key-file", str(key), *extra, cli=case != "zsh-only")
+    assert result.returncode != 0
+    assert {p for p in machine["home"].rglob("*") if p != key} == before

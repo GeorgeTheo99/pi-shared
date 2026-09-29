@@ -358,6 +358,16 @@ def configure(path, overrides):
                 values.pop(flag, None)
             else:
                 values[flag] = value
+        elif flag == "--gateway-key-file" and i < len(overrides):
+            # A remote connection's credential belongs to that host; changing it
+            # here would send a local key elsewhere and break pi-gateway check.
+            if values.get("--aliases") == str(path.with_name(path.stem + ".gateway-aliases.json")):
+                raise ValueError("Remote gateway launchers manage their key; use pi-gateway connect --key-file")
+            # Pi reads the key at request time; the token itself is never stored.
+            from pi_gateway import key_reference, read_key
+            read_key(overrides[i])
+            values["--gateway-api-key"] = key_reference(overrides[i])
+            i += 1
         else:
             raise ValueError("Unsupported installer routing override")
     args = [part for flag, value in values.items() for part in ([flag] if value is True else [flag, value])]

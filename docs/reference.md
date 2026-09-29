@@ -299,6 +299,14 @@ Neither helper signs in or copies credentials.
   `--provider-name` explicitly overrides it. Multi-provider outputs require an
   explicit provider name. Launcher-only generation without `--models-out`
   cannot infer an existing model provider; pass `--provider-name` in that case.
+- Gateway routes authenticate with the legacy shared key `cloud` unless the
+  installer receives `--gateway-key-file PATH`, a mode-0600 consumer key such as
+  the local gateway's `pi-runtime` key. The generated `apiKey` is a
+  `!pi-gateway key --key-file PATH` reference that Pi resolves per request; the
+  token is never written to generated files, and later refreshes keep the
+  reference. It requires JSON routing (`--cli-out`) and is refused for remote
+  gateway launchers, which keep their own key through `pi-gateway connect`. An
+  unusable key file is rejected before the installer changes anything.
 
 ### Commands before model configuration
 
