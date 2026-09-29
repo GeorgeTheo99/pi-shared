@@ -707,7 +707,8 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 			requests = readOutgoingMessageStatuses(ctx.sessionManager.getSessionId()).filter((item) => item.responseRequested);
 		} catch {
 			const text = "Peer responses — status unavailable; inspect peer_message_status.";
-			if (responseWidgetText !== text) ctx.ui.setWidget(RESPONSE_WIDGET, [text]);
+			if (responseWidgetText === text) return;
+			ctx.ui.setWidget(RESPONSE_WIDGET, [text]);
 			responseWidgetText = text;
 			return;
 		}
@@ -717,8 +718,9 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 		if (requests.length > 5) rows.push(`${requests.length - 5} older requests — inspect peer_message_status`);
 		const text = rows.length ? ["Peer responses", ...rows].join("\n") : "";
 		if (text === responseWidgetText) return;
-		responseWidgetText = text;
+		// Cache only after a successful update so a failed update is retried and reported.
 		ctx.ui.setWidget(RESPONSE_WIDGET, text ? text.split("\n") : undefined);
+		responseWidgetText = text;
 	}
 
 	function refreshIncomingResponseWidget(ctx: ExtensionContext): void {
