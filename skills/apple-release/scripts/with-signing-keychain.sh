@@ -4,15 +4,9 @@
 # --search-list temporarily prepends the keychain to the user search list (xcodebuild
 # only finds identities there) and restores the exact previous list on exit.
 # Runs are serialized so one run never locks the keychain or restores the search
-# list underneath another.
+# list underneath another. Do not nest calls: the inner one would wait for the outer.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
-
-if [ -z "${APPLE_RELEASE_KEYCHAIN_HELD:-}" ]; then
-  lock_dir="$(dirname "$APPLE_RELEASE_CONFIG")"
-  [ -d "$lock_dir" ] || die "not configured: $APPLE_RELEASE_CONFIG"
-  APPLE_RELEASE_KEYCHAIN_HELD=1 exec /usr/bin/lockf -k -t 7200 "$lock_dir/.keychain.lock" "$0" "$@"
-fi
 
 search_list=0
 while [ $# -gt 0 ]; do
@@ -25,6 +19,7 @@ done
 [ $# -gt 0 ] || die "no command given"
 load_config
 require_signing_keychain
+hold_keychain_lock 7200 "another apple-release run held the signing keychain for over 2 hours"
 
 previous=()
 restore() {
@@ -47,4 +42,4 @@ if [ "$search_list" -eq 1 ]; then
   [ "${#previous[@]}" -gt 0 ] || die "could not read the keychain search list"
   security list-keychains -d user -s "$SIGNING_KEYCHAIN" "${previous[@]}"
 fi
-"$@"
+"$@" 9>&-

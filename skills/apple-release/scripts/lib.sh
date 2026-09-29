@@ -49,6 +49,17 @@ require_signing_keychain() {
   require_private_file "$SIGNING_KEYCHAIN_PASSWORD_FILE" "signing keychain password file"
 }
 
+# Serialize every use of the signing keychain. The lock lives on fd 9 of the calling
+# shell, so it is held until that shell exits, after its EXIT trap has relocked.
+# Commands run under the lock must not inherit fd 9 (run them with `9>&-`).
+hold_keychain_lock() {
+  local timeout="$1" message="$2" lock_dir
+  lock_dir="$(dirname "$APPLE_RELEASE_CONFIG")"
+  [ -d "$lock_dir" ] || die "not configured: $APPLE_RELEASE_CONFIG"
+  exec 9>>"$lock_dir/.keychain.lock"
+  /usr/bin/lockf -s -t "$timeout" 9 || die "$message"
+}
+
 # Unlock through the Security API: no password in argv and no TTY prompt, so it
 # also works from background (non-GUI) sessions where the login keychain cannot.
 unlock_signing_keychain() {

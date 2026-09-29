@@ -14,7 +14,7 @@ SOURCE="${SETUP_SOURCE_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
 # Rehearsal only: self-signed test identities are never "valid".
 VALID=(-v); [ "${SETUP_VALID_ONLY:-1}" = 1 ] || VALID=()
 TMP="" KC="" imported=0
-pause() { if [ -t 0 ]; then printf 'Press Return to close.'; read -r _; fi; }
+pause() { if [ -t 0 ]; then printf 'Press Return to close.'; read -r _ || true; fi; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; pause; exit 1; }
 
 # `security export` cannot select identities, so everything else is deleted after import.
@@ -30,6 +30,15 @@ for line in sys.stdin:
         print(match.group(1))
 ' "$wanted" <<<"$listing" | sort -u | while read -r hash; do
     security delete-identity -Z "$hash" "$KC" >/dev/null 2>&1 || true
+  done
+}
+# Expired or revoked identities could make signing by name ambiguous; keep only valid ones.
+drop_invalid_identities() {
+  local all valid
+  all="$(security find-identity -p basic "$KC" | sed -nE 's/^ *[0-9]+\) ([0-9A-F]{40}) .*/\1/p' | sort -u)"
+  valid="$(security find-identity -v -p basic "$KC" | sed -nE 's/^ *[0-9]+\) ([0-9A-F]{40}) .*/\1/p' | sort -u)"
+  comm -23 <(printf '%s\n' "$all") <(printf '%s\n' "$valid") | while read -r hash; do
+    [ -z "$hash" ] || security delete-identity -Z "$hash" "$KC" >/dev/null 2>&1 || true
   done
 }
 cleanup() {
@@ -49,6 +58,7 @@ if [ -z "${SIGNING_KEYCHAIN:-}" ] || [ -z "${SIGNING_KEYCHAIN_PASSWORD_FILE:-}" 
   load_config
 fi
 wanted="^Developer ID (Application|Installer): .* \\($APPLE_TEAM_ID\\)\$"
+hold_keychain_lock 0 "an apple-release run is using the signing keychain; re-run setup when it finishes"
 printf '== apple-release signing keychain setup %s ==\n' "$(date)"
 
 if [ -e "$SIGNING_KEYCHAIN" ]; then
@@ -82,6 +92,7 @@ imported=1
 security import "$TMP/identities.p12" -k "$KC" -P "$P12PW" -T /usr/bin/codesign -T /usr/bin/productsign >/dev/null 2>&1 || true
 rm -P "$TMP/identities.p12"
 drop_foreign_identities
+if [ "${#VALID[@]}" -gt 0 ]; then drop_invalid_identities; fi
 security set-key-partition-list -S apple-tool:,apple: -s -k "$(cat "$SIGNING_KEYCHAIN_PASSWORD_FILE")" "$KC" >/dev/null
 
 # Every identity left, valid or not, must be this team's Developer ID.

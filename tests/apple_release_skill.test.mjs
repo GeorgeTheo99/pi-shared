@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -189,6 +190,30 @@ test("with-signing-keychain.sh still locks when restoring the search list fails"
   assert.match(tools.calls(), new RegExp(`security lock-keychain ${keychain}`));
   const info = spawnSync("/usr/bin/security", ["show-keychain-info", keychain], { encoding: "utf8" });
   assert.notEqual(info.status, 0, "keychain must be locked");
+});
+
+test("with-signing-keychain.sh waits for a concurrent holder of the keychain lock", async (t) => {
+  const { dir, config } = keychainSandbox(t);
+  const holder = spawn("/usr/bin/lockf", ["-k", join(dir, ".keychain.lock"), "sleep", "2"]);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const started = Date.now();
+  const result = run("with-signing-keychain.sh", ["--", "true"], { APPLE_RELEASE_CONFIG: config });
+  await once(holder, "exit");
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(Date.now() - started >= 1200, "the run must wait for the lock holder");
+});
+
+test("with-signing-keychain.sh relocks and releases its lock when terminated", async (t) => {
+  const { dir, keychain, config } = keychainSandbox(t);
+  const child = spawn(join(scripts, "with-signing-keychain.sh"), ["--", "sleep", "1"],
+    { env: { ...process.env, APPLE_RELEASE_CONFIG: config } });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  child.kill("SIGTERM");
+  const [code, signal] = await once(child, "exit");
+  assert.ok(code !== 0 || signal, "a terminated run must not report success");
+  assert.notEqual(spawnSync("/usr/bin/security", ["show-keychain-info", keychain]).status, 0, "keychain must be locked");
+  assert.equal(spawnSync("/usr/bin/lockf", ["-s", "-t", "0", join(dir, ".keychain.lock"), "true"]).status, 0,
+    "the lock must be released");
 });
 
 function notarySandbox(t, status) {
