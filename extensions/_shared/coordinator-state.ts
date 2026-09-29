@@ -147,6 +147,7 @@ export function coordinatorConfig() {
 			parsePositiveInteger(process.env.PI_SESSION_COORDINATOR_LEASE_MS, DEFAULT_LEASE_MS, 1_000),
 			heartbeatMs * 3,
 		),
+		steerResponses: process.env.PI_SESSION_COORDINATOR_STEER !== "0",
 	};
 }
 

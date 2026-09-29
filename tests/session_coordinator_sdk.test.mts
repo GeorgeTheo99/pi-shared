@@ -29,14 +29,16 @@ function completion(model: any, content: any[]) {
 	return stream;
 }
 
-async function fixture(run: (f: { makeSession: (before?: ExtensionFactory[], ephemeral?: boolean) => Promise<any>; stats: { work: number } }) => Promise<void>) {
+async function fixture(run: (f: { makeSession: (before?: ExtensionFactory[], ephemeral?: boolean) => Promise<any>; stats: { work: number } }) => Promise<void>, env: Record<string, string> = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "pi-coordinator-sdk-"));
-	const variables = ["PI_SESSION_COORDINATOR_DIR", "PI_SESSION_COORDINATOR_POLL_MS", "PI_SESSION_COORDINATOR_HEARTBEAT_MS", "PI_SUBAGENT_DEPTH"];
+	const variables = ["PI_SESSION_COORDINATOR_DIR", "PI_SESSION_COORDINATOR_POLL_MS", "PI_SESSION_COORDINATOR_HEARTBEAT_MS", "PI_SUBAGENT_DEPTH", "PI_SESSION_COORDINATOR_STEER"];
 	const previous = variables.map((key) => process.env[key]);
 	process.env.PI_SESSION_COORDINATOR_DIR = join(dir, "state");
 	process.env.PI_SESSION_COORDINATOR_POLL_MS = "50";
 	process.env.PI_SESSION_COORDINATOR_HEARTBEAT_MS = "100";
 	process.env.PI_SUBAGENT_DEPTH = "0";
+	delete process.env.PI_SESSION_COORDINATOR_STEER;
+	Object.assign(process.env, env);
 	const fetch = globalThis.fetch;
 	let networkAttempts = 0;
 	globalThis.fetch = async () => { networkAttempts++; throw new Error("Network forbidden in this fixture"); };
@@ -91,43 +93,100 @@ async function request(sender: any, recipient: any) {
 
 const status = (sender: any) => state.readOutgoingMessageStatuses(sender.sessionManager.getSessionId())[0];
 
-test("real SDK: a busy recipient finishes its task before automatically answering", { timeout: 20000 }, async () => {
+for (const steer of [true, false]) {
+	const title = steer
+		? "real SDK: a busy recipient answers after its current step, then resumes its task"
+		: "real SDK: with steering disabled, a busy recipient finishes its task before automatically answering";
+	test(title, { timeout: 20000 }, async () => {
+		await fixture(async ({ makeSession }) => {
+			const sender = await makeSession();
+			const recipient = await makeSession();
+			let calls = 0;
+			let senderCalls = 0;
+			let finish!: () => void;
+			const contexts: string[] = [];
+			sender.agent.streamFunction = (model: any) => { senderCalls++; return completion(model, [{ type: "text", text: "Received." }]); };
+			recipient.agent.streamFunction = (model: any, context: any) => {
+				calls++;
+				contexts.push(JSON.stringify(context.messages));
+				if (calls === 1) {
+					const stream = createAssistantMessageEventStream();
+					finish = () => {
+						void (async () => {
+							for await (const event of completion(model, [{ type: "text", text: "Original step finished." }])) stream.push(event);
+							stream.end();
+						})();
+					};
+					return stream;
+				}
+				return completion(model, calls === 2
+					? [{ type: "toolCall", id: "busy-reply", name: "peer_send", arguments: { target: peer(sender).runtimeId, inReplyTo: status(sender).messageId, message: "Done with my files." } }]
+					: [{ type: "text", text: "Answered; original task resumed." }]);
+			};
+			const work = recipient.prompt("Do my existing work.");
+			await waitUntil(() => calls === 1);
+			try {
+				await request(sender, recipient);
+				await waitUntil(() => status(sender)?.effectiveStatus === "delivered");
+				if (steer) await waitUntil(() => recipient.agent.hasQueuedMessages());
+				assert.equal(calls, 1, "the current step is never interrupted");
+				assert.equal(recipient.isIdle, false);
+				assert.equal(status(sender).effectiveStatus, "delivered", "a queued steer is not yet surfaced");
+			} finally { finish(); }
+			await work;
+			await waitUntil(() => senderCalls === 1 && recipient.isIdle && sender.isIdle);
+			assert.equal(calls, 3);
+			assert.equal(status(sender).responseStatus, "answered");
+			assert.match(contexts[1], steer ? /send one concise reply now, then continue that task/ : /Automatic peer coordination turn/);
+			assert.match(contexts[1], /read-only lookups/);
+			const entries = recipient.sessionManager.getEntries();
+			const wakes = entries.filter((entry: any) => entry.customType === "pi-peer-wake");
+			assert.equal(wakes.length, steer ? 0 : 1, steer ? "an answered steered request needs no idle wake" : "idle wake after the task");
+			assert.equal(entries.filter((entry: any) => entry.customType === "pi-peer-message").length, 1);
+			await recipient.extensionRunner.emit({ type: "agent_settled" });
+			assert.equal(calls, 3, "no follow-up wake or reply loop");
+		}, steer ? {} : { PI_SESSION_COORDINATOR_STEER: "0" });
+	});
+}
+
+test("real SDK: a steer kept queued by a non-interactive abort cannot duplicate the peer message", { timeout: 20000 }, async () => {
 	await fixture(async ({ makeSession }) => {
 		const sender = await makeSession();
 		const recipient = await makeSession();
 		let calls = 0;
-		let senderCalls = 0;
-		let finish!: () => void;
-		sender.agent.streamFunction = (model: any) => { senderCalls++; return completion(model, [{ type: "text", text: "Received." }]); };
-		recipient.agent.streamFunction = (model: any) => {
+		const contexts: string[] = [];
+		sender.agent.streamFunction = (model: any) => completion(model, [{ type: "text", text: "Received." }]);
+		recipient.agent.streamFunction = (model: any, context: any, options: any) => {
 			calls++;
-			if (calls === 1) {
-				const stream = createAssistantMessageEventStream();
-				finish = () => {
-					void (async () => {
-						for await (const event of completion(model, [{ type: "text", text: "Original task finished." }])) stream.push(event);
-						stream.end();
-					})();
-				};
-				return stream;
-			}
-			return completion(model, calls === 2
-				? [{ type: "toolCall", id: "busy-reply", name: "peer_send", arguments: { target: peer(sender).runtimeId, inReplyTo: status(sender).messageId, message: "Done with my files." } }]
-				: [{ type: "text", text: "Answered." }]);
+			contexts.push(JSON.stringify(context.messages));
+			if (calls > 1) return completion(model, [{ type: "text", text: "Cannot answer yet." }]);
+			const stream = createAssistantMessageEventStream();
+			options.signal.addEventListener("abort", () => {
+				const message: any = { role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					stopReason: "aborted", content: [] };
+				stream.push({ type: "error", reason: "aborted", error: message });
+				stream.end();
+			});
+			return stream;
 		};
 		const work = recipient.prompt("Do my existing work.");
 		await waitUntil(() => calls === 1);
-		try {
-			await request(sender, recipient);
-			await waitUntil(() => status(sender)?.effectiveStatus === "delivered");
-			assert.equal(calls, 1);
-			assert.equal(recipient.isIdle, false);
-			assert.equal(recipient.sessionManager.getEntries().some((entry: any) => entry.customType === "pi-peer-wake"), false);
-		} finally { finish(); }
+		await request(sender, recipient);
+		await waitUntil(() => recipient.agent.hasQueuedMessages());
+		await recipient.abort(); // unlike interactive Escape, SDK/RPC abort does not clear queued steering
 		await work;
-		await waitUntil(() => senderCalls === 1 && recipient.isIdle && sender.isIdle);
-		assert.equal(calls, 3);
-		assert.equal(status(sender).responseStatus, "answered");
+		// Depending on the SDK, the queued steer lands before idle or after the idle
+		// fallback re-delivered the card; either way the question appears once.
+		await waitUntil(() => calls >= 2 && recipient.isIdle && !recipient.agent.hasQueuedMessages());
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		const cards = recipient.sessionManager.getEntries().filter((entry: any) => entry.customType === "pi-peer-message");
+		const visible = cards.filter((entry: any) => entry.display !== false);
+		assert.equal(visible.length, 1);
+		assert.match(JSON.stringify(visible[0].content), /Which files changed\?/);
+		for (const stub of cards.filter((entry: any) => entry.display === false)) assert.match(JSON.stringify(stub.content), /Duplicate of peer message/);
+		for (const context of contexts) assert.ok(context.split("Which files changed?").length - 1 <= 1, "the model never sees the question twice");
+		assert.equal(status(sender).responseStatus, "pending");
 	});
 });
 

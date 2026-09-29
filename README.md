@@ -300,8 +300,9 @@ sandboxed. [Workflow contract](extensions/workflow/README.md).
 
 `peer_sessions`, `peer_send`, and receipt tools coordinate live sessions on the
 same machine. Notifications stay silent; explicit response requests and correlated
-replies can schedule an idle turn in compatible persistent sessions. They do not
-interrupt busy work, restart closed sessions, guarantee answers, or lock shared files.
+replies can reach compatible persistent sessions after their current tool step when busy,
+or in an automatic turn when idle. They never abort work, restart closed sessions,
+guarantee answers, or lock shared files.
 [Messaging and wake semantics](extensions/session-coordinator/README.md).
 
 ### Project memory

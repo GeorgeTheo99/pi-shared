@@ -17,6 +17,7 @@ const originalDepth = process.env.PI_SUBAGENT_DEPTH;
 process.env.PI_SUBAGENT_DEPTH = "0";
 
 const state = await import("../extensions/_shared/coordinator-state.ts");
+const { makeHandoffRecord, SELF_HANDOFF_STATE_TYPE } = await import("../extensions/_shared/handoff-state.ts");
 const {
 	default: sessionCoordinator,
 	formatPeers,
@@ -54,6 +55,7 @@ function createHarness(
 		failWake?: boolean;
 		ephemeral?: boolean;
 		mode?: "tui" | "rpc";
+		steer?: boolean;
 	} = {},
 ) {
 	const handlers = new Map<string, Array<(event: any, ctx: any) => Promise<void> | void>>();
@@ -65,6 +67,8 @@ function createHarness(
 	const notifications: Array<{ message: string; level: string }> = [];
 	const widgets = new Map<string, string[]>();
 	const sessionWriteErrors: unknown[] = [];
+	// Like the SDK, a steered message joins the session only when the run consumes it.
+	let steering: any[] = [];
 	const entries: any[] = options.entries ?? [];
 	const sessionId = options.sessionId ?? crypto.randomUUID();
 	let idle = options.idle ?? true;
@@ -115,6 +119,10 @@ function createHarness(
 			sentMessages.push({ message, options: deliveryOptions });
 			if (options.failWake && deliveryOptions?.triggerTurn) throw new Error("simulated wake failure");
 			const entry = { type: "custom_message", customType: message.customType, content: message.content, details: message.details };
+			if (deliveryOptions?.deliverAs === "steer") {
+				steering.push(entry);
+				return;
+			}
 			entries.push(entry);
 			// The SDK mutates memory before persisting, and ExtensionAPI.sendMessage
 			// reports an asynchronous append failure without throwing to the caller.
@@ -127,7 +135,14 @@ function createHarness(
 			options.onSendMessage?.();
 		},
 	};
-	sessionCoordinator(pi as any);
+	const steerSetting = process.env.PI_SESSION_COORDINATOR_STEER;
+	if (options.steer === false) process.env.PI_SESSION_COORDINATOR_STEER = "0";
+	try {
+		sessionCoordinator(pi as any);
+	} finally {
+		if (steerSetting === undefined) delete process.env.PI_SESSION_COORDINATOR_STEER;
+		else process.env.PI_SESSION_COORDINATOR_STEER = steerSetting;
+	}
 	return {
 		handlers,
 		tools,
@@ -143,6 +158,22 @@ function createHarness(
 		setIdle(value: boolean) {
 			idle = value;
 		},
+		async consumeSteering() {
+			const consumed = steering;
+			steering = [];
+			// As in the SDK, extensions see message_end (and may replace it) before persistence.
+			for (const entry of consumed) {
+				let message: any = { role: "custom", customType: entry.customType, content: entry.content, details: entry.details };
+				for (const handler of handlers.get("message_end") ?? []) {
+					const result: any = await handler({ type: "message_end", message }, ctx);
+					if (result?.message) message = result.message;
+				}
+				entries.push({ ...entry, content: message.content, display: message.display });
+			}
+		},
+		dropSteering() {
+			steering = [];
+		},
 	};
 }
 
@@ -150,9 +181,9 @@ async function emit(harness: ReturnType<typeof createHarness>, event: string) {
 	for (const handler of harness.handlers.get(event) ?? []) await handler({ type: event }, harness.ctx);
 }
 
-async function responsePair() {
-	const sender = createHarness();
-	const recipient = createHarness({ idle: false });
+async function responsePair(options: { steer?: boolean } = {}) {
+	const sender = createHarness({ steer: options.steer });
+	const recipient = createHarness({ idle: false, steer: options.steer });
 	await emit(sender, "session_start");
 	await emit(recipient, "session_start");
 	const peers = state.listAllActivePeers();
@@ -168,9 +199,14 @@ async function responsePair() {
 }
 
 const responseWakes = (harness: ReturnType<typeof createHarness>) => harness.sentMessages.filter((item) => item.options?.triggerTurn === true);
+const idleWakes = (harness: ReturnType<typeof createHarness>) => harness.sentMessages.filter((item) => item.options?.deliverAs === "followUp");
+const steers = (harness: ReturnType<typeof createHarness>, messageId: string) =>
+	harness.sentMessages.filter((item) => item.options?.deliverAs === "steer" && item.message.details?.messageId === messageId);
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// With steering disabled, busy recipients keep the original wait-for-idle behavior.
 test("requests and correlated replies automatically wake idle peers without restricting normal work", async () => {
-	const pair = await responsePair();
+	const pair = await responsePair({ steer: false });
 	const { sender, recipient, senderPeer } = pair;
 	try {
 		assert.equal(pair.recipientPeer.requestResponseVersion, 1);
@@ -205,6 +241,120 @@ test("requests and correlated replies automatically wake idle peers without rest
 		assert.equal(responseWakes(recipient).length, 1, "settled/poll cycles must not repeat a wake");
 	} finally { await pair.close(); }
 });
+
+test("busy peers receive requests and correlated replies by steering, without a redundant idle wake", async () => {
+	const pair = await responsePair();
+	const { sender, recipient, senderPeer } = pair;
+	try {
+		const requestId = (await pair.request()).details.message.id;
+		await waitUntil(() => steers(recipient, requestId).length === 1);
+		const card = steers(recipient, requestId)[0];
+		assert.deepEqual(card.options, { triggerTurn: true, deliverAs: "steer" });
+		assert.match(card.message.content, /send one concise reply now, then continue that task/);
+		assert.match(card.message.content, /Lead with the direct answer/);
+		assert.match(card.message.content, /read-only lookups/);
+		assert.match(card.message.content, /do not edit files/);
+		assert.match(card.message.content, /never read or disclose secrets/);
+		await sleep(200);
+		assert.equal(steers(recipient, requestId).length, 1, "polling must not re-steer a queued message");
+		assert.equal(state.readOutgoingMessageStatuses(senderPeer.sessionId, requestId)[0].effectiveStatus, "delivered",
+			"an unconsumed steer is not surfaced");
+		await recipient.consumeSteering();
+		await waitUntil(() => state.readOutgoingMessageStatuses(senderPeer.sessionId, requestId)[0]?.effectiveStatus === "surfaced");
+
+		sender.setIdle(false);
+		await emit(sender, "agent_start");
+		const reply = await recipient.tools.get("peer_send").execute("reply", {
+			target: senderPeer.runtimeId, inReplyTo: requestId, message: "No overlap.",
+		}, undefined, undefined, recipient.ctx);
+		const replyId = reply.details.message.id;
+		await waitUntil(() => steers(sender, replyId).length === 1);
+		assert.match(steers(sender, replyId)[0].message.content, /use this reply if relevant, then continue that task/);
+		await sender.consumeSteering();
+		await waitUntil(() => state.readOutgoingMessageStatuses(pair.recipientPeer.sessionId, replyId)[0]?.effectiveStatus === "surfaced");
+
+		for (const harness of [sender, recipient]) {
+			harness.setIdle(true);
+			await emit(harness, "agent_settled");
+		}
+		await sleep(150);
+		assert.equal(idleWakes(recipient).length, 0, "an answered steered request needs no idle wake");
+		assert.equal(idleWakes(sender).length, 0, "a reply the run already consumed needs no idle wake");
+		assert.equal(sender.sentMessages.filter((item) => item.message.details?.messageId === replyId).length, 1);
+	} finally { await pair.close(); }
+});
+
+test("a dropped steer falls back to idle delivery, and an unanswered steered request gets one idle wake", async () => {
+	const pair = await responsePair();
+	try {
+		const dropped = (await pair.request("First question")).details.message.id;
+		await waitUntil(() => steers(pair.recipient, dropped).length === 1);
+		pair.recipient.dropSteering(); // e.g. the user aborted the run
+		const ignored = (await pair.request("Second question")).details.message.id;
+		await waitUntil(() => steers(pair.recipient, ignored).length === 1);
+		await pair.recipient.consumeSteering(); // seen mid-run, but never answered
+		await waitUntil(() => state.readOutgoingMessageStatuses(pair.senderPeer.sessionId, ignored)[0]?.effectiveStatus === "surfaced");
+
+		pair.recipient.setIdle(true);
+		await emit(pair.recipient, "agent_settled");
+		const redelivered = pair.recipient.sentMessages.filter((item) => item.message.details?.messageId === dropped);
+		assert.equal(redelivered.length, 2);
+		assert.deepEqual(redelivered[1].options, { triggerTurn: false });
+		assert.match(redelivered[1].message.content, /automatic coordination turn is scheduled when idle/);
+		assert.equal(pair.recipient.entries.filter((entry) => entry.details?.messageId === dropped).length, 1);
+		await waitUntil(() => idleWakes(pair.recipient).length === 1);
+		assert.deepEqual([...idleWakes(pair.recipient)[0].message.details.requests].sort(), [dropped, ignored].sort());
+		assert.match(idleWakes(pair.recipient)[0].message.content, /read-only lookups/);
+	} finally { await pair.close(); }
+});
+
+const busyDeliveryCases: Array<[string, { requestResponse: boolean; compacting?: boolean; orientation?: "invalid" | "pending"; steer?: boolean }]> = [
+	["notifications wait for idle", { requestResponse: false }],
+	["a run-less compaction is not steered", { requestResponse: true, compacting: true }],
+	["a self-handoff orientation turn is not steered", { requestResponse: true, orientation: "pending" }],
+	["an unreadable self-handoff orientation state fails closed", { requestResponse: true, orientation: "invalid" }],
+	["the steering opt-out keeps busy work undisturbed", { requestResponse: true, steer: false }],
+];
+for (const [name, options] of busyDeliveryCases) {
+	test(`busy delivery: ${name}`, async () => {
+		const sender = createHarness();
+		const sessionId = crypto.randomUUID();
+		const sessionFile = path.join(workspace, `${sessionId}.jsonl`);
+		const orientation = options.orientation === "pending"
+			? makeHandoffRecord({
+				version: 1, id: "handoff-1", createdAt: 1, originSessionId: "parent", originSessionFile: "/tmp/parent.jsonl",
+				contextNonce: "nonce-1234567890abcdef", goalTransferred: false, workPlanTransferred: false,
+			}, "received", { targetSessionId: sessionId, targetSessionFile: sessionFile })
+			: { version: 1, request: null };
+		// A compacting recipient starts idle (no agent_start), then stops being idle.
+		const recipient = createHarness({
+			sessionId,
+			sessionFile,
+			idle: options.compacting === true,
+			steer: options.steer,
+			entries: options.orientation ? [{ type: "custom", customType: SELF_HANDOFF_STATE_TYPE, data: orientation }] : [],
+		});
+		await emit(sender, "session_start");
+		await emit(recipient, "session_start");
+		if (options.compacting) recipient.setIdle(false); // not idle, but no agent_start
+		try {
+			const target = state.listAllActivePeers().find((peer) => peer.sessionId === recipient.ctx.sessionManager.getSessionId())!;
+			const sent = await sender.tools.get("peer_send").execute("send", {
+				target: target.runtimeId, message: "Question?", requestResponse: options.requestResponse || undefined,
+			}, undefined, undefined, sender.ctx);
+			const messageId = sent.details.message.id;
+			await waitUntil(() => state.readOutgoingMessageStatuses(sender.ctx.sessionManager.getSessionId(), messageId)[0]?.effectiveStatus === "delivered");
+			await sleep(150);
+			assert.equal(recipient.sentMessages.length, 0, "busy recipient context must not change");
+			recipient.setIdle(true);
+			await emit(recipient, "agent_settled");
+			assert.deepEqual(recipient.sentMessages.find((item) => item.message.details?.messageId === messageId)?.options, { triggerTurn: false });
+		} finally {
+			await emit(recipient, "session_shutdown");
+			await emit(sender, "session_shutdown");
+		}
+	});
+}
 
 test("a consumed wake attempt survives reload without repeating or claiming an answer", async () => {
 	const pair = await responsePair();
@@ -439,7 +589,7 @@ for (const kind of ["non-persistent", "subagent"] as const) {
 }
 
 test("incoming requests notify once, survive reload, and clear after a confirmed reply", async () => {
-	const pair = await responsePair();
+	const pair = await responsePair({ steer: false });
 	let successor: ReturnType<typeof createHarness> | undefined;
 	try {
 		const result = await pair.request();
