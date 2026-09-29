@@ -15,6 +15,9 @@ once the user asked for a release. Never upload to App Store Connect/TestFlight,
 submit for App Review, publish a GitHub release, or put an artifact anywhere
 public without explicit approval for that step. Never create, revoke or
 download certificates or change App Store Connect access without approval.
+Never print, `cat`, copy or log the config values, the `.p8`, or the keychain
+password file; refer to them by path. The setup `.command` is for the user to
+run in Terminal — ask them to; do not launch it on their behalf.
 
 ## 1. Detect what is being shipped
 
@@ -59,10 +62,14 @@ by running `scripts/setup-signing-keychain.command` **in a logged-in Terminal**
 approve exporting identities from the login keychain. It creates (or extends)
 the keychain, keeps only this team's Developer ID identities, records
 `APP_IDENTITY`/`INSTALLER_IDENTITY`, and locks it. Re-run it after adding a
-certificate. Check readiness without unlocking:
+certificate. Keychains lock after one idle hour (and on sleep); every script
+relocks as soon as it finishes. A keychain created by an older setup with a
+15-minute timeout can fail during long builds: while it is unlocked, run
+`security set-keychain-settings -lut 3600 KEYCHAIN` (or re-run setup). Check
+readiness without unlocking:
 
 ```bash
-security find-identity -v -p basic "$(sed -n 's/^SIGNING_KEYCHAIN="\(.*\)"$/\1/p' ~/.config/apple-release/config.env)"
+bash -c 'source scripts/lib.sh; load_config; security find-identity -v -p basic "$SIGNING_KEYCHAIN"'
 ```
 
 **No Developer ID Application identity?** An App Store Connect API key — even an
@@ -75,10 +82,11 @@ certificates are limited per team; ask before creating one.
 
 ## 3. Build, sign, notarize, verify
 
-Every path ends with `scripts/verify.sh`, which checks what a downloading Mac
-checks: signature, Developer ID authority, hardened runtime, Gatekeeper
-(`spctl`), and the stapled ticket. Report its output; do not call an artifact
-ready unless it passes.
+`scripts/verify.sh` checks what a downloading Mac checks: signature, Developer
+ID authority, hardened runtime, Gatekeeper's `source=Notarized Developer ID`
+verdict, and the stapled ticket. The app, disk image and package routes run it;
+report its output and do not call an artifact ready unless it passes. (A zipped
+CLI binary cannot be stapled or assessed this way; prefer the installer.)
 
 ### 3a. iOS → TestFlight
 
@@ -133,8 +141,8 @@ on the zip (Gatekeeper then checks the ticket online).
 
 | Script | Purpose |
 |---|---|
-| `with-signing-keychain.sh [--search-list] -- cmd…` | Unlock via the Security API (no password in argv, no TTY), run, always lock; `--search-list` temporarily prepends the keychain for xcodebuild and restores the exact previous list |
-| `notarize.sh ARTIFACT` | `notarytool submit --wait` with the API key (.app is zipped first); saves Apple's log as `ARTIFACT.notary-log.json` on rejection; staples .app/.dmg/.pkg |
+| `with-signing-keychain.sh [--search-list] -- cmd…` | Unlock via the Security API (no password in argv, no TTY), run, always lock; `--search-list` temporarily prepends the keychain for xcodebuild and restores the exact previous list. Runs are serialized (`lockf`, up to 2 h wait) |
+| `notarize.sh ARTIFACT` | `notarytool submit --wait --timeout 2h` with the API key (.app is zipped first); saves Apple's log as `ARTIFACT.notary-log.json` on rejection; staples .app/.dmg/.pkg |
 | `verify.sh ARTIFACT` | Distribution checks listed above |
 
 ## Gotchas
@@ -151,5 +159,7 @@ on the zip (Gatekeeper then checks the ticket online).
   paths — a bare name creates it in `~/Library/Keychains`) and
   `SETUP_SOURCE_KEYCHAIN=… SETUP_VALID_ONLY=0 APPLE_RELEASE_CONFIG=…`.
 - Check `security list-keychains -d user` is unchanged after any keychain work.
+- A renewed certificate keeps the old name; setup refuses ambiguous duplicates.
+  Delete the older certificate, then re-run setup.
 - Rejections are usually missing hardened runtime, a missing secure timestamp,
   or unsigned nested code; read the saved notary log.

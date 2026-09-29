@@ -4,7 +4,6 @@
 # Usage: notarize.sh <artifact>
 # On rejection, Apple's log is saved next to the artifact as <name>.notary-log.json.
 set -euo pipefail
-umask 077
 source "$(dirname "$0")/lib.sh"
 
 [ $# -eq 1 ] || die "usage: notarize.sh <artifact>"
@@ -27,7 +26,7 @@ esac
 
 log "Submitting $(basename "$artifact") for notarization (waits for Apple's verdict)"
 # A rejected submission may exit nonzero; parse the verdict either way.
-xcrun notarytool submit "$submission" "${auth[@]}" --wait --output-format json > "$work/result.json" || true
+xcrun notarytool submit "$submission" "${auth[@]}" --wait --timeout 2h --output-format json > "$work/result.json" || true
 read -r id status < <(/usr/bin/python3 -c '
 import json, sys
 try:

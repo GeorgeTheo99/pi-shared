@@ -22,13 +22,17 @@ while [ $# -gt 0 ]; do
     --asc-env)
       require_private_file "$2" "App Store Connect env file"
       while IFS='=' read -r key value; do
-        value="${value%\"}"; value="${value#\"}"
+        # The file is written for `source`; accept its common quoting without evaluating it.
+        key="${key#export }"
+        value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
+        # shellcheck disable=SC2016  # matching the literal text, not expanding it
+        case "$value" in '$HOME/'*|'${HOME}/'*) value="$HOME/${value#*/}" ;; esac
         case "$key" in
           APPSTORE_API_KEY_ID) add ASC_KEY_ID "$value" ;;
           APPSTORE_ISSUER_ID) add ASC_ISSUER_ID "$value" ;;
           APPSTORE_API_PRIVATE_KEY_PATH) add ASC_KEY_PATH "$value" ;;
         esac
-      done < <(grep -E '^APPSTORE_(API_KEY_ID|ISSUER_ID|API_PRIVATE_KEY_PATH)=' "$2")
+      done < <(grep -E '^(export )?APPSTORE_(API_KEY_ID|ISSUER_ID|API_PRIVATE_KEY_PATH)=' "$2")
       shift 2 ;;
     -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -36,8 +40,8 @@ while [ $# -gt 0 ]; do
 done
 [ "${#updates[@]}" -gt 0 ] || die "nothing to configure"
 
-mkdir -p "$(dirname "$APPLE_RELEASE_CONFIG")"
-chmod 700 "$(dirname "$APPLE_RELEASE_CONFIG")"
+config_dir="$(dirname "$APPLE_RELEASE_CONFIG")"
+[ -d "$config_dir" ] || mkdir -p "$config_dir"  # private via umask 077
 [ ! -e "$APPLE_RELEASE_CONFIG" ] || require_private_file "$APPLE_RELEASE_CONFIG" "apple-release config"
 /usr/bin/python3 - "$APPLE_RELEASE_CONFIG" "${updates[@]}" <<'PY'
 import os

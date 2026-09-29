@@ -4,7 +4,6 @@
 # Usage: release-macos-app.sh (--project P.xcodeproj | --workspace W.xcworkspace) --scheme S
 #                             [--out DIR] [--dmg]
 set -euo pipefail
-umask 077
 here="$(cd "$(dirname "$0")" && pwd)"
 source "$here/lib.sh"
 
@@ -29,17 +28,14 @@ mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 build="$(mktemp -d)"
 trap 'rm -rf "$build"' EXIT
-cat > "$build/ExportOptions.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>method</key><string>developer-id</string>
-<key>signingStyle</key><string>manual</string>
-<key>signingCertificate</key><string>$APP_IDENTITY</string>
-<key>teamID</key><string>$APPLE_TEAM_ID</string>
-<key>destination</key><string>export</string>
-</dict></plist>
-EOF
+/usr/bin/python3 - "$build/ExportOptions.plist" "$APP_IDENTITY" "$APPLE_TEAM_ID" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "wb") as handle:
+    plistlib.dump({"method": "developer-id", "signingStyle": "manual", "destination": "export",
+                   "signingCertificate": sys.argv[2], "teamID": sys.argv[3]}, handle)
+PY
 
 log "Archiving $scheme and exporting with $APP_IDENTITY (logs: $out/xcodebuild-*.log)"
 # xcodebuild only finds identities in the keychain search list, hence --search-list.

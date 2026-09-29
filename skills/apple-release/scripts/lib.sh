@@ -28,8 +28,8 @@ load_config() {
     case "$key" in
       APPLE_TEAM_ID|ASC_KEY_PATH|ASC_KEY_ID|ASC_ISSUER_ID|SIGNING_KEYCHAIN|SIGNING_KEYCHAIN_PASSWORD_FILE|APP_IDENTITY|INSTALLER_IDENTITY)
         value="${value/#\~/$HOME}"
-        printf -v "$key" '%s' "$value"
-        export "${key?}" ;;
+        # Not exported: build tools (and their logs) never see these values.
+        printf -v "$key" '%s' "$value" ;;
       *) die "unknown key in $APPLE_RELEASE_CONFIG: $key" ;;
     esac
   done < "$APPLE_RELEASE_CONFIG"
@@ -69,7 +69,8 @@ PY
 # Verify the keychain holds exactly this valid identity (by full name).
 require_identity() {
   local identity="$1" policy="$2"
+  local listing
   [ -n "$identity" ] || die "no signing identity configured for this step"
-  security find-identity -v -p "$policy" "$SIGNING_KEYCHAIN" | grep -Fq "\"$identity\"" || \
-    die "signing keychain has no valid identity \"$identity\""
+  listing="$(security find-identity -v -p "$policy" "$SIGNING_KEYCHAIN")"
+  grep -Fq "\"$identity\"" <<<"$listing" || die "signing keychain has no valid identity \"$identity\""
 }

@@ -2,7 +2,6 @@
 # Sign an installer package with Developer ID Installer, notarize, staple, verify.
 # Usage: release-pkg.sh <unsigned.pkg> [--out DIR]   (default DIR: dist/release)
 set -euo pipefail
-umask 077
 here="$(cd "$(dirname "$0")" && pwd)"
 source "$here/lib.sh"
 

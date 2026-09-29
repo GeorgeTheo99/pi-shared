@@ -3,9 +3,16 @@
 # Usage: with-signing-keychain.sh [--search-list] -- command [args...]
 # --search-list temporarily prepends the keychain to the user search list (xcodebuild
 # only finds identities there) and restores the exact previous list on exit.
+# Runs are serialized so one run never locks the keychain or restores the search
+# list underneath another.
 set -euo pipefail
-umask 077
 source "$(dirname "$0")/lib.sh"
+
+if [ -z "${APPLE_RELEASE_KEYCHAIN_HELD:-}" ]; then
+  lock_dir="$(dirname "$APPLE_RELEASE_CONFIG")"
+  [ -d "$lock_dir" ] || die "not configured: $APPLE_RELEASE_CONFIG"
+  APPLE_RELEASE_KEYCHAIN_HELD=1 exec /usr/bin/lockf -k -t 7200 "$lock_dir/.keychain.lock" "$0" "$@"
+fi
 
 search_list=0
 while [ $# -gt 0 ]; do
@@ -21,18 +28,22 @@ require_signing_keychain
 
 previous=()
 restore() {
+  local status=$?
+  # Each step runs regardless of the others; a failure only changes the exit status.
+  security lock-keychain "$SIGNING_KEYCHAIN" || status=1
   if [ "$search_list" -eq 1 ] && [ "${#previous[@]}" -gt 0 ]; then
-    security list-keychains -d user -s "${previous[@]}"
+    security list-keychains -d user -s "${previous[@]}" || status=1
   fi
-  security lock-keychain "$SIGNING_KEYCHAIN"
+  exit "$status"
 }
 trap restore EXIT
 unlock_signing_keychain
 if [ "$search_list" -eq 1 ]; then
+  listing="$(security list-keychains -d user)"
   while IFS= read -r entry; do
     entry="${entry#"${entry%%[![:space:]]*}"}"; entry="${entry#\"}"; entry="${entry%\"}"
     [ -n "$entry" ] && previous+=("$entry")
-  done < <(security list-keychains -d user)
+  done <<<"$listing"
   [ "${#previous[@]}" -gt 0 ] || die "could not read the keychain search list"
   security list-keychains -d user -s "$SIGNING_KEYCHAIN" "${previous[@]}"
 fi
