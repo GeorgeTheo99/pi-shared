@@ -4,11 +4,17 @@ Status: proposal. Not implemented except where marked **done**.
 
 ## Goal
 
-One model gateway per macOS user account. The gateway owns its install,
-service, data and updates. Every other product (Pi via pi-setup, Home Server,
-My AI) is a client that finds it through the discovery file and uses its own
-consumer key. No client installs, updates, or takes over a gateway it did not
-install.
+One model gateway per macOS user account. Every product (Pi via pi-setup,
+Home Server, My AI) is a client that finds it through the discovery file and
+uses its own consumer key. Two kinds of access are kept separate:
+
+| Access | Who | Examples |
+|---|---|---|
+| Software lifecycle | The installation that owns the gateway, only | install, upgrade, restart, LaunchAgent, service paths |
+| Configuration through the gateway API | Any client, with only the grants it needs | Home Server saving a user's provider key; My AI publishing its profiles |
+
+No client installs, updates, or takes over a gateway it did not install, but a
+client may change gateway configuration through scoped credentials.
 
 ## Current behavior
 
@@ -67,11 +73,24 @@ guessing from the plist's `WorkingDirectory`.
   "no model gateway discovered" instead of silently defaulting to
   `127.0.0.1:9111`.
 
-## Decision needed
+## Configuration grants
 
-Who updates a shared gateway: its owner only (proposed), or any client with a
-deployer credential? The proposal keeps update authority with the owner and
-makes clients read-only consumers.
+Clients never receive a full admin key. The gateway's consumer credential roles:
+
+| Role | Grants |
+|---|---|
+| `runtime` | Read and invoke its namespace's profiles (optionally direct models) |
+| `deployer` | Publish its namespace's profiles |
+| `manager` | For an explicit provider allowlist only: provider status, validation, set/clear the key of a provider the owner already defined, and create-only model registration (**done**: model-gateway `16a46d1`) |
+
+Adding providers, changing an existing provider's endpoint, protocol, or
+headers, updating or deleting models, deleting providers, reload, and managing
+other clients' credentials stay with the owner's full admin key. On this
+machine Home Server's settings page uses an `ha-manager` credential
+allowlisted to `fireworks` instead of an admin key (**done**). Packaged Home
+Server installs still provision a full admin key
+(`scripts/provision-home-server-inference.py`); they should provision a
+manager credential once the bundled gateway includes `16a46d1`.
 
 ## Security follow-ups
 
