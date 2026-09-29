@@ -54,8 +54,13 @@ jobs:
           version=$(node -p "require('./tools/typecheck/package.json').devDependencies['@earendil-works/pi-coding-agent']")
           npm install -g --ignore-scripts --no-audit --no-fund "@earendil-works/pi-coding-agent@${version}"
 
-      - name: Install Chromium
-        run: npx --prefix extensions/pi-browser-capture playwright install chromium
+      # Tests launch headless only; playwright and patchright share one build.
+      - name: Install headless Chromium
+        timeout-minutes: 10
+        working-directory: extensions/pi-browser-capture
+        run: |
+          node_modules/.bin/playwright install --only-shell chromium
+          node_modules/.bin/patchright install --only-shell chromium
 
       - name: Type check
         run: npm run typecheck
