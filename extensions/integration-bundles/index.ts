@@ -744,6 +744,7 @@ function registerRouterTools(pi: ExtensionAPI, state: ExtensionState): void {
 						text: `Unloaded bundle "${params.name}". Overlapping, router or manually selected tools may remain active. Active tools: ${pi.getActiveTools().length}.`,
 					},
 				],
+				details: undefined,
 			};
 		},
 	});

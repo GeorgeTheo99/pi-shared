@@ -494,3 +494,8 @@ failure boundaries; keep proposals in `docs/plans/`. `npm run test:docs` checks
 local links/heading anchors and feature/resource inventory coverage—it does **not**
 prove prose correct. Reviewers must check that each feature has a clear title,
 useful explanation, implementation evidence, and relevant behavioral tests.
+
+CI (`.github/workflows/ci.yml`) runs `npm run typecheck`, `npm test`, and
+`python -m pytest tests` on macOS. Locally, run `npm ci --prefix tools/typecheck`
+once to install the pinned type-check toolchain before `npm run typecheck`.
+Extensions import only `extensions/_shared/`, never another extension.

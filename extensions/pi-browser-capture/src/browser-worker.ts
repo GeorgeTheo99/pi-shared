@@ -160,7 +160,7 @@ const browserFetch = defineTool({
   }),
   async execute(_id, params, signal) {
     const text = await call("browser_fetch", params, signal);
-    return { content: [{ type: "text" as const, text }] };
+    return { content: [{ type: "text" as const, text }], details: undefined };
   },
 });
 
@@ -220,7 +220,7 @@ const browserInspect = defineTool({
   }),
   async execute(_id, params, signal) {
     const text = await call("browser_inspect", params, signal);
-    return { content: [{ type: "text" as const, text }] };
+    return { content: [{ type: "text" as const, text }], details: undefined };
   },
 });
 

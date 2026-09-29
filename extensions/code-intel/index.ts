@@ -10,7 +10,7 @@ export default function codeIntel(pi: ExtensionAPI) {
     label: "Code intelligence",
     description: "Read-only TypeScript/JavaScript status, definition, references, hover, and per-file syntax/semantic diagnostics. Requires trusted .pi/code-intel.json and an installed server; never installs or edits. Paths are workspace-relative; lines/columns are 1-based Unicode code points (ranges end-exclusive). Fresh server per query, bounded on-disk source identity; editor-only buffers/dependencies are outside freshness proof. status checks configuration, not server readiness. At most 1000 locations/diagnostics and 48 KiB results; excess is an explicit error.",
     parameters: Type.Object({
-      action: StringEnum(["status", "definition", "references", "hover", "diagnostics"]),
+      action: StringEnum(["status", "definition", "references", "hover", "diagnostics"] as const),
       path: Type.Optional(Type.String({ description: "TS/JS file within configured workspace; required except for status" })),
       line: Type.Optional(Type.Integer({ minimum: 1, description: "1-based line, required for definition/references/hover" })),
       column: Type.Optional(Type.Integer({ minimum: 1, description: "1-based Unicode code-point column" })),

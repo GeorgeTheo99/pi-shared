@@ -206,22 +206,12 @@ export default function (pi: ExtensionAPI) {
       try {
         await fs.access(pptxPath);
       } catch {
-        return {
-          content: [{ type: "text", text: `File not found: ${pptxPath}` }],
-          details: { error: "File not found", path: pptxPath },
-          isError: true,
-        };
+        throw new Error(`File not found: ${pptxPath}`);
       }
 
       // Verify it's a pptx file
       if (!pptxPath.toLowerCase().endsWith(".pptx")) {
-        return {
-          content: [
-            { type: "text", text: `Not a PowerPoint file: ${pptxPath}` },
-          ],
-          details: { error: "Invalid file type", path: pptxPath },
-          isError: true,
-        };
+        throw new Error(`Not a PowerPoint file: ${pptxPath}`);
       }
 
       try {
@@ -268,11 +258,7 @@ export default function (pi: ExtensionAPI) {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: "text", text: `Preview failed: ${message}` }],
-          details: { error: message, path: pptxPath },
-          isError: true,
-        };
+        throw new Error(`Preview failed: ${message}`);
       }
     },
   });
@@ -322,11 +308,7 @@ export default function (pi: ExtensionAPI) {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: "text", text: `Cleanup failed: ${message}` }],
-          details: { error: message },
-          isError: true,
-        };
+        throw new Error(`Cleanup failed: ${message}`);
       }
     },
   });

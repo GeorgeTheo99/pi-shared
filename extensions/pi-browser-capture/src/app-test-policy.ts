@@ -45,7 +45,7 @@ export async function startAppProxy(policy: ReturnType<typeof appTargetPolicy>, 
 		} catch {
 			refused(req.url ?? ""); res.writeHead(403).end("App target refused"); return;
 		}
-		const headers = { ...req.headers, host: url.host };
+		const headers: http.OutgoingHttpHeaders = { ...req.headers, host: url.host };
 		delete headers["proxy-authorization"];
 		delete headers["proxy-connection"];
 		const upstream = http.request(url, { method: req.method, headers, agent: false }, response => {

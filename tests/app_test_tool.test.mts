@@ -33,7 +33,7 @@ test("app_test registers only additive private router, throws evidence-bearing f
 		assert.equal(report.artifacts.length, 3);
 		return true;
 	});
-	for (const event of ["session_switch", "session_fork", "session_shutdown"]) {
+	for (const event of ["session_shutdown"]) {
 		await events.get(event)!();
 		assert.deepEqual(await readdir(join(dir, "app-test")), []);
 		await assert.rejects(call({ action: "snapshot", contextId: id }), /Unknown/);

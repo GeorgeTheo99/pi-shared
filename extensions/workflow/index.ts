@@ -517,12 +517,8 @@ return defineTool({
 
   async execute(_toolCallId, params, signal, onUpdate, ctx) {
     const configurationError = subagentConfigError(config);
-    if (configurationError) {
-      const details = emptyDetails("inline");
-      details.status = "failed";
-      details.error = configurationError;
-      return { content: [{ type: "text", text: configurationError }], details, isError: true };
-    }
+    // Pi ignores a returned isError flag; failures must throw to reach the model as errors.
+    if (configurationError) throw new Error(configurationError);
     const parentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
     const defaultThinking = params.thinking;
     const agents = discoverAgents(ctx.cwd, "shared").agents;
@@ -539,14 +535,11 @@ return defineTool({
 
     if (resolved.kind === "approval") {
       if (!ctx.hasUI) {
-        const details = emptyDetails(resolved.source);
-        details.status = "failed";
         const sourceLabel =
           resolved.reason === "inline"
             ? "Inline workflow"
             : `${resolved.reason === "project" ? "Project" : "External"} workflow ${resolved.scriptPath ?? ""}`.trim();
-        details.error = `${sourceLabel} requires explicit interactive approval.`;
-        return { content: [{ type: "text", text: `Error: ${details.error}` }], details, isError: true };
+        throw new Error(`${sourceLabel} requires explicit interactive approval.`);
       }
       const inline = resolved.reason === "inline";
       const sourceDescription = inline
@@ -566,12 +559,7 @@ return defineTool({
       resolved = approveWorkflowSource(resolved);
     }
 
-    if (resolved.kind === "error") {
-      const details = emptyDetails("inline");
-      details.status = "failed";
-      details.error = resolved.error;
-      return { content: [{ type: "text", text: `Error: ${resolved.error}` }], details, isError: true };
-    }
+    if (resolved.kind === "error") throw new Error(resolved.error);
 
     const source: ReadyWorkflowSource = resolved;
     const details: WorkflowDetails = {
@@ -599,7 +587,7 @@ return defineTool({
     } catch (err: unknown) {
       details.status = "failed";
       details.error = `Failed to compile workflow: ${err instanceof Error ? err.message : String(err)}`;
-      return { content: [{ type: "text", text: `Error: ${details.error}` }], details, isError: true };
+      throw new Error(details.error);
     }
 
     // Resume-by-replay is bound to the complete execution contract. Reusing an
@@ -638,7 +626,7 @@ return defineTool({
       } catch (error: unknown) {
         details.status = "failed";
         details.error = error instanceof Error ? error.message : String(error);
-        return { content: [{ type: "text", text: `Error: ${details.error}` }], details, isError: true };
+        throw new Error(details.error);
       }
     }
     if (journal) {
@@ -695,12 +683,11 @@ return defineTool({
 
     const returnText = serializeReturnValue(details.returnValue);
     const body = formatResult(details, details.status === "completed" ? returnText : "");
-    const result: any = {
+    if (details.status === "failed") throw new Error(body);
+    return {
       content: [{ type: "text", text: body }],
       details: cloneDetails(details),
     };
-    if (details.status === "failed") result.isError = true;
-    return result;
   },
 
   renderCall(args, theme) {

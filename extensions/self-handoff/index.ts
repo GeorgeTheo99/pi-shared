@@ -775,7 +775,7 @@ export default function selfHandoffExtension(pi: ExtensionAPI) {
 					}),
 				);
 			}
-			ctx.ui.setEditorText(received.kickoff);
+			ctx.ui.setEditorText(orientation.record.kickoff);
 			ctx.ui.notify(
 				"This self-handoff is still awaiting its orientation summary. The exact kickoff was restored to the editor.",
 				"warning",

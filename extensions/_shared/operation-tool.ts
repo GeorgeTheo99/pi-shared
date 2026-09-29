@@ -1,4 +1,4 @@
-import { validateToolArguments } from "@mariozechner/pi-ai";
+import { validateToolArguments, type JsonObject } from "@mariozechner/pi-ai";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 
 // Pi also coerces primitives (including required nulls) during validation. The
@@ -29,7 +29,7 @@ function onlyOptionalNullsRemoved(before: unknown, after: unknown, schema: any):
 export function operationTool<T extends ToolDefinition<any, any, any>>(definition: T): T {
 	const parse = (args: unknown) => {
 		try {
-			const validated = validateToolArguments(definition, { type: "toolCall", id: "validation", name: definition.name, arguments: args as Record<string, unknown> });
+			const validated = validateToolArguments(definition, { type: "toolCall", id: "validation", name: definition.name, arguments: args as JsonObject });
 			if (!onlyOptionalNullsRemoved(args, validated, definition.parameters)) throw new Error("Argument coercion is not allowed");
 			return validated;
 		} catch {

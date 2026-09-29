@@ -12,7 +12,7 @@ import { StringEnum, type Message } from "@mariozechner/pi-ai";
 import { defineTool, type AgentToolResult, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { operationTool } from "../_shared/operation-tool.ts";
 import { Text } from "@mariozechner/pi-tui";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList } from "../_shared/agents.js";
 import {
 	TERMINAL_JOB_STATUS,
@@ -121,7 +121,8 @@ interface SpawnSubagentDetails {
   question?: InteractiveQuestion;
 }
 
-type SpawnSubagentResult = AgentToolResult<SpawnSubagentDetails>;
+// Internal results may carry isError; the engine converts it to a thrown error for Pi.
+type SpawnSubagentResult = AgentToolResult<SpawnSubagentDetails> & { isError?: boolean };
 type OnUpdateCallback = (partial: SpawnSubagentResult) => void;
 type BackgroundJobStatus = JobStatus;
 type BackgroundJobNotifier = (message: string, type: "info" | "warning" | "error") => void;
@@ -962,7 +963,7 @@ const subagentOperations = [
 
 function subagentOperationSchema(operation: typeof subagentOperations[number], maxFanout: number) {
   const fields = SpawnSubagentParams.properties;
-  const properties = Object.fromEntries(operation.fields.map((field) => [field, fields[field]]));
+  const properties: Record<string, TSchema> = Object.fromEntries(operation.fields.map((field) => [field, fields[field]]));
   // Bounds shared by every operation that accepts these fields. Blank answers
   // remain legal: an explicit empty answer is different from a missing answer.
   for (const key of ["jobId", "questionId", "message"]) {
@@ -1265,11 +1266,9 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
       "When using subagent tools with project-local agents, set agentScope to project or all only for trusted repositories.",
     ],
     parameters: SpawnSubagentParams,
-    renderCall: renderSpawnSubagentCall,
-    renderResult: renderSpawnSubagentResult,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const executeRequest = async () => {
+      const executeRequest = async (): Promise<SpawnSubagentResult> => {
       const toolCwd = ctx.cwd;
       const toolModel = ctx.model;
       const completionNotify: BackgroundJobNotifier | undefined = ctx.hasUI
@@ -1485,7 +1484,8 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
           return {
             content: [{ type: "text", text: formatJobStatusBody(job) }],
             details: jobDetails(job, makeDetails([])),
-            isError: job.status === "failed" || job.status === "canceled",
+            // job.status is mutated while awaiting the segment; avoid stale narrowing.
+            isError: ["failed", "canceled"].includes(job.status),
           };
         }
 

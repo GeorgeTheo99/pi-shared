@@ -471,7 +471,7 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 					if (params.status) item.status = params.status as PlanStatus;
 					item.updatedAt = now();
 					if (item.status === "active") setActive(item.id, { agentStreaming: !ctx.isIdle() });
-					else if (state.activeId === item.id && item.status !== "active") {
+					else if (state.activeId === item.id) {
 						flushRun(item);
 						state.activeId = undefined;
 					}

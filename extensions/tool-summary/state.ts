@@ -109,7 +109,7 @@ export function defaultToolSummaryConfig(timestamp = Date.now()): ToolSummaryCon
 	};
 }
 
-function isPositiveInteger(value: unknown) {
+function isPositiveInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 

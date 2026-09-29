@@ -133,7 +133,7 @@ export async function loadProfileModels(agentDir: string): Promise<PanelModel[]>
 
 async function availablePanelModels(ctx: { modelRegistry: any; cwd: string }): Promise<PanelModel[]> {
   const config = loadPanelConfig(ctx.cwd);
-  const models = ctx.modelRegistry.getAvailable().map((model: any) => toPanelModel(model));
+  const models: PanelModel[] = ctx.modelRegistry.getAvailable().map((model: any) => toPanelModel(model));
   const profileDirs = config.modelProfileDirs ?? defaultProfileDirs();
   const profileModels = await Promise.all(profileDirs.map((dir) => loadProfileModels(dir)));
   for (const items of profileModels) models.push(...items);
