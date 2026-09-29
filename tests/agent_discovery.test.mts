@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-import { discoverAgents } from "../extensions/spawn-subagent/agents.ts";
+import { discoverAgents } from "../extensions/_shared/agents.ts";
 
 function fixture(t: TestContext) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-agent-discovery-"));

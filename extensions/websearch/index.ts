@@ -15,7 +15,7 @@ import {
 	WEB_FETCH_TIMEOUT_MS,
 	WEB_SEARCH_TIMEOUT_MS,
 	type McpToolCallResult,
-} from "./mcp-client.js";
+} from "../_shared/mcp-client.js";
 import { normalizeCount, normalizeToolText, TOOL_OUTPUT_CHAR_LIMIT } from "./text.ts";
 
 // ---------------------------------------------------------------------------

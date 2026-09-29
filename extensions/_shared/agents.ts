@@ -23,12 +23,12 @@ export interface AgentDiscoveryResult {
   projectAgentsDir: string | null;
 }
 
-function extensionDir() {
+function moduleDir() {
   return path.dirname(fileURLToPath(import.meta.url));
 }
 
 function sharedAgentsDir() {
-  return path.join(extensionDir(), "agents");
+  return path.join(moduleDir(), "..", "spawn-subagent", "agents");
 }
 
 function parseTools(value: unknown): string[] | undefined {

@@ -40,7 +40,7 @@ import { fileURLToPath } from "node:url";
 import { StringEnum, Type } from "@mariozechner/pi-ai";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
-import { discoverAgents, formatAgentList, type AgentConfig } from "../spawn-subagent/agents.js";
+import { discoverAgents, formatAgentList, type AgentConfig } from "../_shared/agents.js";
 import {
 	canSpawnSubagent,
 	formatSubagentLimits,

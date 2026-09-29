@@ -5,12 +5,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
-import type { PeerPresence, ResponseRequestBinding } from "../extensions/session-coordinator/state.ts";
+import type { PeerPresence, ResponseRequestBinding } from "../extensions/_shared/coordinator-state.ts";
 import { withInterprocessLock } from "../extensions/_shared/file-lock.ts";
 
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-coordinator-test-"));
 process.env.PI_SESSION_COORDINATOR_DIR = stateDir;
-const coordinator = await import("../extensions/session-coordinator/state.ts");
+const coordinator = await import("../extensions/_shared/coordinator-state.ts");
 after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
 
 function git(cwd: string, args: string[]) {
@@ -648,7 +648,7 @@ function responseFixture() {
 }
 
 async function childClaim(binding: ResponseRequestBinding, operation: "claimRequestReply" | "claimPeerWake" = "claimRequestReply") {
-	const sourceUrl = new URL("../extensions/session-coordinator/state.ts", import.meta.url).href;
+	const sourceUrl = new URL("../extensions/_shared/coordinator-state.ts", import.meta.url).href;
 	const source = `
 		const state = await import(${JSON.stringify(sourceUrl)});
 		const binding = ${JSON.stringify(binding)};
@@ -741,7 +741,7 @@ test("reply claims are private, body-free, exact-bound, and consumed across relo
 	assert.equal(fs.statSync(ledgerPath).mode & 0o777, 0o600);
 	assert.equal(fs.statSync(path.dirname(ledgerPath)).mode & 0o777, 0o700);
 	assert.equal(fs.readFileSync(ledgerPath, "utf8").includes(envelope.message), false);
-	const reloaded = await import(`../extensions/session-coordinator/state.ts?reload=${crypto.randomUUID()}`);
+	const reloaded = await import(`../extensions/_shared/coordinator-state.ts?reload=${crypto.randomUUID()}`);
 	assert.equal(await reloaded.claimRequestReply(binding), false);
 	for (const changed of [{ senderSessionId: "wrong" }, { expiresAt: binding.expiresAt + 1 }]) {
 		await assert.rejects(coordinator.claimRequestReply({ ...binding, ...changed }), /binding mismatch/);
@@ -774,7 +774,7 @@ test("response status uses ledger evidence rather than delivery rank and survive
 	await assert.rejects(coordinator.markRequestReplyQueued(binding), /not claimed/);
 	assert.equal(await coordinator.claimRequestReply(binding), true);
 	assert.equal(status().responseStatus, "unanswered");
-	const reloaded = await import(`../extensions/session-coordinator/state.ts?replyReload=${crypto.randomUUID()}`);
+	const reloaded = await import(`../extensions/_shared/coordinator-state.ts?replyReload=${crypto.randomUUID()}`);
 	assert.equal(await reloaded.claimRequestReply(binding), false, "uncertain enqueue failures are not retried");
 	await coordinator.markRequestReplyQueued(binding);
 	await coordinator.markRequestReplyQueued(binding);
@@ -854,7 +854,7 @@ test("wake attempts are private, body-free, durable, read-only on lookup, and in
 	assert.equal(fs.statSync(path.dirname(ledgerPath)).mode & 0o777, 0o700);
 	assert.equal(fs.readFileSync(ledgerPath, "utf8").includes(envelope.message), false);
 	assert.equal(status().responseStatus, "pending", "wake scheduling is not a reply attempt or an answer");
-	const reloaded = await import(`../extensions/session-coordinator/state.ts?wakeReload=${crypto.randomUUID()}`);
+	const reloaded = await import(`../extensions/_shared/coordinator-state.ts?wakeReload=${crypto.randomUUID()}`);
 	assert.equal(reloaded.hasPeerWakeClaim(binding), true);
 	assert.equal(await reloaded.claimPeerWake(binding), false, "uncertain scheduling must never be retried");
 	assert.equal(await coordinator.claimRequestReply(binding), true, "wake does not consume the reply ledger");

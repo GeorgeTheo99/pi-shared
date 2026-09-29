@@ -8,7 +8,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import { normalizeInteractiveExchangeLimit } from "../spawn-subagent/interactive-protocol.ts";
+import { normalizeInteractiveExchangeLimit } from "./interactive-protocol.ts";
 import { atomicWriteJson, readJsonFile, withInterprocessLock } from "./file-lock.ts";
 
 function resolveStateDir(value: string): string {

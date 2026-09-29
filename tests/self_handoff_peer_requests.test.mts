@@ -8,9 +8,9 @@ import test from "node:test";
 import {
 	claimRequestReply, createEnvelope, markRequestReplyQueued, MAX_OUTGOING_STATUS_RECORDS, readOutgoingMessageStatuses,
 	persistOutgoingMessageStatus, persistSessionReceipt, removeSessionReceipt, updateOutgoingMessageStatus,
-} from "../extensions/session-coordinator/state.ts";
+} from "../extensions/_shared/coordinator-state.ts";
 import { inspectPeerRequests, peerRequestWarning } from "../extensions/self-handoff/peer-requests.ts";
-import { buildKickoffPrompt } from "../extensions/self-handoff/state.ts";
+import { buildKickoffPrompt } from "../extensions/_shared/handoff-state.ts";
 
 const parentId = "parent-session";
 const senderId = "peer-session";

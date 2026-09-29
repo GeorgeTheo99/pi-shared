@@ -7,7 +7,7 @@ import {
 	normalizeMessageStatusRecord,
 	readResponseRequestStatus,
 	type ResponseRequestBinding,
-} from "../session-coordinator/state.ts";
+} from "../_shared/coordinator-state.ts";
 
 type Entry = { type: string; customType?: string; details?: unknown; data?: unknown; message?: unknown };
 export type PeerRequestSnapshot =

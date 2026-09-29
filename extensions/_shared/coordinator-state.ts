@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { atomicWriteJson, readJsonFile, withInterprocessLock } from "../_shared/file-lock.ts";
+import { atomicWriteJson, readJsonFile, withInterprocessLock } from "./file-lock.ts";
 
 export const COORDINATOR_VERSION = 1;
 export const DEFAULT_HEARTBEAT_MS = 5_000;

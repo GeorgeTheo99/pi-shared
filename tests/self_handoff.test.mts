@@ -30,7 +30,7 @@ import {
 	validateGoalTransfer,
 	WORK_PLAN_STATE_TYPE,
 	withSelfHandoffLock,
-} from "../extensions/self-handoff/state.ts";
+} from "../extensions/_shared/handoff-state.ts";
 
 function custom(customType: string, data: unknown): SessionEntryLike {
 	return { type: "custom", customType, data };

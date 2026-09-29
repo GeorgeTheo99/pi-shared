@@ -7,7 +7,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { createAssistantMessageEventStream, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import coordinator from "../extensions/session-coordinator/index.ts";
-import * as state from "../extensions/session-coordinator/state.ts";
+import * as state from "../extensions/_shared/coordinator-state.ts";
 
 async function waitUntil(predicate: () => boolean): Promise<void> {
 	const deadline = Date.now() + 8000;

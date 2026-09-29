@@ -14,7 +14,7 @@ import {
 	resolveConfiguredMcpUrls,
 	WEB_FETCH_TIMEOUT_MS,
 	WEB_SEARCH_TIMEOUT_MS,
-} from "../extensions/websearch/mcp-client.ts";
+} from "../extensions/_shared/mcp-client.ts";
 
 test("broker errors redact known endpoint and header credentials and are bounded", async () => {
 	const endpoint = "https://search.example/mcp?token=private%20token";
@@ -402,7 +402,7 @@ test("fresh client process loads wizard config and token reference from isolated
 			websearchMcpUrl: "https://search.example/mcp", websearchMcpKeyFile: key,
 			websearchMcpKeyUrl: "https://search.example/mcp", browserWorkerEnabled: true,
 		}), { mode: 0o600 });
-		const source = new URL("../extensions/websearch/mcp-client.ts", import.meta.url).href;
+		const source = new URL("../extensions/_shared/mcp-client.ts", import.meta.url).href;
 		const script = `
 			import { readConfiguredMcpUrls, mcpToolCall } from ${JSON.stringify(source)};
 			const result = await mcpToolCall(readConfiguredMcpUrls(), "web_search", {}, {

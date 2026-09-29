@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
-import type { PeerMessageStatusView, PeerPresence } from "../extensions/session-coordinator/state.ts";
+import type { PeerMessageStatusView, PeerPresence } from "../extensions/_shared/coordinator-state.ts";
 
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-coordinator-extension-test-"));
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-coordinator-workspace-"));
@@ -16,7 +16,7 @@ process.env.PI_SESSION_COORDINATOR_LEASE_MS = "1000";
 const originalDepth = process.env.PI_SUBAGENT_DEPTH;
 process.env.PI_SUBAGENT_DEPTH = "0";
 
-const state = await import("../extensions/session-coordinator/state.ts");
+const state = await import("../extensions/_shared/coordinator-state.ts");
 const {
 	default: sessionCoordinator,
 	formatPeers,

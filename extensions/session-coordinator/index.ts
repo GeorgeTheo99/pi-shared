@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { latestWorkPlanState } from "../self-handoff/state.ts";
+import { latestWorkPlanState } from "../_shared/handoff-state.ts";
 import {
 	adoptSessionInboxMessages,
 	claimRequestReply,
@@ -38,7 +38,7 @@ import {
 	type PeerPresence,
 	type RepositoryScope,
 	type ResponseRequestBinding,
-} from "./state.ts";
+} from "../_shared/coordinator-state.ts";
 
 const STATUS_STATE_TYPE = "pi-session-coordinator-status";
 const INBOUND_MESSAGE_TYPE = "pi-peer-message";

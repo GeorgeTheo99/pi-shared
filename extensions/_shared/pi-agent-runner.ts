@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Message } from "@mariozechner/pi-ai";
 import { withFileMutationQueue } from "@mariozechner/pi-coding-agent";
-import type { AgentConfig } from "../spawn-subagent/agents.js";
+import type { AgentConfig } from "./agents.js";
 import type { SubagentConfig } from "./subagent-config.ts";
 import type { SchedulerLeaseInfo, SubagentExecutionGroup } from "./subagent-scheduler.ts";
 import { runManagedProcess, startManagedProcess, type ManagedTerminationReason } from "./managed-process.ts";
@@ -19,7 +19,7 @@ import {
 	MAX_INTERACTIVE_QUESTION_BYTES,
 	type InteractiveQuestion,
 	utf8Bytes,
-} from "../spawn-subagent/interactive-protocol.ts";
+} from "./interactive-protocol.ts";
 
 const OPENAI_CODEX_PROVIDER = "openai-codex";
 const OPENAI_CODEX_AGENT_DIR = path.join(os.homedir(), ".pi", "agent");

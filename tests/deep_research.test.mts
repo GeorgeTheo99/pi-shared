@@ -7,7 +7,7 @@ import test from "node:test";
 import { buildQueries, inferDataProfile, normalizeOptions, normalizeUrl, rankSources, runResearch, selectPassages,
   FETCH_CONCURRENCY, SEARCH_CONCURRENCY, MAX_RETRIEVED_CHARS, type ResearchOptions, type SearchResult } from "../extensions/deep-research/research.ts";
 import { buildSynthesisPrompt, formatToolResult, saveBundle, MAX_TOOL_RESULT_CHARS } from "../extensions/deep-research/output.ts";
-import { mcpToolCall, WEB_FETCH_TIMEOUT_MS } from "../extensions/websearch/mcp-client.ts";
+import { mcpToolCall, WEB_FETCH_TIMEOUT_MS } from "../extensions/_shared/mcp-client.ts";
 import { parseArgs } from "../extensions/deep-research/index.ts";
 
 const options = (overrides: Partial<ResearchOptions> = {}): ResearchOptions => ({ question: "solar energy storage safety", mode: "general", depth: "normal", save: false, synthesize: false, ...overrides });

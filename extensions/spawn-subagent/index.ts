@@ -13,7 +13,7 @@ import { defineTool, type AgentToolResult, type ExtensionAPI } from "@mariozechn
 import { operationTool } from "../_shared/operation-tool.ts";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
-import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList } from "./agents.js";
+import { type AgentConfig, type AgentScope, discoverAgents, formatAgentList } from "../_shared/agents.js";
 import {
 	TERMINAL_JOB_STATUS,
 	claimStoredJobAnswer,
@@ -58,7 +58,7 @@ import {
 	normalizeInteractiveExchangeLimit,
 	type InteractiveQuestion,
 	utf8Bytes,
-} from "./interactive-protocol.ts";
+} from "../_shared/interactive-protocol.ts";
 import {
 	appendStructuredOutputContract,
 	buildUntrustedHandoffTask,

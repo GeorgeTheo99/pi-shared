@@ -44,7 +44,7 @@ import {
 	validateGoalTransfer,
 	WORK_PLAN_STATE_TYPE,
 	withSelfHandoffLock,
-} from "./state.ts";
+} from "../_shared/handoff-state.ts";
 import { inspectPeerRequests, peerRequestWarning } from "./peer-requests.ts";
 
 const MAX_FOCUS_CHARS = 4_000;

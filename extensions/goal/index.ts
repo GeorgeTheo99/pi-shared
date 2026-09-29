@@ -19,7 +19,7 @@ import {
   SELF_HANDOFF_STATE_TYPE,
   type SessionEntryLike,
   withSelfHandoffLock,
-} from "../self-handoff/state.ts";
+} from "../_shared/handoff-state.ts";
 
 type GoalStatus =
   | "active"

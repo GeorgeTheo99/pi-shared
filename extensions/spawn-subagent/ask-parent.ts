@@ -6,7 +6,7 @@ import {
 	MAX_INTERACTIVE_ANSWER_BYTES,
 	MAX_INTERACTIVE_QUESTION_BYTES,
 	utf8Bytes,
-} from "./interactive-protocol.ts";
+} from "../_shared/interactive-protocol.ts";
 
 export default function askParentExtension(pi: ExtensionAPI) {
 	pi.registerTool({

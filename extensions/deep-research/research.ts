@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   mcpToolCall, readConfiguredMcpUrls, throwIfCallerAborted,
   WEB_FETCH_TIMEOUT_MS, WEB_SEARCH_TIMEOUT_MS,
-} from "../websearch/mcp-client.js";
+} from "../_shared/mcp-client.js";
 
 export interface ResearchOptions {
   mode: "general" | "data" | "sources";

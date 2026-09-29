@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { Text, truncateToWidth } from "@mariozechner/pi-tui";
-import { inspectChildHandoffOrientation } from "../self-handoff/state.ts";
+import { inspectChildHandoffOrientation } from "../_shared/handoff-state.ts";
 
 type PlanStatus = "todo" | "active" | "done" | "blocked";
 type PlanAction = "set" | "add" | "update" | "activate" | "complete" | "block" | "unblock" | "clear" | "list";
