@@ -10,7 +10,8 @@ source "$here/lib.sh"
 container_flag="" container="" scheme="" out="dist/release" dmg=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --project|--workspace) container_flag="$1"; container="$2"; shift 2 ;;
+    # xcodebuild spells these with one dash.
+    --project|--workspace) container_flag="${1#-}"; container="$2"; shift 2 ;;
     --scheme) scheme="$2"; shift 2 ;;
     --out) out="$2"; shift 2 ;;
     --dmg) dmg=1; shift ;;
@@ -73,8 +74,9 @@ if [ "$dmg" -eq 1 ]; then
   artifact="$out/$name.dmg"
   rm -f "$artifact"
   hdiutil create -quiet -volname "$name" -srcfolder "$staging" -fs HFS+ -format UDZO "$artifact"
+  # codesign, like xcodebuild, ignores --keychain unless the keychain is in the search list.
   # shellcheck disable=SC2016  # expanded by the inner shell
-  "$here/with-signing-keychain.sh" -- /bin/bash -c '
+  "$here/with-signing-keychain.sh" --search-list -- /bin/bash -c '
     source "$1/lib.sh"; load_config
     codesign --timestamp --keychain "$SIGNING_KEYCHAIN" --sign "$APP_IDENTITY" "$2"
   ' _ "$here" "$artifact"

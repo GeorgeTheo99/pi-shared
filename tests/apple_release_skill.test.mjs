@@ -216,6 +216,25 @@ test("with-signing-keychain.sh relocks and releases its lock when terminated", a
     "the lock must be released");
 });
 
+test("release-macos-app.sh passes xcodebuild its single-dash container flag", (t) => {
+  for (const [flag, container] of [["--project", "App.xcodeproj"], ["--workspace", "App.xcworkspace"]]) {
+    const { dir, config } = keychainSandbox(t);
+    const key = privateFile(join(dir, "AuthKey.p8"), "k\n");
+    writeFileSync(config, `${readFileSync(config, "utf8")}ASC_KEY_PATH="${key}"\nASC_KEY_ID="KEYID12345"\n` +
+      'ASC_ISSUER_ID="issuer"\nAPP_IDENTITY="Developer ID Application: A B (ABCDE12345)"\n');
+    mkdirSync(join(dir, container));
+    const tools = shims(dir, {
+      security: `[ "$1" = find-identity ] && { echo '  1) ABC "Developer ID Application: A B (ABCDE12345)"'; exit 0; }
+${fakeSearchList(false)}`,
+      xcodebuild: "exit 1",
+    });
+    const result = run("release-macos-app.sh", [flag, container, "--scheme", "App", "--out", join(dir, "out")],
+      { APPLE_RELEASE_CONFIG: config, PATH: tools.PATH }, dir);
+    assert.match(result.stderr, /archive failed/);
+    assert.match(tools.calls(), new RegExp(`^xcodebuild ${flag.slice(1)} ${container} -scheme App `, "m"));
+  }
+});
+
 function notarySandbox(t, status) {
   const dir = sandbox(t);
   const key = privateFile(join(dir, "AuthKey.p8"), "k\n");

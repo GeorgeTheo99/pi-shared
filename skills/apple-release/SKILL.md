@@ -126,7 +126,7 @@ SCRIPTS=/path/to/skills/apple-release/scripts   # this skill's scripts dir
 swift build -c release --arch arm64 --arch x86_64
 mkdir -p staging/usr/local/bin unsigned
 cp .build/apple/Products/Release/TOOL staging/usr/local/bin/
-"$SCRIPTS/with-signing-keychain.sh" -- /bin/bash -c 'source "$1/lib.sh"; load_config
+"$SCRIPTS/with-signing-keychain.sh" --search-list -- /bin/bash -c 'source "$1/lib.sh"; load_config
   codesign --force --options runtime --timestamp --keychain "$SIGNING_KEYCHAIN" \
     --sign "$APP_IDENTITY" "$2"' _ "$SCRIPTS" staging/usr/local/bin/TOOL
 pkgbuild --root staging --identifier com.example.tool --version X.Y.Z \
@@ -141,7 +141,7 @@ on the zip (Gatekeeper then checks the ticket online).
 
 | Script | Purpose |
 |---|---|
-| `with-signing-keychain.sh [--search-list] -- cmd…` | Unlock via the Security API (no password in argv, no TTY), run, always lock; `--search-list` temporarily prepends the keychain for xcodebuild and restores the exact previous list. Runs are serialized (`lockf`, up to 2 h wait) |
+| `with-signing-keychain.sh [--search-list] -- cmd…` | Unlock via the Security API (no password in argv, no TTY), run, always lock; `--search-list` temporarily prepends the keychain for xcodebuild and codesign (both ignore it otherwise) and restores the exact previous list. Runs are serialized (`lockf`, up to 2 h wait) |
 | `notarize.sh ARTIFACT` | `notarytool submit --wait --timeout 2h` with the API key (.app is zipped first); saves Apple's log as `ARTIFACT.notary-log.json` on rejection; staples .app/.dmg/.pkg |
 | `verify.sh ARTIFACT` | Distribution checks listed above |
 
