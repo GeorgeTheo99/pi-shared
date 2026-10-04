@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import type { OwnedProcessGroups } from "./process-group-ledger.ts";
 
 export type ManagedTerminationReason = "aborted" | "timeout" | "output_limit" | "spawn_error";
 
@@ -20,6 +21,10 @@ export interface ManagedProcessOptions {
 	stdin?: "ignore" | "pipe";
 	/** Ordinary commands must reap their original group even when the leader exits naturally. */
 	cleanupOnExit?: boolean;
+	/** Additional POSIX process groups owned by this run; re-read on every cleanup pass. */
+	ownedProcessGroups?: () => OwnedProcessGroups;
+	/** Called once when teardown begins, before any signal is sent. */
+	onTeardown?: () => void;
 }
 
 export interface ManagedProcessResult {
@@ -27,8 +32,11 @@ export interface ManagedProcessResult {
 	exitSignal: NodeJS.Signals | null;
 	/** Null when no real process close/exit code was observed (including forced settlement). */
 	observedExitCode: number | null;
-	/** Evidence only for the original POSIX process group, never escaped descendants. */
+	/** Evidence for the original POSIX process group and any owned groups, never other escaped descendants. */
 	cleanup: "confirmed" | "unconfirmed";
+	cleanupDetail?: string;
+	/** The owner ended the process after semantic completion via complete(). */
+	semanticCompletion?: boolean;
 	stderr: string;
 	stderrTruncated: boolean;
 	terminationReason?: ManagedTerminationReason;
@@ -66,7 +74,7 @@ class BoundedTailBuffer {
 	}
 }
 
-function abortError(message = "Subagent execution aborted"): Error {
+export function abortError(message = "Subagent execution aborted"): Error {
 	const error = new Error(message);
 	error.name = "AbortError";
 	return error;
@@ -104,9 +112,21 @@ export interface ManagedProcessHandle {
 	writeJsonLine(value: unknown): Promise<void>;
 	endStdin(): Promise<void>;
 	terminate(reason: ManagedTerminationReason, message?: string): void;
+	/** Semantic completion: stop the process tree without recording a failure reason. */
+	complete(): void;
+}
+
+function groupAlive(group: number): boolean {
+	try {
+		process.kill(-group, 0);
+		return true;
+	} catch (error: any) {
+		return error?.code !== "ESRCH";
+	}
 }
 
 export function startManagedProcess(options: ManagedProcessOptions): ManagedProcessHandle {
+	const posix = process.platform !== "win32";
 	const stderr = new BoundedTailBuffer(options.maxStderrBytes);
 	let stdoutBuffer = "";
 	let closed = false;
@@ -115,11 +135,10 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 	let stdinError: Error | undefined;
 	let terminationReason: ManagedTerminationReason | undefined;
 	let errorMessage: string | undefined;
-	let forceKillTimer: NodeJS.Timeout | undefined;
-	let settlementTimer: NodeJS.Timeout | undefined;
+	let semanticCompletion = false;
 	let runTimer: NodeJS.Timeout | undefined;
-	let cleanupTimer: NodeJS.Timeout | undefined;
-	let cleanupStarted = false;
+	let teardownTimer: NodeJS.Timeout | undefined;
+	let teardown: { startedAt: number; escalated: boolean } | undefined;
 	let pipesClosed = false;
 	let leaderExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
 	let proc: ReturnType<typeof spawn> | undefined;
@@ -130,88 +149,120 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 		resolveCompletion = resolve;
 	});
 
-	const finish = (exitCode: number | null, exitSignal: NodeJS.Signals | null, forced = false) => {
+	const ownedGroups = (): OwnedProcessGroups => (posix && options.ownedProcessGroups?.()) || { groups: [] };
+
+	const signalAll = (signal: NodeJS.Signals) => {
+		// Windows reuses PIDs and has no group identity: never taskkill a leader that already exited.
+		if (posix || !leaderExit) terminateProcessTree(proc?.pid, signal);
+		for (const group of ownedGroups().groups) {
+			try {
+				process.kill(-group, signal);
+			} catch {
+				// Exited, or not signalable; never fall back to a bare PID that may be reused.
+			}
+		}
+	};
+
+	/** Groups that still hold processes; Windows can only observe the leader. */
+	const liveGroups = (): number[] => {
+		if (!proc?.pid) return [];
+		if (!posix) return leaderExit ? [] : [proc.pid];
+		const live = groupAlive(proc.pid) ? [proc.pid] : [];
+		return [...live, ...ownedGroups().groups];
+	};
+
+	const cleanupVerdict = (pipesHeld: boolean): Pick<ManagedProcessResult, "cleanup" | "cleanupDetail"> => {
+		if (!proc?.pid) return { cleanup: "confirmed" };
+		if (!posix) return { cleanup: "unconfirmed", cleanupDetail: "Process-tree cleanup cannot be verified on Windows." };
+		const live = groupAlive(proc.pid) ? [proc.pid] : [];
+		const owned = ownedGroups();
+		live.push(...owned.groups);
+		const details = [
+			live.length ? `process groups still alive: ${live.slice(0, 10).join(", ")}${live.length > 10 ? ", ..." : ""}` : "",
+			// Pipes still open after every known group is gone mean an escaped descendant holds them.
+			pipesHeld ? "output pipes were held open by an untracked descendant" : "",
+			owned.error ?? "",
+		].filter(Boolean);
+		return details.length ? { cleanup: "unconfirmed", cleanupDetail: details.join("; ") } : { cleanup: "confirmed" };
+	};
+
+	const finish = (forced: boolean, fallback?: { code: number | null; signal: NodeJS.Signals | null }) => {
 		if (settled) return;
 		settled = true;
 		closed = true;
-		// A detached leader can exit on SIGTERM while a descendant ignores it.
-		// Kill the process group before clearing the escalation timer so a
-		// successful leader shutdown cannot leak the rest of the tree.
-		if (terminationReason) terminateProcessTree(proc?.pid, "SIGKILL");
-		if (forceKillTimer) clearTimeout(forceKillTimer);
-		if (settlementTimer) clearTimeout(settlementTimer);
+		const pipesHeld = forced && !pipesClosed;
+		if (teardownTimer) clearTimeout(teardownTimer);
 		if (runTimer) clearTimeout(runTimer);
-		if (cleanupTimer) clearTimeout(cleanupTimer);
 		options.signal?.removeEventListener("abort", onAbort);
+		// A detached leader can exit on SIGTERM while a descendant ignores it.
+		if (forced || terminationReason) signalAll("SIGKILL");
 		if (!terminationReason && stdoutBuffer.trim() && Buffer.byteLength(stdoutBuffer, "utf8") <= options.maxEventBytes) {
 			const line = stdoutBuffer.endsWith("\r") ? stdoutBuffer.slice(0, -1) : stdoutBuffer;
 			options.onStdoutLine?.(line);
 		}
-		let cleanup: "confirmed" | "unconfirmed" = proc?.pid ? "unconfirmed" : "confirmed";
-		if (!forced && proc?.pid && process.platform !== "win32") {
-			try { process.kill(-proc.pid, 0); }
-			catch (error: any) { if (error?.code === "ESRCH") cleanup = "confirmed"; }
-		}
-		resolveCompletion({
-			exitCode: exitCode ?? 1,
-			exitSignal: leaderExit ? leaderExit.signal : exitSignal,
-			observedExitCode: leaderExit ? leaderExit.code : forced || !proc?.pid ? null : exitCode,
-			cleanup,
-			stderr: stderr.toString(),
-			stderrTruncated: stderr.truncated,
-			terminationReason,
-			errorMessage,
-		});
-	};
-
-	const beginExitCleanup = () => {
-		if (cleanupStarted || settled || !leaderExit) return;
-		cleanupStarted = true;
-		if (runTimer) clearTimeout(runTimer);
-		const started = Date.now();
-		terminateProcessTree(proc?.pid, "SIGTERM");
-		const check = () => {
-			if (settled) return;
-			let groupAbsent = !proc?.pid;
-			if (proc?.pid && process.platform !== "win32") {
-				try { process.kill(-proc.pid, 0); }
-				catch (error: any) { if (error?.code === "ESRCH") groupAbsent = true; }
-			}
-			if (groupAbsent && pipesClosed) { finish(leaderExit!.code, leaderExit!.signal); return; }
-			const elapsed = Date.now() - started;
-			if (elapsed >= options.termGraceMs) terminateProcessTree(proc?.pid, "SIGKILL");
-			if (elapsed >= options.termGraceMs * 2) {
-				proc?.stdout?.destroy(); proc?.stderr?.destroy();
-				finish(leaderExit!.code, leaderExit!.signal, true);
+		const exit = leaderExit ?? fallback ?? { code: null, signal: forced ? "SIGKILL" as const : null };
+		// SIGKILLed groups disappear asynchronously; verify within a short bound instead of guessing.
+		const verifyUntil = Date.now() + (forced || terminationReason ? Math.min(1000, Math.max(100, options.termGraceMs)) : 0);
+		const resolveVerified = () => {
+			if (liveGroups().length && Date.now() < verifyUntil) {
+				setTimeout(resolveVerified, 20);
 				return;
 			}
-			cleanupTimer = setTimeout(check, 20);
-			// Keep owner alive until bounded cleanup has finished, even if all pipes closed.
+			resolveCompletion({
+				exitCode: exit.code ?? 1,
+				exitSignal: exit.signal,
+				observedExitCode: leaderExit ? leaderExit.code : forced || !proc?.pid ? null : exit.code,
+				...cleanupVerdict(pipesHeld),
+				stderr: stderr.toString(),
+				stderrTruncated: stderr.truncated,
+				terminationReason,
+				errorMessage,
+				...(semanticCompletion ? { semanticCompletion } : {}),
+			});
+		};
+		resolveVerified();
+	};
+
+	/** One bounded TERM -> KILL -> verify path for natural exit, termination, and semantic completion. */
+	const startTeardown = () => {
+		if (teardown || settled) return;
+		teardown = { startedAt: Date.now(), escalated: false };
+		if (runTimer) clearTimeout(runTimer);
+		try {
+			options.onTeardown?.();
+		} catch {
+			// Teardown must proceed even if the owner's bookkeeping fails.
+		}
+		signalAll("SIGTERM");
+		const check = () => {
+			if (settled || !teardown) return;
+			if (pipesClosed && liveGroups().length === 0) {
+				finish(false);
+				return;
+			}
+			const elapsed = Date.now() - teardown.startedAt;
+			if (elapsed >= options.termGraceMs && !teardown.escalated) {
+				teardown.escalated = true;
+				signalAll("SIGKILL");
+			}
+			if (elapsed >= options.termGraceMs * 2) {
+				// A descendant can inherit stdout/stderr after the leader exits, preventing `close` forever.
+				proc?.stdout?.destroy();
+				proc?.stderr?.destroy();
+				finish(true);
+				return;
+			}
+			teardownTimer = setTimeout(check, 20);
 		};
 		check();
 	};
 
 	const requestTermination = (reason: ManagedTerminationReason, message?: string) => {
-		if (closed || terminationReason) return;
+		if (closed || terminationReason || teardown) return;
 		terminationReason = reason;
 		errorMessage = message;
 		stdoutBuffer = "";
-		terminateProcessTree(proc?.pid, "SIGTERM");
-		forceKillTimer = setTimeout(() => {
-			if (closed) return;
-			terminateProcessTree(proc?.pid, "SIGKILL");
-			// A descendant can inherit stdout/stderr after the process-group leader
-			// exits, preventing Node's `close` event forever. Bound that wait so an
-			// aborted tool cannot keep the Pi session alive indefinitely.
-			settlementTimer = setTimeout(() => {
-				if (closed) return;
-				proc?.stdout?.destroy();
-				proc?.stderr?.destroy();
-				finish(null, "SIGKILL", true);
-			}, options.termGraceMs);
-			settlementTimer.unref?.();
-		}, options.termGraceMs);
-		forceKillTimer.unref?.();
+		startTeardown();
 	};
 
 	function onAbort() {
@@ -222,14 +273,14 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 		proc = spawn(options.command, options.args, {
 			cwd: options.cwd,
 			env: options.env,
-			detached: process.platform !== "win32",
+			detached: posix,
 			shell: false,
 			stdio: [options.stdin === "pipe" ? "pipe" : "ignore", "pipe", "pipe"],
 		});
 	} catch (error: unknown) {
 		terminationReason = "spawn_error";
 		errorMessage = error instanceof Error ? error.message : String(error);
-		finish(1, null);
+		finish(false, { code: 1, signal: null });
 	}
 
 	if (proc) {
@@ -277,21 +328,21 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 			if (!proc?.pid) {
 				terminationReason = "spawn_error";
 				errorMessage = error.message;
-				finish(1, null);
+				finish(false, { code: 1, signal: null });
 				return;
 			}
 			requestTermination("spawn_error", error.message);
 		});
 		proc.on("exit", (code, signal) => {
 			leaderExit = { code, signal };
-			if (options.cleanupOnExit) beginExitCleanup();
+			if (options.cleanupOnExit) startTeardown();
 		});
 		proc.on("close", (code, signal) => {
 			pipesClosed = true;
-			if (options.cleanupOnExit && proc?.pid) {
-				leaderExit ??= { code, signal };
-				beginExitCleanup();
-			} else finish(code, signal);
+			leaderExit ??= { code, signal };
+			if (teardown) return; // The teardown check settles once the groups are gone.
+			if (options.cleanupOnExit && proc?.pid) startTeardown();
+			else finish(false);
 		});
 	}
 
@@ -299,7 +350,7 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 		if (options.signal.aborted) onAbort();
 		else options.signal.addEventListener("abort", onAbort, { once: true });
 	}
-	if (!settled) {
+	if (!settled && !teardown) {
 		runTimer = setTimeout(() => {
 			requestTermination("timeout", `Subagent exceeded the ${options.runTimeoutMs}ms execution timeout.`);
 		}, options.runTimeoutMs);
@@ -356,6 +407,11 @@ export function startManagedProcess(options: ManagedProcessOptions): ManagedProc
 					}),
 			),
 		terminate: requestTermination,
+		complete: () => {
+			if (closed || teardown) return;
+			semanticCompletion = true;
+			startTeardown();
+		},
 	};
 }
 

@@ -1,7 +1,7 @@
 import { StringDecoder } from "node:string_decoder";
 
 const scenario = process.argv[2] ?? "two";
-const questionCount = scenario === "twenty-one" ? 21 : scenario === "one" ? 1 : 2;
+const questionCount = scenario === "twenty-one" ? 21 : scenario === "one" || scenario === "hang-after-settle" ? 1 : 2;
 const titlePrefix = "[pi-spawn-subagent:ask-parent:v1] ";
 const placeholder = "Answer from the parent agent";
 const answers = [];
@@ -133,6 +133,8 @@ process.stdin.on("data", (chunk) => {
 process.stdin.on("end", () => {
 	buffer += decoder.end();
 	if (buffer) onRecord(buffer);
-	process.exit(0);
+	// Simulates a child whose extensions keep the event loop alive after settling.
+	if (scenario === "hang-after-settle") setInterval(() => {}, 1000);
+	else process.exit(0);
 });
 setInterval(() => {}, 1000).unref();
