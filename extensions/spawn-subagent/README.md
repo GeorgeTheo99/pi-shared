@@ -7,12 +7,12 @@ Shared Pi extension for delegating work to isolated Pi subprocesses through oper
 Launch options:
 
 - Shared optional fields: `model`, `thinking`, `agentDir`, `agentScope`, `confirmProjectAgents`.
-- `subagent_run`: required `agent`, `task`; optional shared fields, `background`, `cwd`, `outputSchema`.
-- `subagent_parallel`: required `tasks`; optional shared fields, `background`, `outputSchema`. Each task has `agent`, `task`, and optional `cwd`, `model`, `thinking`, `agentDir`, `outputSchema`.
-- `subagent_chain`: required `chain`; optional shared fields, `background`, `outputSchema`. Steps accept the same per-task fields as parallel tasks.
-- `subagent_interactive`: required `agent`, `task`; optional shared fields, `background`, `cwd`, `maxExchanges`. No `outputSchema` or `isolation`.
+- `subagent_run`: required `agent`, `task`; optional shared fields, `background`, `notifyOnComplete`, `cwd`, `outputSchema`.
+- `subagent_parallel`: required `tasks`; optional shared fields, `background`, `notifyOnComplete`, `outputSchema`. Each task has `agent`, `task`, and optional `cwd`, `model`, `thinking`, `agentDir`, `outputSchema`.
+- `subagent_chain`: required `chain`; optional shared fields, `background`, `notifyOnComplete`, `outputSchema`. Steps accept the same per-task fields as parallel tasks.
+- `subagent_interactive`: required `agent`, `task`; optional shared fields, `background`, `notifyOnComplete`, `cwd`, `maxExchanges`. No `outputSchema` or `isolation`.
 - `subagent_worktree`: required `task`; optional shared fields, `cwd`, `baseRevision`, `outputSchema`. Fixed foreground worker; no `agent`, `background`, or `isolation` flags.
-- `subagent_answer` optionally accepts `background`; lifecycle tools use exact job/question IDs, not an action discriminator.
+- `subagent_answer` optionally accepts `background` and `notifyOnComplete`; lifecycle tools use exact job/question IDs, not an action discriminator.
 
 The legacy `spawn_subagent` tool is not registered or advertised. Old transcript evidence is preserved, but queued legacy calls are not auto-replayed. Migrate explicit configured allowlists/exclusions before activating the new tools; see the [job API migration table](../../docs/reference.md#job-api-migration).
 
@@ -103,6 +103,7 @@ Lists available agents for the selected scope.
 - Background jobs return a job id immediately and keep running in the current Pi extension process. Use them only when the parent has substantive independent work: continue that work first, call `wait_for_jobs({jobs:[jobId],timeout:3600})` once when the result becomes a dependency, then fetch `subagent_status({jobId})` once. List with `subagent_list({})` and cancel with `subagent_cancel({jobId})`.
 - A background job status fetch includes the latest live partial result while the job is running and returns the correlated question when it is `awaiting_answer`; do not repeatedly poll it.
 - Background jobs emit a visible UI notification when they transition to `completed`, `failed`, or `canceled`; it includes the job id and success summary, while full output remains available through `subagent_status({jobId})`.
+- Background launches and background `subagent_answer` resumes default to `notifyOnComplete:true`: the owner session gets one automatic follow-up turn when the job finishes or asks a question, unless that outcome was already observed. `notifyOnComplete` is rejected without `background:true`. See [completion wake-ups](../wait-for/README.md#completion-wake-ups).
 - Background job metadata and truncated/redacted result summaries persist to `~/.pi/agent/spawn-subagent/jobs.json` by default (`PI_SUBAGENT_STATE_DIR` or legacy `PI_SPAWN_SUBAGENT_DIR` overrides the directory). Active records are never evicted; terminal history is limited to the newest records within the 100-job / 30-day retention bounds.
 - Background records are merged under an interprocess lock and published atomically. Running jobs carry owner PID/heartbeat leases, so loading another Pi process does not mark live foreign jobs failed. Expired/dead owners are reconciled to `failed`.
 - Cancellation is cross-process: a remote request moves the job to nonterminal `canceling`; the owner aborts queued/running children, waits for process-tree shutdown, and only then persists terminal `canceled`.

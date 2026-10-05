@@ -14,7 +14,7 @@ function setup(t: any) {
 	process.env.PI_COMMAND_STATE_DIR = path.join(dir, "state");
 	const tools = new Map<string, any>();
 	const events = new Map<string, any>();
-	const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, handler: any) => events.set(name, handler) };
+	const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, handler: any) => events.set(name, handler), events: { on: () => () => undefined } };
 	commandJobs(pi as any); waitFor(pi as any);
 	t.after(async () => { await shutdownCommandRunner(); if (previous === undefined) delete process.env.PI_COMMAND_STATE_DIR; else process.env.PI_COMMAND_STATE_DIR = previous; fs.rmSync(dir, { recursive: true, force: true }); });
 	const ctx = { cwd: dir, isProjectTrusted: () => true };

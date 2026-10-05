@@ -122,6 +122,48 @@ It waits for every probe to be ready while its command is still running; readine
 Shell evaluations respect the remaining overall deadline, plus bounded process
 cleanup grace, and retain at most 1 MiB stdout instead of unbounded capture.
 
+## Completion wake-ups
+
+A blocking wait keeps the session busy, so user messages queue until it returns.
+When the user may want to keep talking while a job runs, launch it with a wake-up
+and end the turn instead:
+
+```js
+command_start({ command: "npm", args: ["test"], timeout_seconds: 900, notify_on_complete: true })
+subagent_run({ agent: "scout", task: "…", background: true }) // notifyOnComplete defaults to true
+```
+
+When the job reaches a terminal status (or an interactive child reaches
+`awaiting_answer`), the owner session receives one `pi-job-wake` message listing
+job IDs, statuses, a bounded outcome summary and the tool to inspect full output.
+Labels and output are untrusted data. Delivery:
+
+| Session state when the outcome arrives | Delivery |
+|---|---|
+| Idle | After a one-second batch window, one automatic follow-up turn |
+| Running (e.g. answering a user question) | Follow-up after that run ends; never interrupts it |
+| Pending when the user interrupts the run (Esc) | Attached to the next user prompt; no automatic turn |
+| Pending when a run ends with a provider error | Held while Pi retries; a successful retry gets it as a follow-up, a final error or interrupted retry attaches it to the next user prompt |
+| During compaction or other non-run work | Retried each second until the session is idle |
+| During a `/self-handoff` checkpoint | Held; released on rollback, discarded on replacement |
+
+Outcomes arriving after an interrupt, while the session is idle, wake it normally:
+that is the "press Esc, keep chatting, get told when it finishes" flow. All job
+extensions in a session share one batch, so simultaneous outcomes produce one
+message. Outcomes the model already saw via `wait_for_jobs` (including a timed-out
+wait), `command_status`, `command_logs` (terminal), `subagent_status`, or an answer
+to the pending question are dropped, so combining a wake with a later wait does not
+double-report. Cancellations requested through cancel tools are not announced.
+
+Wakes require an interactive owner session (TUI or RPC, where Pi reports
+`hasUI`). Print/json runs exit after their prompt and delegated children
+(`PI_SUBAGENT_DEPTH>0`) report through their parent, so neither wakes; there,
+`command_start` says wake-ups are unavailable and background subagent launches
+omit the wake hint. Wakes are in-memory and owner-session-only: session
+replacement or shutdown cancels owned jobs and discards pending wakes. Use `notifyOnComplete:false`
+(subagents) when you will block on `wait_for_jobs` anyway; keep blocking waits for
+autopilot work where nothing else can proceed. Each wake costs one turn.
+
 ## Beyond blocking waits: event‑driven resume (documented pattern, not built)
 
 Blocking waits keep the full conversation in memory and resume **in place, zero‑token, zero re‑read** — so for any task that fits in the 24h cap while Pi can stay open (a `tmux`/`nohup` session survives logout on an always‑on server), a wait tool is the right choice and there is nothing to gain from killing the process. The patterns below only earn their keep when a task **exceeds 24h** or must **survive a reboot / Pi process death**, and they cost more than a blocking wait (a fresh‑session re‑read at resume, plus launchd moving parts). They are documented here as the known escalation path; they are **not** built tooling yet.

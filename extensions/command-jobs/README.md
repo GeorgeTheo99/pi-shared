@@ -19,7 +19,7 @@ or `action` argument. Do not carry arguments over from a different operation.
 
 | Tool | Required fields | Optional fields |
 | --- | --- | --- |
-| `command_start` | `command`, `timeout_seconds` | `args`, `cwd`, `label`, `readiness` |
+| `command_start` | `command`, `timeout_seconds` | `args`, `cwd`, `label`, `notify_on_complete`, `readiness` |
 | `command_status`, `command_cancel` | `id` | None |
 | `command_list` | None | None |
 | `command_logs` | `id` | `stream`, `cursor`, `max_bytes` |
@@ -32,7 +32,9 @@ All tools request JSON-schema constrained sampling with `strict:"prefer"`.
 Use `command_logs`, not `command_status`, to read output. `timeout_seconds` is
 start-only; use `wait_for_jobs` to wait for completion. `command_start` requires
 `command` and `timeout_seconds` (up to 24h).
-Optional `args`, `cwd` relative to caller workspace, non-sensitive `label`, and
+Optional `args`, `cwd` relative to caller workspace, non-sensitive `label`,
+`notify_on_complete` (default false; see
+[completion wake-ups](../wait-for/README.md#completion-wake-ups)), and
 `readiness` are supported. For explicitly intended shell syntax use `command:"sh"`
 and `args:["-c", script]`; there is no implicit shell expansion. Commands inherit
 the owner's environment; argv and environment values are not stored in metadata.

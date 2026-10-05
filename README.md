@@ -346,6 +346,18 @@ model polling. Calls require a timeout; shell predicates must test the actual
 outcome. A terminal job may have failed, and aborting a wait does not cancel its
 jobs. [Wait semantics](extensions/wait-for/README.md).
 
+### Completion wake-ups
+
+Background subagents (default `notifyOnComplete:true`) and
+`command_start({notify_on_complete:true})` commands let the session stay
+interactive: the agent can end its turn, you keep chatting, and the owner session
+gets one automatic follow-up turn when the job finishes or asks a question. Jobs
+already seen through `wait_for_jobs` or a status tool are skipped, an interrupted
+run is never resumed (pending updates join your next prompt), and print-mode runs
+and delegated children never wake. Jobs still end with their owner session; this
+is not a scheduler.
+[Wake behavior](extensions/wait-for/README.md#completion-wake-ups).
+
 ### Explicit verification
 
 `verify` runs declared `.pi/verification.json` checks only after project trust and

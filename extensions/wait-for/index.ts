@@ -39,6 +39,7 @@ import {
 	TERMINAL_JOB_STATUS,
 } from "../_shared/job-store.ts";
 import { readUnifiedJobSnapshots, type UnifiedJobSnapshot } from "../_shared/job-snapshots.ts";
+import { markJobObserved } from "../_shared/job-wake.ts";
 
 const DEFAULT_POLL_INTERVAL = 10;
 const MIN_POLL_INTERVAL = 1;
@@ -294,16 +295,23 @@ export const waitForEngine = defineTool({
 		let lastProgress = "";
 		let failedJobs = 0;
 		let awaitingJobs = 0;
+		// Job outcomes in the latest check; returned results show them, so they need no wake.
+		let outcomes: string[] = [];
+		let outcomesReadAt = 0;
+		// `shown` limits marking to outcomes visible in a truncated result.
+		const observeOutcomes = (shown?: string) => {
+			for (const id of outcomes) if (shown === undefined || shown.includes(id)) markJobObserved(id, outcomesReadAt);
+		};
 		const diagnostics = () => [
 			lastStdout ? `last nonempty stdout: ${truncate(lastStdout, 1000)}` : "",
 			lastStderr ? `last nonempty stderr: ${truncate(lastStderr, 1000)}` : "",
 		].filter(Boolean).join("\n");
-		const timeoutResult = () => errorResult(
+		const timeoutResult = () => (observeOutcomes(diagnostics()), errorResult(
 			`Timed out after ${formatDuration(Date.now() - startedAt)} (${checks} check${checks === 1 ? "" : "s"}). ${useJobs ? "Job wait condition not met." : "Condition not met."}\n` +
 			`${useJobs ? `jobs (${jobMode}): ${jobIds.join(", ")}` : `condition: ${condition}`}\n` +
 			(lastProgress ? `last progress: ${truncate(lastProgress, 200)}\n` : "") + diagnostics(),
 			{ ...baseDetails, timedOut: true, checks, elapsedMs: Date.now() - startedAt, lastStdout, lastStderr, lastProgress },
-		);
+		));
 
 		const emitProgress = (note?: string) => {
 			if (!onUpdate) return;
@@ -341,6 +349,7 @@ export const waitForEngine = defineTool({
 				let reason = "";
 
 				if (useJobs) {
+					outcomesReadAt = Date.now();
 					const snapshots = readUnifiedJobSnapshots(jobIds, cwd);
 					let evalResult = evaluateJobMode(jobIds, snapshots, jobMode);
 					if (params.readiness && !evalResult.error) {
@@ -352,6 +361,11 @@ export const waitForEngine = defineTool({
 					if (evalResult.error) throw new Error(evalResult.error);
 					done = evalResult.done;
 					reason = evalResult.reason;
+					outcomes = jobIds.filter((id) => {
+						const status = snapshots.get(id)?.status;
+						return status !== undefined && (TERMINAL_JOB_STATUS.has(status) || status === "awaiting_answer");
+					});
+					if (done) observeOutcomes();
 					const termCount = jobIds.filter(
 						(id) => snapshots.has(id) && TERMINAL_JOB_STATUS.has(snapshots.get(id)!.status),
 					).length;

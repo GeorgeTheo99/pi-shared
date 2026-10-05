@@ -20,7 +20,7 @@ try {
 	fs.writeFileSync(path.join(root, "file.txt"), "base\n");
 	git(root, "add", "file.txt");
 	git(root, "commit", "-m", "base");
-	extension({ registerTool: (definition) => { tools.set(definition.name, definition); }, registerCommand() {}, on: (event, callback) => events.set(event, callback) });
+	extension({ registerTool: (definition) => { tools.set(definition.name, definition); }, registerCommand() {}, on: (event, callback) => events.set(event, callback), events: { on: () => () => undefined } });
 	const promptEvent = (selectedTools) => ({ systemPrompt: "fixture", systemPromptOptions: { cwd: root, selectedTools } });
 	const singlePrompt = await events.get("before_agent_start")(promptEvent(["subagent_run"]), context);
 	assert.match(singlePrompt.systemPrompt, /subagent_run/);
