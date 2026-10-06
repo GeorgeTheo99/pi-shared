@@ -138,12 +138,15 @@ interface ExtensionState {
 // Active-set helpers
 // ---------------------------------------------------------------------------
 
+/** Pi 0.99+ tools that reach inactive codemode/deferred tools; Pi activates them itself. */
+const DISCOVERY_TOOLS = new Set(["codemode", "tool_search"]);
+
 /** Hidden tools are unreachable (Pi 0.99+), so treat them as unregistered. */
 function reachableTools(pi: ExtensionAPI) {
 	return pi.getAllTools().filter((t) => t.exposure !== "hidden");
 }
 
-/** Codemode/deferred tools stay callable while inactive; inactivity is not an exclusion for them. */
+/** Reachable codemode/deferred tools stay callable while inactive; inactivity is not an exclusion for them. */
 function isEligible(state: ExtensionState, name: string): boolean {
 	return state.eligible.has(name) || state.indirect.has(name);
 }
@@ -222,16 +225,20 @@ function enforceModelCap(state: ExtensionState, allTools: string[]): string[] {
 function refreshPolicy(pi: ExtensionAPI, state: ExtensionState): void {
 	const tools = reachableTools(pi);
 	const all = new Set(tools.map(t => t.name));
-	state.indirect = new Set(tools.filter(t => t.exposure === "codemode" || t.exposure === "deferred").map(t => t.name));
 	const active = new Set(pi.getActiveTools().filter(n => all.has(n)));
+	// Codemode scripts and tool_search reach every codemode/deferred tool, but only while one is active.
+	const discovery = [...DISCOVERY_TOOLS].some(n => active.has(n));
+	state.indirect = new Set(discovery ? tools.filter(t => t.exposure === "codemode" || t.exposure === "deferred").map(t => t.name) : []);
 	const changed = state.observed && (active.size !== state.observed.size ||
 		[...active].some(n => !state.observed!.has(n)));
 	if (!state.observed) {
 		state.eligible = new Set(active);
 	} else {
-		// Registry-only additions are not evidence of an external full selection.
+		// Registry-only additions are not evidence of an external full selection, nor is Pi
+		// activating a discovery tool or the codemode/deferred tools tool_search loads.
 		const external = changed && ([...state.observed].some(n => all.has(n) && !active.has(n)) ||
-			[...active].some(n => state.known.has(n) && !state.observed!.has(n)));
+			[...active].some(n => state.known.has(n) && !state.observed!.has(n) &&
+				!DISCOVERY_TOOLS.has(n) && !state.indirect.has(n)));
 		for (const n of state.eligible) {
 			if (!all.has(n) || (external && !active.has(n))) state.eligible.delete(n);
 		}

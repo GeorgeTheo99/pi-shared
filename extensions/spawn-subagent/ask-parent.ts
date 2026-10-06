@@ -28,6 +28,8 @@ export default function askParentExtension(pi: ExtensionAPI) {
 			}),
 		}),
 		executionMode: "sequential",
+		// Blocks on the parent's answer, so codemode scripts must not call it (Pi 0.99+).
+		exposure: "model-only",
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (ctx.mode !== "rpc") throw new Error("ask_parent is available only in managed interactive RPC subagents.");

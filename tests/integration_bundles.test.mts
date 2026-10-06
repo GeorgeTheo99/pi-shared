@@ -137,17 +137,35 @@ test('late registration, excluded late tools, same-count name replacements and r
   assert.equal(row.loaded, false); assert.equal(row.available, false);
 });
 
-test('inactive codemode/deferred tools are loadable; hidden tools count as unregistered', async t => {
-  const h = await harness(t, { mcp: bundle(['mcp__*']), gone: bundle(['secret']) }, {}, ['read']);
-  for (const [name, exposure] of [['mcp__code', 'codemode'], ['mcp__deferred', 'deferred'], ['secret', 'hidden']]) {
+test('inactive codemode/deferred tools are loadable only while discovery is active; hidden tools count as unregistered', async t => {
+  const h = await harness(t, { alpha: bundle(['a']), mcp: bundle(['mcp__*']), gone: bundle(['secret']) });
+  for (const [name, exposure] of [['codemode', 'model-only'], ['mcp__code', 'codemode'], ['mcp__deferred', 'deferred'], ['secret', 'hidden']]) {
     h.tools.set(name, { name, description: name, exposure }); // registered without activation
   }
   await h.prompt(); assert(!h.active().some(n => n.startsWith('mcp__')));
+  await assert.rejects(h.load('mcp'), /excluded/i); // nothing can reach them yet
+  h.manual([...h.active(), 'codemode']); // Pi activates codemode once an MCP server connects
+  await h.load('alpha'); assert(h.active().includes('a')); // not mistaken for an external selection
+  await h.unload('alpha');
+  h.manual([...h.active(), 'mcp__deferred']); // tool_search loads a deferred tool
+  await h.load('alpha'); assert(h.active().includes('a'));
   await h.load('mcp'); assert(h.active().includes('mcp__code') && h.active().includes('mcp__deferred'));
-  await h.unload('mcp'); assert(!h.active().some(n => n.startsWith('mcp__')));
+  await h.unload('mcp'); assert(!h.active().includes('mcp__code'));
   await assert.rejects(h.load('gone'), /no registered matches/);
   const rows = (await h.call(routers[2], { query: 'secret' })).details.results;
   assert(!rows.some((r: any) => r.kind === 'tool' && r.name === 'secret'));
+});
+
+test('tool_search alone reaches deferred tools; removing discovery externally revokes unloaded bundles', async t => {
+  const h = await harness(t, { alpha: bundle(['a']), mcp: bundle(['mcp__*']) });
+  for (const [name, exposure] of [['tool_search', 'model-only'], ['mcp__deferred', 'deferred']]) h.tools.set(name, { name, description: name, exposure });
+  await h.prompt();
+  h.manual([...h.active(), 'tool_search']);
+  await h.load('mcp'); assert(h.active().includes('mcp__deferred'));
+  await h.unload('mcp');
+  h.manual(h.active().filter(n => n !== 'tool_search')); // external full selection without discovery
+  await assert.rejects(h.load('mcp'), /excluded/i);
+  await assert.rejects(h.load('alpha'), /excluded/i);
 });
 
 test('model change applies specific defaults and caps without re-enabling excluded tools', async t => {

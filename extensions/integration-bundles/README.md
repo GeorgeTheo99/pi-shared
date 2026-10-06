@@ -16,11 +16,13 @@ permission, or change the MCP gateway's independent discovery boundary.
   selection. Routers are pinned only when eligible, including configured
   `defaults.router_tools`; excluded routers are never forcibly enabled.
 - On Pi 0.99+, registered `codemode`/`deferred`-exposure tools (for example
-  built-in MCP tools) are eligible while inactive: Pi already lets codemode
-  scripts or `tool_search` reach them, and `--exclude-tools` omits excluded
-  tools from `getAllTools()` entirely. Loading their bundle declares them
-  directly; unloading withdraws that declaration but not codemode access.
-  `hidden` tools are treated as unregistered.
+  built-in MCP tools) are eligible while inactive, but only while `codemode`
+  or `tool_search` is active and can already reach them. `--exclude-tools`
+  omits excluded tools from `getAllTools()` entirely. Loading their bundle
+  declares them directly; unloading withdraws that declaration but not codemode
+  access. Pi activating `codemode`/`tool_search`, or `tool_search` loading
+  tools, is not treated as an external selection. `hidden` tools are treated
+  as unregistered.
 - Hides eligible tools in unloaded bundles. `always_load` bundles are pinned;
   `model_always_load` selects defaults using the most-specific matching model
   glob. Model-only defaults are evictable and cease being defaults on a model
