@@ -72,6 +72,8 @@ The shared operation boundary uses each tool's closed schema before both Pi exec
 
 `npm run test:job-contracts` tests all operation contracts against the installed Pi SDK and offline OpenAI/Anthropic/Google serialization. It requires a discoverable SDK (or `PI_TEST_SDK_DIR` / `PI_INSTALL_DIR`) and fails rather than silently skipping when unavailable. Engine regression suites remain `npm run test:subagents` and `npm run test:command-jobs`.
 
+`npm run test:native-mcp` runs pi-shared's extensions with Pi's built-in MCP and codemode extensions against a local stdio MCP fixture. It checks that MCP tools are callable from codemode scripts and loadable through integration bundles, and that `ask_user` stays out of scripts.
+
 ## Pi launcher profiles
 
 Legacy/source launcher profiles (the unified CLI instead honors each route’s profile and saved `defaultProfile`):

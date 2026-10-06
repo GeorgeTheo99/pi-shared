@@ -128,6 +128,7 @@ interface ExtensionState {
 	eligible: Set<string>;
 	manual: Set<string>;
 	known: Set<string>;
+	indirect: Set<string>;
 	observed: Set<string> | null;
 	loadSequence: number;
 	budgetError: string | null;
@@ -136,6 +137,16 @@ interface ExtensionState {
 // ---------------------------------------------------------------------------
 // Active-set helpers
 // ---------------------------------------------------------------------------
+
+/** Hidden tools are unreachable (Pi 0.99+), so treat them as unregistered. */
+function reachableTools(pi: ExtensionAPI) {
+	return pi.getAllTools().filter((t) => t.exposure !== "hidden");
+}
+
+/** Codemode/deferred tools stay callable while inactive; inactivity is not an exclusion for them. */
+function isEligible(state: ExtensionState, name: string): boolean {
+	return state.eligible.has(name) || state.indirect.has(name);
+}
 
 /** Compute the union of tools we want active right now. */
 function computeDesiredActiveSet(state: ExtensionState, allTools: string[]): string[] {
@@ -158,7 +169,7 @@ function computeDesiredActiveSet(state: ExtensionState, allTools: string[]): str
 	// 3. Tools from currently-loaded bundles.
 	for (const b of state.bundles.values()) {
 		if (!b.loaded) continue;
-		for (const t of b.tools) if (state.eligible.has(t)) desired.add(t);
+		for (const t of b.tools) if (isEligible(state, t)) desired.add(t);
 	}
 
 	return [...desired];
@@ -209,7 +220,9 @@ function enforceModelCap(state: ExtensionState, allTools: string[]): string[] {
 
 /** No SDK exclusion provenance exists. Never infer permission from registration. */
 function refreshPolicy(pi: ExtensionAPI, state: ExtensionState): void {
-	const all = new Set(pi.getAllTools().map(t => t.name));
+	const tools = reachableTools(pi);
+	const all = new Set(tools.map(t => t.name));
+	state.indirect = new Set(tools.filter(t => t.exposure === "codemode" || t.exposure === "deferred").map(t => t.name));
 	const active = new Set(pi.getActiveTools().filter(n => all.has(n)));
 	const changed = state.observed && (active.size !== state.observed.size ||
 		[...active].some(n => !state.observed!.has(n)));
@@ -237,7 +250,7 @@ function refreshPolicy(pi: ExtensionAPI, state: ExtensionState): void {
 
 function applyActiveSet(pi: ExtensionAPI, state: ExtensionState): void {
 	if (!state.master) return;
-	const allTools = pi.getAllTools().map((t) => t.name);
+	const allTools = reachableTools(pi).map((t) => t.name);
 	enforceModelCap(state, allTools);
 	const desired = computeDesiredActiveSet(state, allTools);
 	const cap = resolveModelOverride(state)?.max_tools;
@@ -252,7 +265,7 @@ function unavailableReason(state: ExtensionState, b: BundleState): string | unde
 	if (!b.tools.length || b.def.tools.some(p => !matchToolNames([...state.known], [p]).length)) {
 		return "Unavailable: one or more tool patterns have no registered matches.";
 	}
-	if (b.tools.some(n => !state.eligible.has(n))) return "Unavailable: bundle contains excluded tools; explicitly enable them outside this router first.";
+	if (b.tools.some(n => !isEligible(state, n))) return "Unavailable: bundle contains excluded tools; explicitly enable them outside this router first.";
 	return undefined;
 }
 
@@ -477,7 +490,7 @@ function formatBundlesBlock(state: ExtensionState): string {
 }
 
 function formatStatusReport(state: ExtensionState, pi: ExtensionAPI): string {
-	const allTools = pi.getAllTools().map((t) => t.name);
+	const allTools = reachableTools(pi).map((t) => t.name);
 	const active = pi.getActiveTools();
 	const override = resolveModelOverride(state);
 	const cap = override?.max_tools;
@@ -517,6 +530,7 @@ export default function integrationBundlesExtension(pi: ExtensionAPI) {
 		eligible: new Set(),
 		manual: new Set(),
 		known: new Set(),
+		indirect: new Set(),
 		observed: null,
 		loadSequence: 0,
 		budgetError: null,
@@ -668,7 +682,7 @@ function applyDefaultLoadout(state: ExtensionState): void {
 
 function rebuildBundleState(pi: ExtensionAPI, state: ExtensionState): void {
 	if (!state.master) return;
-	const allTools = pi.getAllTools().map((t) => t.name);
+	const allTools = reachableTools(pi).map((t) => t.name);
 	const previous = state.bundles;
 	state.bundles = new Map();
 	for (const [name, def] of Object.entries(state.master.bundles)) {
@@ -764,7 +778,7 @@ function registerRouterTools(pi: ExtensionAPI, state: ExtensionState): void {
 			refreshPolicy(pi, state);
 			const active = new Set(pi.getActiveTools());
 			const cap = resolveModelOverride(state)?.max_tools ?? null;
-			const catalog = searchCatalog({ ...params, tools: pi.getAllTools(), active, eligible: state.eligible,
+			const catalog = searchCatalog({ ...params, tools: reachableTools(pi), active, eligible: new Set([...state.eligible, ...state.indirect]),
 				bundles: [...state.bundles].map(([name, b]) => ({ name, description: `${b.def.summary ?? ""} ${b.def.description}`, tools: b.tools,
 					loaded: b.loaded && !unavailableReason(state, b) && b.tools.every(n => active.has(n)), available: !unavailableReason(state, b) })) });
 			const details = { ...catalog, activationManaged: !!state.master, activeCount: active.size, cap,

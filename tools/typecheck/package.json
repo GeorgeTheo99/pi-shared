@@ -3,7 +3,7 @@
   "private": true,
   "description": "Pinned type-check toolchain for pi-shared extensions; not installed with the Pi package.",
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.99.1",
     "@types/node": "24.19.0",
     "typescript": "5.9.3"
   }

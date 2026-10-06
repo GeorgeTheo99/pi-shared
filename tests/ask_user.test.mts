@@ -19,6 +19,10 @@ test("ask_user forces sibling tool calls to execute sequentially", () => {
   assert.equal(tool.executionMode, "sequential");
 });
 
+test("ask_user is declared to the model but not callable from codemode", () => {
+  assert.equal(registerAskUser().exposure, "model-only");
+});
+
 test("ask_user forwards cancellation and timeout to its selector", async () => {
   const tool = registerAskUser();
   const controller = new AbortController();

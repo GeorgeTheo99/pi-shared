@@ -137,6 +137,19 @@ test('late registration, excluded late tools, same-count name replacements and r
   assert.equal(row.loaded, false); assert.equal(row.available, false);
 });
 
+test('inactive codemode/deferred tools are loadable; hidden tools count as unregistered', async t => {
+  const h = await harness(t, { mcp: bundle(['mcp__*']), gone: bundle(['secret']) }, {}, ['read']);
+  for (const [name, exposure] of [['mcp__code', 'codemode'], ['mcp__deferred', 'deferred'], ['secret', 'hidden']]) {
+    h.tools.set(name, { name, description: name, exposure }); // registered without activation
+  }
+  await h.prompt(); assert(!h.active().some(n => n.startsWith('mcp__')));
+  await h.load('mcp'); assert(h.active().includes('mcp__code') && h.active().includes('mcp__deferred'));
+  await h.unload('mcp'); assert(!h.active().some(n => n.startsWith('mcp__')));
+  await assert.rejects(h.load('gone'), /no registered matches/);
+  const rows = (await h.call(routers[2], { query: 'secret' })).details.results;
+  assert(!rows.some((r: any) => r.kind === 'tool' && r.name === 'secret'));
+});
+
 test('model change applies specific defaults and caps without re-enabling excluded tools', async t => {
   const h = await harness(t, { alpha: bundle(['a']), beta: bundle(['b']) }, {
     model_always_load: { 'wide-*': ['alpha', 'beta'], 'wide-small*': ['alpha'] },

@@ -75,6 +75,8 @@ const askUserTool = defineTool({
 		),
 	}),
 	executionMode: "sequential",
+	// Asks the user, so codemode scripts must not call it (Pi 0.99+).
+	exposure: "model-only",
 
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		const question = params.question.trim();

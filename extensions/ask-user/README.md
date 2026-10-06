@@ -16,6 +16,8 @@ Parameters:
 - `custom_prompt` — prompt for the custom-answer input.
 - `timeout_ms` — optional timeout; timeout is treated as cancellation.
 
+On Pi 0.99+ the tool uses `model-only` exposure: it is declared to the model but never callable from codemode scripts or other tools.
+
 ## Example
 
 ```json
