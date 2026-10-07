@@ -240,6 +240,9 @@ wire_settings() {
   python3 - "$target/settings.json" "$repo" <<'PY'
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -257,6 +260,19 @@ if packages is None:
     packages = []
 if not isinstance(packages, list):
     raise SystemExit(f"Expected {settings_path} packages to be an array")
+default_tools = settings.get("defaultTools", [])
+if not isinstance(default_tools, list):
+    raise SystemExit(f"Expected {settings_path} defaultTools to be an array")
+if not any(choice in default_tools for choice in ("codemode", "+codemode", "-codemode")):
+    # Pre-0.99 Pi can silently clear built-in tools for +codemode; unknown runtimes stay untouched.
+    executable = os.environ.get("PI_UPSTREAM_BIN") or shutil.which("pi")
+    try:
+        result = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=5) if executable else None
+        version = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", result.stdout.strip()) if result and result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        version = None
+    if version and tuple(map(int, version.groups()[:2])) >= (0, 99):
+        settings["defaultTools"] = [*default_tools, "+codemode"]
 
 def package_source(entry):
     if isinstance(entry, str):
@@ -317,7 +333,7 @@ tmp.write_text(json.dumps(settings, indent=2) + "\n")
 tmp.replace(settings_path)
 print(settings_path)
 PY
-  ok "Wired $repo into $target/settings.json packages"
+  ok "Wired $repo into $target/settings.json packages; codemode default enabled on detected Pi 0.99+ unless explicitly selected or disabled"
 }
 
 codex_context_policy() {

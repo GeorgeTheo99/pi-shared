@@ -1260,6 +1260,57 @@ def test_installer_replaces_existing_registration_for_same_package(tmp_path):
     assert (agent / packages[1]).resolve() == unrelated.resolve()
 
 
+def _install_settings_fixture(tmp_path, settings, version="0.99.1"):
+    home = tmp_path / "codemode-home"
+    agent = home / ".pi/agent"
+    agent.mkdir(parents=True, exist_ok=True)
+    target = agent / "settings.json"
+    if settings is not None:
+        target.write_text(json.dumps(settings))
+    executable = tmp_path / "version-pi"
+    executable.write_text("#!/bin/sh\n[ \"$1\" = --version ] || exit 2\nprintf '%s\\n' " + shlex.quote(version) + "\n")
+    executable.chmod(0o700)
+    env = {**os.environ, "HOME": str(home), "PI_SHARED_AGENT_DIR": str(agent),
+           "PI_SHARED_BIN_DIR": str(home / "bin"), "PI_UPSTREAM_BIN": str(executable)}
+    result = subprocess.run([str(SHARED_ROOT / "bin/pi-shared-install"), "--no-deps", "--no-catalog"],
+                            env=env, capture_output=True, text=True, timeout=20)
+    return result, target
+
+
+@pytest.mark.parametrize("tools,expected", [
+    (None, ["+codemode"]), ([], ["+codemode"]),
+    (["codemode"], ["codemode"]), (["+codemode"], ["+codemode"]), (["-codemode"], ["-codemode"]),
+    (["read", "codemode", "bash"], ["read", "codemode", "bash"]),
+    (["read", "bash"], ["read", "bash", "+codemode"]),
+])
+def test_wire_settings_codemode_merge_and_idempotency(tmp_path, tools, expected):
+    original = {"preserved": True, **({} if tools is None else {"defaultTools": tools})}
+    result, target = _install_settings_fixture(tmp_path, original)
+    assert result.returncode == 0, result.stderr
+    assert "codemode default" in result.stdout
+    before = target.read_bytes()
+    actual = json.loads(before)
+    assert actual["defaultTools"] == expected and actual["preserved"] is True
+    result, _ = _install_settings_fixture(tmp_path, None)
+    assert result.returncode == 0, result.stderr
+    assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize("version", ["0.87.1", "0.98.0", "unknown"])
+def test_wire_settings_skips_codemode_for_old_unknown_runtime(tmp_path, version):
+    result, target = _install_settings_fixture(tmp_path, {"defaultTools": ["read"]}, version)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(target.read_text())["defaultTools"] == ["read"]
+
+
+@pytest.mark.parametrize("value", [None, "codemode", {}, False, 42])
+def test_wire_settings_rejects_nonlist_default_tools(tmp_path, value):
+    original = {"defaultTools": value}
+    result, target = _install_settings_fixture(tmp_path, original)
+    assert result.returncode != 0 and "defaultTools" in result.stderr
+    assert json.loads(target.read_text()) == original
+
+
 def test_installer_renders_from_default_pi_alias_catalog(tmp_path):
     home = tmp_path / "home"
     aliases = home / ".pi" / "model-aliases.json"

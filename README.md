@@ -395,6 +395,8 @@ that models or browser actions work. [Diagnostic boundaries](extensions/dev-doct
 
 ### Structured results for codemode
 
+Installers enable `+codemode` on detected Pi 0.99+; opt out with `"defaultTools": ["-codemode"]` (older/unknown runtimes and explicit codemode choices are preserved).
+
 Job/status, wait, lookup and check tools expose selected versioned structured
 results on Pi 0.99+, while retaining their existing text and input contracts.
 Scripts can inspect fields without parsing prose. Check envelope status **and**

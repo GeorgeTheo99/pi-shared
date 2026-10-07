@@ -29,6 +29,9 @@ mkdir -p "$PI_OMLX_AGENT_DIR"
 python3 - "$PI_OMLX_AGENT_DIR/settings.json" "$PI_SHARED_DIR" "$PI_DATABRICKS_DIR" <<'PY'
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -73,6 +76,19 @@ settings["enableSkillCommands"] = True
 # Pi clamps this preference to each model's supported levels. Explicit choices
 # remain untouched; override per-session with /thinking when supported.
 settings.setdefault("defaultThinkingLevel", "high")
+default_tools = settings.get("defaultTools", [])
+if not isinstance(default_tools, list):
+    raise SystemExit(f"Expected defaultTools array in {path}")
+if not any(choice in default_tools for choice in ("codemode", "+codemode", "-codemode")):
+    # Probe only a version; never load extensions or modify a packaged runtime.
+    executable = os.environ.get("PI_UPSTREAM_BIN") or shutil.which("pi")
+    try:
+        result = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=5) if executable else None
+        version = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", result.stdout.strip()) if result and result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        version = None
+    if version and tuple(map(int, version.groups()[:2])) >= (0, 99):
+        settings["defaultTools"] = [*default_tools, "+codemode"]
 
 path.write_text(json.dumps(settings, indent=2) + "\n")
 PY

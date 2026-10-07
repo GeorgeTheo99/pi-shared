@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 
 import pytest
@@ -13,7 +14,7 @@ SHARED_ROOT = Path(__file__).resolve().parents[1]
 REPAIR = SHARED_ROOT / "bin/pi-omlx-repair"
 
 
-def run_repair(tmp_path: Path, *, settings=None, databricks=False):
+def run_repair(tmp_path: Path, *, settings=None, databricks=False, version=None):
     agent = tmp_path / "agent"
     agent.mkdir(exist_ok=True)
     if settings is not None:
@@ -26,11 +27,17 @@ def run_repair(tmp_path: Path, *, settings=None, databricks=False):
     python = bins / "python3"
     if not python.exists():
         python.symlink_to(Path(shutil.which("python3")).resolve())
-    # Neither Pi nor Node is needed for profile wiring. Runtime overrides from
-    # older shells are ignored, even when they refer to a real installation.
+    # A runtime is optional for profile wiring; only a known 0.99+ version opts
+    # into codemode. The obsolete PI_INSTALL_DIR override stays irrelevant.
     env = {**os.environ, "HOME": str(tmp_path), "PATH": str(bins) + ":/usr/bin:/bin",
            "PI_OMLX_AGENT_DIR": str(agent), "PI_SHARED_DIR": str(SHARED_ROOT),
            "PI_DATABRICKS_DIR": str(overlay), "PI_INSTALL_DIR": str(tmp_path / "runtime")}
+    env.pop("PI_UPSTREAM_BIN", None)
+    if version is not None:
+        executable = bins / "stock-pi"
+        executable.write_text("#!/bin/sh\n[ \"$1\" = --version ] || exit 2\nprintf '%s\\n' " + shlex.quote(version) + "\n")
+        executable.chmod(0o700)
+        env["PI_UPSTREAM_BIN"] = str(executable)
     return subprocess.run([str(REPAIR)], env=env, text=True, capture_output=True, timeout=20)
 
 
@@ -94,6 +101,40 @@ def test_does_not_touch_runtime_models_or_credentials(tmp_path):
         assert (path.read_bytes(), path.stat().st_mode) == evidence
     assert {str(p.relative_to(runtime)) for p in runtime.rglob('*') if p.is_file()} == {
         name.removeprefix('runtime/') for name in before if name.startswith('runtime/')}
+
+
+@pytest.mark.parametrize("tools,expected", [
+    (None, ["+codemode"]), ([], ["+codemode"]),
+    (["codemode"], ["codemode"]), (["+codemode"], ["+codemode"]), (["-codemode"], ["-codemode"]),
+    (["read", "codemode", "bash"], ["read", "codemode", "bash"]),
+    (["read", "bash"], ["read", "bash", "+codemode"]),
+])
+def test_codemode_defaults_preserve_selection_and_are_idempotent(tmp_path, tools, expected):
+    original = {} if tools is None else {"defaultTools": tools}
+    result = run_repair(tmp_path, settings=original, version="0.99.1")
+    assert result.returncode == 0, result.stderr
+    settings = tmp_path / "agent/settings.json"
+    before = settings.read_bytes()
+    assert json.loads(before)["defaultTools"] == expected
+    assert run_repair(tmp_path, version="0.99.1").returncode == 0
+    assert settings.read_bytes() == before
+
+
+@pytest.mark.parametrize("version", ["0.87.1", "0.98.0", "unverified"])
+def test_codemode_not_added_on_old_or_unknown_pi(tmp_path, version):
+    result = run_repair(tmp_path, settings={"defaultTools": ["read"]}, version=version)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "agent/settings.json").read_text())["defaultTools"] == ["read"]
+
+
+@pytest.mark.parametrize("value", [None, "codemode", {}, False, 42])
+def test_nonlist_default_tools_rejected_without_writes(tmp_path, value):
+    settings = {"defaultTools": value}
+    result = run_repair(tmp_path, settings=settings, version="0.99.1")
+    assert result.returncode != 0
+    assert "defaultTools" in result.stderr
+    assert json.loads((tmp_path / "agent/settings.json").read_text()) == settings
+    assert not (tmp_path / "agent/AGENTS.md").exists()
 
 
 @pytest.mark.parametrize("contents", ['{broken', '{"packages": "invalid"}'])
