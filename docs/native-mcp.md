@@ -68,7 +68,7 @@ sign-in with user approval.
 
 ## Diagnostics and rollback
 
-`/mcp` owns connection state. `/mcp-connections` and `dev_doctor` list source-checked
+`/mcp` owns connection state. `dev_doctor` lists source-checked
 native MCP tool registrations, any legacy adapter report, and separate wrapper
 integrations without connecting. Native servers with no visible registered tools
 may be pending, disabled, failed, empty, or hidden; their absence is not a diagnosis.

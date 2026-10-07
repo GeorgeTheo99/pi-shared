@@ -52,8 +52,8 @@ installation/load/activation cannot be inferred from authenticated inventory.
 
 ## MCP connection visibility
 
-Run `/mcp-connections` inside Pi for a quick inventory, or call `dev_doctor` to
-include it with environment diagnostics. No new model-callable tool is added.
+Call `dev_doctor` inside Pi to include this inventory with environment
+diagnostics. No separate slash command or model-callable tool is added.
 
 - **Official MCP:** counts tool registrations whose source is `builtin:mcp` and
   whose namespace matches the server. Reports registered and active counts, not

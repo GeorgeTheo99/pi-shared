@@ -29,14 +29,6 @@ const MAX_REPORT_BYTES = 32 * 1024;
 
 export default function (pi: ExtensionAPI) {
 	const mcpInventory = createMcpInventory(pi);
-	pi.registerCommand("mcp-connections", {
-		description: "Show official MCP, legacy adapter and extension-wrapper inventory without connecting to services",
-		handler: async (_args, ctx) => {
-			const text = formatMcpInventory(mcpInventory());
-			if (ctx.hasUI) ctx.ui.notify(text, "info");
-			else console.log(text);
-		},
-	});
 	pi.registerTool(structuredTool(defineTool({
 		name: "dev_doctor",
 		label: "Environment Doctor",

@@ -19,7 +19,7 @@ Recommended local URL: `http://127.0.0.1:8889/mcp`.
 
 The `pi-setup` questionnaire in package 0.1.16+ can provision the standalone broker's owner-only Brave key before installation or connect to an existing compatible MCP endpoint. On older releases, provision the key following the `local_web_search` README. Provider credentials belong to the service, not Pi settings. Alternative brokers/overlays may implement the same tool contract; an arbitrary MCP server is not sufficient.
 
-These are native Pi wrappers that contact MCP directly, not registrations in `pi-mcp-adapter`. Consequently `/mcp` does not list them. Use `/mcp-connections` or `dev_doctor` for both integration paths; registered tools are not proof of service readiness.
+These are native Pi wrappers that contact MCP directly, not registrations in `pi-mcp-adapter`. Consequently `/mcp` does not list them. Use `dev_doctor` for both integration paths; registered tools are not proof of service readiness.
 
 ## Compatibility contract for another search server
 

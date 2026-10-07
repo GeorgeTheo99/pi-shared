@@ -162,16 +162,8 @@ test("MCP inventory bounds payloads, rejects malformed updates, and keeps unknow
   assert.match(formatMcpInventory(snapshot()), /No servers in the last adapter report/);
 });
 
-test("mcp-connections command is diagnostic only and updates from late adapter reports", async () => {
+test("doctor registers no slash commands", () => {
   const h = harness();
   doctor(h.pi);
-  const messages: string[] = [];
-  const ctx = { hasUI: true, ui: { notify: (text: string) => messages.push(text) } };
-  const command = h.commands.get("mcp-connections");
-  await command.handler("", ctx);
-  assert.match(messages[0], /not_observed/);
-  h.events.emit(MCP_STATUS_EVENT, { version: 1, servers: [{ name: "blender", status: "cached", toolCount: 6 }] });
-  await command.handler("", ctx);
-  assert.match(messages[1], /blender: cached/);
-  assert.match(messages[1], /service not probed/);
+  assert.equal(h.commands.size, 0);
 });

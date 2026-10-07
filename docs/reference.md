@@ -598,11 +598,11 @@ There are two intentional connection paths; `/mcp` is not a complete inventory o
 | Capability | Connection owner | Discovery |
 |---|---|---|
 | Configured servers such as Blender/FreeCAD/Peekaboo | Official Pi MCP (legacy adapter only during migration) | `/mcp`, codemode, `tool_search` |
-| `browser_fetch`, `browser_inspect` | Native `pi-browser-capture` wrapper → independent browser-worker MCP | `/mcp-connections` or `dev_doctor` |
-| `web_search`, `web_fetch`, `deep_research` | Native wrappers → independent search MCP broker | `/mcp-connections` or `dev_doctor` |
+| `browser_fetch`, `browser_inspect` | Native `pi-browser-capture` wrapper → independent browser-worker MCP | `dev_doctor` |
+| `web_search`, `web_fetch`, `deep_research` | Native wrappers → independent search MCP broker | `dev_doctor` |
 | `app_*` | In-process private-app browser runtime, not MCP | Pi tool inventory |
 
-`/mcp-connections` is a read-only command provided by `extensions/dev-doctor`. It combines source-checked official MCP registrations, optional legacy adapter metadata, and current-runtime wrapper tool registration, without opening connections, reading credentials, or launching servers. Cached metadata, registered tools and active tools are **not service-readiness checks**. If the adapter is absent or has not published a snapshot, its status remains unknown. `dev_doctor` includes the same section; the standalone `bin/pi-doctor` cannot observe the active Pi runtime.
+The `dev_doctor` tool (from `extensions/dev-doctor`) includes a read-only MCP inventory that combines source-checked official MCP registrations, optional legacy adapter metadata, and current-runtime wrapper tool registration, without opening connections, reading credentials, or launching servers. Cached metadata, registered tools and active tools are **not service-readiness checks**. If the adapter is absent or has not published a snapshot, its status remains unknown. The standalone `bin/pi-doctor` cannot observe the active Pi runtime.
 
 Keep the wrappers and servers separate. Do not also register the browser/search servers in official MCP or the adapter merely to make them appear in `/mcp`; that can create duplicate tool routes and bypass wrapper-specific behavior. Repository folders under `local_code` are not scanned to discover servers.
 
@@ -656,7 +656,7 @@ Normal Pi use is unchanged when Omnigent is absent.
 3. For search/research, separately install/configure `local_web_search` (Brave Search). Provision its private Brave key **before** starting its installer, following that repository's README. Override the default `http://127.0.0.1:8889/mcp` with `PI_WEBSEARCH_MCP_URL`, `SEARCH_MCP_URL`, `WEBSEARCH_MCP_URL`, or the research config. Missing search affects search/research calls, not unrelated Pi tools.
 4. For public browser tools, use pi-setup's recommended `browser-worker` module (automatic local service/token provisioning), or install it independently as documented in [Pi Browser Capture](../extensions/pi-browser-capture/README.md). Its persisted client URL/token path are honored by the native wrapper and checker; environment overrides still take precedence. If not using it, merge `"browserWorkerEnabled": false` into `~/.pi/research/config.json`; this suppresses optional-worker warnings, not search or `app_*`.
 5. For private `app_*` tests, install Chromium explicitly (see below) and set `BROWSER_MCP_APP_BASE_URL` / `BROWSER_MCP_APP_ALLOWED_HOSTS` for the intended app. These tools do not use browser-worker.
-6. Run the static doctor, then explicitly chosen dependency/import/service checks. Restart Pi or run `/reload`, then `/mcp-connections` to see both MCP integration paths. Failed optional services must remain clearly reported as unavailable, not mistaken for successful full setup.
+6. Run the static doctor, then explicitly chosen dependency/import/service checks. Restart Pi or run `/reload`, then use `/mcp` and `dev_doctor` to see both MCP integration paths. Failed optional services must remain clearly reported as unavailable, not mistaken for successful full setup.
 
 Example:
 
@@ -687,7 +687,7 @@ Then restart Pi from any working directory, or run in an existing session:
 
 ```text
 /reload
-/mcp-connections
+/mcp
 ```
 
 ## Updating on either machine

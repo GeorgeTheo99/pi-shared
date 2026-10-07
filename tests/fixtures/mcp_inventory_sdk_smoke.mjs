@@ -37,17 +37,18 @@ try {
   await session.bindExtensions({ onError: error => errors.push(error) });
   pi.events.emit("pi-mcp-adapter/status/v1", { version: 1,
     servers: [{ name: "fixture-cad", status: "cached", toolCount: 6 }] });
-  const command = loaded.extensions.flatMap(extension => [...extension.commands.values()])
-    .find(command => command.name === "mcp-connections");
-  assert(command);
-  let text;
-  await command.handler("", { hasUI: true, ui: { notify: value => { text = value; } } });
+  assert.equal(loaded.extensions.flatMap(extension => [...extension.commands.values()]).length, 0);
+  const doctor = loaded.extensions.flatMap(extension => [...extension.tools.values()])
+    .find(tool => tool.definition.name === "dev_doctor")?.definition;
+  assert(doctor);
+  const result = await doctor.execute("smoke", { agentDir: dir }, new AbortController().signal);
+  const text = result.content[0].text;
   assert.match(text, /fixture-cad: cached, 6 tools/);
   assert.match(text, /local-search: web_search, web_fetch; 2 active; service not probed/);
   assert.match(text, /browser-worker: no tools registered/);
   assert.deepEqual(errors, []);
   assert.equal(networkAttempts, 0);
-  console.log("PASS: real SDK registration/provenance + adapter event + mcp-connections; zero network or model calls");
+  console.log("PASS: real SDK registration/provenance + adapter event + dev_doctor inventory; zero network or model calls");
 } finally {
   session?.dispose();
   globalThis.fetch = fetch;

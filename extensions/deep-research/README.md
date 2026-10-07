@@ -31,7 +31,7 @@ Shared Pi extension for brokered multi-source research through the local-search 
 
 The local-search MCP broker is the required entry point for research calls and owns provider strategy. The standalone `local_web_search` service uses Brave Search and bounded direct/Decodo/Jina page retrieval; SearXNG is retired there. Provision the service's private Brave key before its first started install. Alternative brokers/overlays may implement the same contract.
 
-This native extension orchestrates MCP calls directly; it is not a server registration in `pi-mcp-adapter`. Use `/mcp-connections` or `dev_doctor` to see both integration paths. Missing search makes research unavailable, not unrelated Pi features.
+This native extension orchestrates MCP calls directly; it is not a server registration in `pi-mcp-adapter`. Use `dev_doctor` to see both integration paths. Missing search makes research unavailable, not unrelated Pi features.
 
 Configured URLs are collected in this order:
 

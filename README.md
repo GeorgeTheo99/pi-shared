@@ -168,7 +168,7 @@ its `~/.config/mcp/mcp.json` is not Pi's native config. See the
 ### MCP discovery versus search routing
 
 `/mcp` manages official MCP servers (or the legacy adapter when still installed).
-`/mcp-connections` reports source-checked official MCP tool registration, optional
+`dev_doctor` reports source-checked official MCP tool registration, optional
 legacy adapter metadata, and browser/search wrappers without connecting. Registration
 is not connection health; use `/mcp` for the native connection state. Adding a search
 server to MCP does **not** replace `web_search`, `web_fetch`, or `deep_research`.
