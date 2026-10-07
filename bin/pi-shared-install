@@ -244,6 +244,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 settings_path = Path(sys.argv[1]).expanduser()
@@ -328,9 +329,17 @@ if not seen_repo:
     new_packages.append(rel)
 settings["packages"] = new_packages
 settings_path.parent.mkdir(parents=True, exist_ok=True)
-tmp = settings_path.with_suffix(settings_path.suffix + ".tmp")
-tmp.write_text(json.dumps(settings, indent=2) + "\n")
-tmp.replace(settings_path)
+mode = settings_path.stat().st_mode & 0o777 if settings_path.exists() else 0o600
+tmp = None
+try:
+    with tempfile.NamedTemporaryFile(mode="w", dir=settings_path.parent, prefix=".settings-", suffix=".tmp", delete=False) as stream:
+        tmp = Path(stream.name)
+        os.fchmod(stream.fileno(), mode)
+        stream.write(json.dumps(settings, indent=2) + "\n")
+    tmp.replace(settings_path)
+finally:
+    if tmp is not None:
+        tmp.unlink(missing_ok=True)
 print(settings_path)
 PY
   ok "Wired $repo into $target/settings.json packages; codemode default enabled on detected Pi 0.99+ unless explicitly selected or disabled"

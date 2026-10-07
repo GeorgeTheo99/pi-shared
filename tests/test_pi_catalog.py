@@ -1311,6 +1311,26 @@ def test_wire_settings_rejects_nonlist_default_tools(tmp_path, value):
     assert json.loads(target.read_text()) == original
 
 
+@pytest.mark.parametrize("mode", [0o600, 0o640, 0o644])
+def test_wire_settings_preserves_permissions_and_does_not_clobber_a_fixed_temp_file(tmp_path, mode):
+    result, target = _install_settings_fixture(tmp_path, {"defaultTools": ["-codemode"]})
+    assert result.returncode == 0, result.stderr
+    target.chmod(mode)
+    stale = target.with_suffix(".json.tmp")
+    stale.write_text("unrelated preserved sentinel")
+    result, target = _install_settings_fixture(tmp_path, None)
+    assert result.returncode == 0, result.stderr
+    assert target.stat().st_mode & 0o777 == mode
+    assert stale.read_text() == "unrelated preserved sentinel"
+    assert not list(target.parent.glob(".settings-*.tmp"))
+
+
+def test_wire_settings_new_profile_is_private(tmp_path):
+    result, target = _install_settings_fixture(tmp_path, None)
+    assert result.returncode == 0, result.stderr
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
 def test_installer_renders_from_default_pi_alias_catalog(tmp_path):
     home = tmp_path / "home"
     aliases = home / ".pi" / "model-aliases.json"
