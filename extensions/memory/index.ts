@@ -5,6 +5,19 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { structuredTool } from "../_shared/structured-result.ts";
+
+const memoryReadSchema = Type.Object({
+	project: Type.Object({ id: Type.String(), name: Type.String() }, { additionalProperties: false }),
+	mode: Type.String({ enum: ["active", "all", "review"] }),
+	memories: Type.Array(Type.Object({
+		id: Type.String(), text: Type.String(), tags: Type.Array(Type.String()),
+		status: Type.String({ enum: ["active", "archived"] }), source: Type.Optional(Type.String()),
+		confidence: Type.Optional(Type.String()), createdAt: Type.Optional(Type.String()), updatedAt: Type.Optional(Type.String()),
+		lastReviewedAt: Type.Optional(Type.String()), reviewAfter: Type.Optional(Type.String()),
+		archivedAt: Type.Optional(Type.String()), archiveReason: Type.Optional(Type.String()),
+	}, { additionalProperties: false })),
+}, { additionalProperties: false });
 
 const MEMORY_VERSION = 1;
 const MAX_INJECTED_MEMORIES = 25;
@@ -377,7 +390,11 @@ export default function memoryExtension(pi: ExtensionAPI) {
 		return { systemPrompt: `${event.systemPrompt}\n\n${promptMemorySection(store, location.path)}` };
 	});
 
-	pi.registerTool(memoryRead);
+	pi.registerTool(structuredTool(memoryRead, memoryReadSchema, (result, args) => {
+		const mode = args.mode ?? "active";
+		return { data: { project: result.details.project, mode, memories: result.details.memories.filter((memory: ProjectMemory) =>
+			mode === "all" || (memory.status === "active" && (mode !== "review" || isDue(memory)))) } };
+	}));
 	pi.registerTool(memoryWrite);
 
 	pi.registerCommand("memory", {

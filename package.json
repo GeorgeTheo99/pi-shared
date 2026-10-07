@@ -2,7 +2,7 @@
   "name": "pi-shared",
   "private": true,
   "scripts": {
-    "test": "npm run test:docs && npm run test:anthropic-schema && npm run test:setup && npm run test:software-kb && npm run test:websearch && npm run test:research && npm run test:browser && npm run test:goal && npm run test:ask-user && npm run test:self-handoff && npm run test:tool-summary && npm run test:panel && npm run test:subagents && npm run test:session-coordinator && npm run test:powerpoint && npm run test:apple-release && npm run test:command-jobs && npm run test:job-wake && npm run test:job-contracts && npm run test:safe-edit && npm run test:doctor && npm run test:verification && npm run test:code-intel && npm run test:app-test && npm run test:integration-bundles && npm run test:native-mcp",
+    "test": "npm run test:docs && npm run test:anthropic-schema && npm run test:setup && npm run test:software-kb && npm run test:websearch && npm run test:research && npm run test:browser && npm run test:goal && npm run test:ask-user && npm run test:self-handoff && npm run test:tool-summary && npm run test:panel && npm run test:subagents && npm run test:session-coordinator && npm run test:powerpoint && npm run test:apple-release && npm run test:command-jobs && npm run test:job-wake && npm run test:job-contracts && npm run test:safe-edit && npm run test:doctor && npm run test:verification && npm run test:code-intel && npm run test:app-test && npm run test:integration-bundles && npm run test:native-mcp && npm run test:structured-results",
     "typecheck": "tools/typecheck/node_modules/.bin/tsc -p tsconfig.json",
     "test:docs": "node --test tests/readme_contract.test.mjs tests/peekaboo_docs.test.mjs tests/extension_layering.test.mjs",
     "test:anthropic-schema": "node --test tests/anthropic_schema.test.mts",
@@ -29,7 +29,8 @@
     "test:code-intel": "node --no-warnings --test tests/code_intel*.test.mts",
     "test:app-test": "node --no-warnings --test tests/app_test_runtime.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/app_test_loader.mjs --test tests/app_test_tool.test.mts",
     "test:integration-bundles": "npm --prefix extensions/integration-bundles test",
-    "test:native-mcp": "node --no-warnings --experimental-loader ./tests/fixtures/integration_bundles_test_loader.mjs --test tests/native_mcp_codemode_sdk.test.mts"
+    "test:native-mcp": "node --no-warnings --experimental-loader ./tests/fixtures/integration_bundles_test_loader.mjs --test tests/native_mcp_codemode_sdk.test.mts",
+    "test:structured-results": "node --no-warnings --experimental-loader ./tests/structured_results_loader.mjs --test tests/structured_results*.test.mts"
   },
   "keywords": ["pi-package"],
   "peerDependencies": {

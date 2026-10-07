@@ -22,7 +22,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as yaml from "yaml";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { searchCatalog } from "./catalog.ts";
 import { Type } from "typebox";
 
@@ -60,7 +60,7 @@ interface MasterList {
 function findMasterList(): { path: string; data: MasterList } | null {
 	// An explicit path is authoritative; a missing file must not select another policy.
 	const candidates = [process.env.PI_INTEGRATION_LIST ||
-		path.join(os.homedir(), ".pi", "agent", "master_integration_list.yaml")];
+		path.join(getAgentDir(), "master_integration_list.yaml")];
 
 	for (const candidate of candidates) {
 		try {

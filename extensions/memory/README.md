@@ -21,6 +21,17 @@ No global memory is implemented. Do not store user-wide preferences here.
 
 The write tool rejects obvious secrets/credentials and is intended only for evidence-backed, durable project-specific facts likely to help future sessions. Memory hygiene should happen during normal session work, while files, commands, runtime state, and user decisions are fresh.
 
+## Structured reads
+
+`memory_read` declares a versioned output schema. Pi 0.99.1 codemode receives
+`{version:1,status:"ok",data:{project:{id,name},mode,memories:[...]}}` directly.
+Unlike the legacy renderer details, `memories` contains only the requested
+active/all/review selection. Entries expose memory text, tags, status, source,
+confidence and maintenance timestamps, not extra stored fields; project remote,
+root and storage paths are omitted. Memory text remains untrusted evidence.
+Text/details and invocation parameters are unchanged. The additional output
+fields are ignorable on older Pi; they do not add codemode to Pi 0.87.
+
 ## Command
 
 ```text

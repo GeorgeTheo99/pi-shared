@@ -1,8 +1,27 @@
 import { fileURLToPath } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { defineTool, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runManagedProcess } from "../_shared/managed-process.ts";
 import { createMcpInventory, formatMcpInventory } from "./mcp-inventory.ts";
+import { structuredTool } from "../_shared/structured-result.ts";
+
+const DoctorData = Type.Object({
+	outcome: Type.String(), checker_exit_code: Type.Integer(),
+	capabilities: Type.Array(Type.Object({
+		capability: Type.String(), outcome: Type.String(), probe_type: Type.String(), guidance: Type.String(),
+		installed: Type.Optional(Type.String()), loaded: Type.Optional(Type.String()),
+		active: Type.Optional(Type.String()), configured: Type.Optional(Type.String()),
+	})),
+	mcp_connections: Type.Object({
+		schema_version: Type.Integer(), scope: Type.String(),
+		native: Type.Object({ evidence: Type.String(), total: Type.Integer(), truncated: Type.Boolean(),
+			servers: Type.Array(Type.Object({ name: Type.String(), registered_tool_count: Type.Integer(), active_tool_count: Type.Integer() })),
+			service_readiness: Type.String() }),
+		adapter: Type.Object({ evidence: Type.String(), observed_at: Type.Optional(Type.String()), total: Type.Optional(Type.Integer()),
+			truncated: Type.Optional(Type.Boolean()), servers: Type.Optional(Type.Array(Type.Object({ name: Type.String(), status: Type.String(), tool_count: Type.Integer() }))) }),
+		extension_managed: Type.Array(Type.Object({ name: Type.String(), registered_tools: Type.Array(Type.String()), active_tools: Type.Array(Type.String()), service_readiness: Type.String() })),
+	}),
+});
 
 const DOCTOR = fileURLToPath(new URL("../../bin/pi-doctor", import.meta.url));
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -11,14 +30,14 @@ const MAX_REPORT_BYTES = 32 * 1024;
 export default function (pi: ExtensionAPI) {
 	const mcpInventory = createMcpInventory(pi);
 	pi.registerCommand("mcp-connections", {
-		description: "Show adapter-managed and native-wrapper MCP inventory without connecting to services",
+		description: "Show official MCP, legacy adapter and extension-wrapper inventory without connecting to services",
 		handler: async (_args, ctx) => {
 			const text = formatMcpInventory(mcpInventory());
 			if (ctx.hasUI) ctx.ui.notify(text, "info");
 			else console.log(text);
 		},
 	});
-	pi.registerTool({
+	pi.registerTool(structuredTool(defineTool({
 		name: "dev_doctor",
 		label: "Environment Doctor",
 		description:
@@ -26,7 +45,7 @@ export default function (pi: ExtensionAPI) {
 			"Explicit probeImports executes trusted profile extension initializers (possible side effects); probeBrowser performs " +
 			"authenticated loopback inventory only, NOT browser execution; probeDeps runs Node dependency resolution. " +
 			"No repair, installs, profile changes, project commands, credential dumps, or model calls. Unknown states stay explicit. " +
-			"Also lists current-runtime adapter-managed and extension-managed MCP integrations without connecting; /mcp lists only the former.",
+			"Also lists registered official MCP tools, legacy adapter reports and extension-managed integrations without connecting; use /mcp for server connection status.",
 		parameters: Type.Object({
 			agentDir: Type.Optional(Type.String({ maxLength: 4096, description: "Profile directory; defaults to the current Pi profile" })),
 			probeImports: Type.Optional(Type.Boolean({ description: "Opt in only after trusting all configured extension code" })),
@@ -73,5 +92,5 @@ export default function (pi: ExtensionAPI) {
 				details: { ...report, checker_exit_code: process.exitCode, mcp_connections: mcp },
 			};
 		},
-	});
+	}), DoctorData, result => ({ data: result.details, status: result.details.outcome === "issues_found" ? "error" : "ok" })));
 }

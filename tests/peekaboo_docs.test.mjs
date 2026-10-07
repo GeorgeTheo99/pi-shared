@@ -12,7 +12,7 @@ const bridge = servers.find(entry => entry.args.includes('--bridge-socket'));
 test("Peekaboo is the direct recommendation, not a discoverable computer-use skill", () => {
   assert.equal(existsSync(new URL("../skills/macos-computer-use", import.meta.url)), false);
   assert.ok(!guide.startsWith("---"));
-  assert.match(instructions, /Always use Peekaboo through Pi's existing MCP adapter for native macOS desktop interaction/);
+  assert.match(instructions, /Always use Peekaboo through Pi's official MCP integration for native macOS desktop interaction/);
   assert.match(instructions, /docs\/peekaboo\.md/);
   assert.match(guide, /Peekaboo is the opinionated choice/);
   assert.match(guide, /\[setup\]\(peekaboo-setup\.md\)/);
@@ -24,9 +24,10 @@ test("MCP example uses a pinned local command and direct foreground-capable stdi
   assert.ok(server.args.includes("--no-remote"));
   assert.ok(!server.args.includes("--bridge-socket"));
   assert.ok(server.args.includes("--allow-foreground"));
-  assert.equal(server.lifecycle, "lazy-keep-alive");
-  assert.equal(server.requestTimeoutMs, 30000);
-  assert.equal(server.directTools, false);
+  assert.equal(server.timeout, 30);
+  assert.equal(server.exposure, "codemode");
+  assert.equal(server.lifecycle, undefined);
+  assert.equal(server.directTools, undefined);
   assert.equal(server.url, undefined);
 });
 
@@ -34,16 +35,16 @@ test("desktop Bridge example disables only browser and never falls back to direc
   assert.equal(bridge.command, '/absolute/path/to/pinned/peekaboo');
   assert.deepEqual(bridge.args, ['mcp', '--bridge-socket', '/absolute/path/to/Peekaboo/bridge.sock', '--allow-foreground']);
   assert.deepEqual(bridge.env, { PEEKABOO_DISABLE_TOOLS: 'browser' });
-  assert.equal(bridge.lifecycle, 'lazy-keep-alive');
-  assert.equal(bridge.directTools, false);
-  assert.equal(bridge.requestTimeoutMs, 30000);
+  assert.equal(bridge.timeout, 30);
+  assert.equal(bridge.exposure, 'codemode');
+  assert.equal(bridge.lifecycle, undefined);
   assert.equal(bridge.url, undefined);
   assert.match(setup, /Peekaboo schema v2/);
   assert.match(setup, /25 advertised tools without `browser`/);
   assert.match(setup, /unavailable explicit host must be reported/);
 });
 
-test("no adapter-side tool filtering or additional approval policy in either route", () => {
+test("native examples do not invent filters or silently transfer adapter approvals", () => {
   assert.equal(servers.length, 2);
   for (const entry of servers) {
     assert.equal(entry.includeTools, undefined);
@@ -52,7 +53,8 @@ test("no adapter-side tool filtering or additional approval policy in either rou
   }
   assert.equal(server.env, undefined);
   assert.match(setup, /full advertised Peekaboo catalog/);
-  assert.match(setup, /Existing global adapter policies still apply/);
+  assert.match(setup, /Existing adapter approval policies do not automatically transfer/);
+  assert.match(setup, /does not reproduce the adapter's lazy-start\/idle-timeout policy/);
 });
 
 test("guidance retains uncertainty, privacy, concurrency and browser-policy boundaries", () => {

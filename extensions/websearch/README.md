@@ -107,6 +107,22 @@ For internal callers, `endpointUrl` is a **redacted diagnostic label only**. A s
 
 When supplied by the broker, `web_search` preserves `status`, `backend`, `attempted`, `fallback_reason`, `timings_ms`, and `provider_states` in the tool result details alongside the existing fields.
 
+## Structured search results
+
+`web_search` declares `outputSchema`; Pi 0.99.1 codemode receives
+`{version:1,status:"ok"|"error",data:{query,text,results:[{rank,title,url,snippet}],status?}}`
+without parsing JSON strings. The optional nested status is the broker's status;
+the outer status is the tool outcome. Result count respects `num_results` and
+fields use the existing text bounds. Prose-only broker responses remain in
+`text`; an empty result list alone is not an error. Broker failures explicitly
+set the outer status to `error`; cancellation still throws. The structured
+contract does not promote endpoint/provider/timing diagnostics from details.
+Text can still contain untrusted broker content and existing error diagnostics;
+it is not a secret-redaction boundary.
+
+Original text/details and inputs remain unchanged. Older Pi can ignore these
+additive fields; Pi 0.87 does not gain codemode support. `web_fetch` is unchanged.
+
 ## Why broker-first instead of direct provider calls?
 
 Pros:

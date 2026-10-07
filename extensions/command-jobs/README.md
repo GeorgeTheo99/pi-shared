@@ -81,6 +81,19 @@ wait modes fail promptly. Aborting a wait never cancels its jobs.
   only the live owner signals the process tree. Same-user metadata is advisory,
   not authentication against another local process running as that user.
 
+## Structured results
+
+On Pi 0.99.1, `command_start`, `command_status`, `command_cancel` and `command_list`
+declare `outputSchema` and return `{version:1,status:"ok",data:{job}}` or
+`data:{jobs:[...]}` to codemode.
+The job contract includes ID, label, lifecycle/timestamps, exit code/signal,
+cancellation request, readiness, reason and cleanup; it excludes owner/PIDs,
+workspace paths and log bookkeeping. `ok` means the operation succeeded, **not**
+that the job succeeded or that a cancellation request has finished. Missing/foreign jobs and invalid inputs still throw.
+Text and renderer details are unchanged. Older Pi (including the documented
+0.87 baseline) can ignore these additive fields; codemode objects require the
+newer runtime. `command_logs` retains its existing text contract.
+
 ## Verification
 
 `npm run test:command-jobs` covers real process outcomes, bounded logs, cursors,

@@ -1,8 +1,26 @@
 import fs from "node:fs";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { loadConfig } from "./config.ts";
 import { VerificationEngine } from "./engine.ts";
+import { structuredTool } from "../_shared/structured-result.ts";
+
+const verificationSchema = Type.Object({
+	action: Type.String({ enum: ["list", "run", "result"] }), configSha256: Type.String(),
+	checks: Type.Optional(Type.Array(Type.Object({ id: Type.String(), format: Type.String(), timeoutSeconds: Type.Number(), inputScopeDeclared: Type.Boolean() }, { additionalProperties: false }))),
+	id: Type.Optional(Type.String()), check: Type.Optional(Type.Object({ id: Type.String() }, { additionalProperties: false })),
+	verdict: Type.Optional(Type.String({ enum: ["passed", "failed", "error", "incomplete", "stale", "canceled"] })),
+	reasons: Type.Optional(Type.Array(Type.String())), limitations: Type.Optional(Type.Array(Type.String())),
+	process: Type.Optional(Type.Object({ id: Type.String(), status: Type.String(),
+		exitCode: Type.Optional({ type: ["integer", "null"] } as any), cleanup: Type.Optional(Type.String()),
+	}, { additionalProperties: false })),
+	report: Type.Optional(Type.Object({ adapter: Type.String(),
+		counts: Type.Object({ total: Type.Integer(), passed: Type.Integer(), failed: Type.Integer(), skipped: Type.Integer() }, { additionalProperties: false }),
+		failures: Type.Array(Type.Object({ name: Type.String(), file: Type.Optional(Type.String()), line: Type.Optional(Type.Number()) }, { additionalProperties: false })),
+		failuresOmitted: Type.Integer(), limitations: Type.Array(Type.String()),
+	}, { additionalProperties: false })),
+	source: Type.Optional(Type.Object({ status: Type.String({ enum: ["unchanged", "stale", "unknown"] }) }, { additionalProperties: false })),
+}, { additionalProperties: false });
 
 export default function verification(pi: ExtensionAPI) {
 	const trusted = new Map<string, string>();
@@ -27,7 +45,7 @@ export default function verification(pi: ExtensionAPI) {
 			}
 		},
 	});
-	pi.registerTool({
+	pi.registerTool(structuredTool(defineTool({
 		name: "verify", label: "Verification", executionMode: "sequential",
 		description: "List/run/result for explicit .pi/verification.json checks. Run requires user-approved exact config digest, blocks on a managed command job, and returns a structured verdict with process, report, discovery, and source evidence. No inference from console prose. Result rechecks current source/config/report freshness. Never grants external/destructive authority. Limits: 64 KiB config, 2 MiB reports, 64 MiB input snapshot, latest 100 runtime-local results. Abort requests command cancellation.",
 		parameters: Type.Object({
@@ -35,7 +53,7 @@ export default function verification(pi: ExtensionAPI) {
 			check: Type.Optional(Type.String({ maxLength: 80 })),
 			id: Type.Optional(Type.String({ maxLength: 80 })),
 		}),
-		async execute(_toolCallId, params, signal, onUpdate, ctx): Promise<{ content: { type: "text"; text: string }[]; details: unknown }> {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const keys = params.action === "list" ? ["action"] : params.action === "run" ? ["action", "check"] : params.action === "result" ? ["action", "id"] : [];
 			if (!keys.length || Object.keys(params).some(k => !keys.includes(k)) || (params.action === "run" && !params.check) || (params.action === "result" && !params.id)) throw new Error("Invalid verify action/fields");
 			if (params.action === "list") {
@@ -49,6 +67,9 @@ export default function verification(pi: ExtensionAPI) {
 			const counts = result.report?.counts;
 			return { content: [{ type: "text", text: `${result.check.id}: ${result.verdict} (${result.id})\nProcess: ${result.process?.status ?? "unknown"}; source: ${result.source.status}${counts ? `; tests: ${counts.total}, failed: ${counts.failed}, skipped: ${counts.skipped}` : "; exit-code evidence only"}${result.reasons.length ? `\n${result.reasons.join("\n")}` : ""}` }], details: result };
 		},
-	});
+	}), verificationSchema, (result, args) => ({
+		status: "verdict" in result.details ? result.details.verdict === "canceled" ? "aborted" : result.details.verdict === "passed" ? "ok" : "error" : "ok",
+		data: { action: args.action, ...result.details },
+	})));
 	pi.on("session_shutdown", async () => { await engine?.close(); engine = undefined; trusted.clear(); });
 }

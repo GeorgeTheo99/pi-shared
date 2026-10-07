@@ -39,6 +39,8 @@ function fixture(t: any) {
 async function tools(root: string, kbRoot: string | null = join(root, "knowledge/software-engineering"), home?: string) {
   const extensionDir = join(root, "extensions/software-kb");
   cpSync(resolve("extensions/software-kb"), extensionDir, { recursive: true });
+  mkdirSync(join(root, "extensions/_shared"), { recursive: true });
+  cpSync(resolve("extensions/_shared/structured-result.ts"), join(root, "extensions/_shared/structured-result.ts"));
   const agentDir = join(root, "profile"); mkdirSync(agentDir);
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [], extensions: [join(extensionDir, "index.ts")] }));
   const loader = new DefaultResourceLoader({ cwd: root, agentDir, noContextFiles: true,

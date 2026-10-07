@@ -11,6 +11,7 @@ import {
 import { StringEnum, type Message } from "@earendil-works/pi-ai";
 import { defineTool, type AgentToolResult, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { operationTool } from "../_shared/operation-tool.ts";
+import { structuredTool } from "../_shared/structured-result.ts";
 import { createJobWaker, markJobObserved, type JobWaker } from "../_shared/job-wake.ts";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
@@ -333,6 +334,32 @@ function formatJobLine(job: BackgroundSubagentJob): string {
   const resultSuffix = resultCount ? `, results=${resultCount}` : "";
   const questionSuffix = job.question ? `, question=${job.question.id} (${job.question.exchange}/${job.maxExchanges ?? DEFAULT_INTERACTIVE_EXCHANGES})` : "";
   return `${job.id} — ${job.status} — ${job.mode} — ${sanitizePersistedText(job.label, 500)} — started ${job.startedAt}${resultSuffix}${questionSuffix}`;
+}
+
+const jobSummarySchema = Type.Object({
+  id: Type.String(), status: Type.String(), mode: Type.String(), label: Type.String(),
+  startedAt: Type.String(), updatedAt: Type.String(),
+  interactive: Type.Optional(Type.Boolean()), maxExchanges: Type.Optional(Type.Number()), questionId: Type.Optional(Type.String()),
+}, { additionalProperties: false });
+const jobOutputSchema = Type.Object({
+  ...jobSummarySchema.properties, error: Type.Optional(Type.String()),
+  question: Type.Optional(Type.Object({ id: Type.String(), exchange: Type.Number(), text: Type.String(), askedAt: Type.String(), untrusted: Type.Boolean() }, { additionalProperties: false })),
+  results: Type.Array(Type.Object({
+    agent: Type.String(), exitCode: Type.Number(), status: Type.Optional(Type.String()), output: Type.String(),
+    errorMessage: Type.Optional(Type.String()), structuredOutput: Type.Optional(Type.Unknown()),
+  }, { additionalProperties: false })),
+}, { additionalProperties: false });
+
+function jobSummary(job: BackgroundSubagentJob) {
+  return {
+    id: job.id, status: job.status, mode: job.mode, label: sanitizePersistedText(job.label, 500),
+    startedAt: job.startedAt, updatedAt: job.updatedAt,
+    interactive: job.interactive, maxExchanges: job.maxExchanges, questionId: job.question?.id,
+  };
+}
+function jobOutput(job: BackgroundSubagentJob) {
+  return { ...jobSummary(job), error: job.error ? sanitizePersistedText(job.error, 2000) : undefined,
+    question: persistQuestion(job.question), results: persistResult(job.result)?.details.results ?? [] };
 }
 
 function formatJobList(): string {
@@ -2143,8 +2170,8 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
       };
       const result = await executeRequest();
       if ("isError" in result && result.isError) {
-        // Pi's native loop ignores a returned isError flag. Failed calls must
-        // throw; retain bounded recovery information in the native error text.
+        // Preserve thrown failures on older Pi and current codemode callers;
+        // retain bounded recovery information in the native error text.
         const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
         throw Object.assign(new Error(text), { details: result.details });
       }
@@ -2154,7 +2181,7 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
 
   for (const operation of subagentOperations) {
     const parameters = subagentOperationSchema(operation, config.maxFanout);
-    pi.registerTool(operationTool(defineTool({
+    const tool = operationTool(defineTool({
       name: operation.name,
       label: operation.name.replaceAll("_", " "),
       description: `${operation.description} Effective limits: ${formatSubagentLimits(config)}.`,
@@ -2166,6 +2193,15 @@ export default function spawnSubagentExtension(pi: ExtensionAPI) {
       renderCall: (args, theme) => renderSpawnSubagentCall({ ...args, ...operation.fixed }, theme, operation.name),
       renderResult: renderSpawnSubagentResult,
       execute: (id, args, signal, update, ctx) => engine.execute(id, { ...args, ...operation.fixed }, signal, update, ctx),
-    })));
+    }));
+    if (operation.name === "subagent_list") {
+      pi.registerTool(structuredTool(tool, Type.Object({ jobs: Type.Array(jobSummarySchema) }, { additionalProperties: false }), () => ({
+        data: { jobs: Array.from(backgroundJobs.values()).sort((a, b) => b.startedAt.localeCompare(a.startedAt)).map(jobSummary) },
+      })));
+    } else if (operation.name === "subagent_status") {
+      pi.registerTool(structuredTool(tool, Type.Object({ job: jobOutputSchema }, { additionalProperties: false }), (_result, args) => ({
+        data: { job: jobOutput(backgroundJobs.get(args.jobId!)!) },
+      })));
+    } else pi.registerTool(tool);
   }
 }

@@ -153,22 +153,26 @@ Different contracts need a compatibility bridge. For bearer authentication, add
 
 ### General MCP servers
 
-The optional [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) adds
-MCP servers independently of built-in search. Install with
-`pi install npm:pi-mcp-adapter`, restart Pi, then use `/mcp setup` for guided
-onboarding or configure `.mcp.json` per project / `~/.config/mcp/mcp.json` globally.
-It supports stdio/HTTP servers and supported bearer/OAuth flows; server dependencies
-and credentials are still required. `/setup mcp` prepares a profile-scoped install
-command and a handoff to `/mcp setup`; it does not execute the install or replace
-the adapter's own configuration flow.
+Use **Pi's official MCP support** (Pi 0.99+) for stdio/HTTP servers, independently
+of built-in search. Configure `<agent-dir>/mcp.json` (normally
+`~/.pi/agent/mcp.json`) or trusted project `.pi/mcp.json`; use `pi mcp add`,
+`pi mcp list`, and `/mcp` to manage servers. No adapter package is needed.
+Server executables, credentials and OS permissions are still required.
+
+Existing `pi-mcp-adapter` installations are not silently removed. Migration must
+translate tool restrictions and timeouts, disclose lifecycle differences, and
+verify services before retiring the adapter. Keep the old config for rollback;
+its `~/.config/mcp/mcp.json` is not Pi's native config. See the
+[official MCP migration guide](docs/native-mcp.md).
 
 ### MCP discovery versus search routing
 
-`/mcp` lists adapter-managed servers; `/mcp-connections` shows adapter metadata
-alongside native browser/search integrations without connecting. Adding a search
-server to the adapter makes its tools callable through that adapter—it does **not**
-replace `web_search`, `web_fetch`, or `deep_research`. Do not duplicate native
-broker registrations just to make them appear in `/mcp`.
+`/mcp` manages official MCP servers (or the legacy adapter when still installed).
+`/mcp-connections` reports source-checked official MCP tool registration, optional
+legacy adapter metadata, and browser/search wrappers without connecting. Registration
+is not connection health; use `/mcp` for the native connection state. Adding a search
+server to MCP does **not** replace `web_search`, `web_fetch`, or `deep_research`.
+Do not duplicate wrapper broker registrations just to make them appear in `/mcp`.
 [Connection boundaries](docs/reference.md#mcp-discovery).
 
 ### Multi-source research
@@ -220,8 +224,8 @@ or a TestFlight uploader. [Apple app commands](extensions/apple-app-test/README.
 ### Native Mac computer use (opt-in)
 
 [Peekaboo](docs/peekaboo.md) is the opinionated choice for native macOS desktop
-interaction. Always use its separately installed server through Pi's existing
-MCP adapter for this purpose; no separate computer-use skill is needed. [`/setup peekaboo`](extensions/setup/README.md) previews installation
+interaction. Use its separately installed server through Pi's official MCP
+support (or the retained adapter during migration); no separate computer-use skill is needed. [`/setup peekaboo`](extensions/setup/README.md) previews installation
 or configuration, asks before applying it, and offers a separate CLI and
 permission check. Select direct CLI ownership or an explicit desktop-app Bridge;
 recognized existing routes are preserved. This flow requires Peekaboo backend
@@ -389,13 +393,25 @@ probes resolve dependencies, import trusted extensions, or inspect browser tool
 inventory. They do not repair the environment; imports/inventory are not proof
 that models or browser actions work. [Diagnostic boundaries](extensions/dev-doctor/README.md).
 
+### Structured results for codemode
+
+Job/status, wait, lookup and check tools expose selected versioned structured
+results on Pi 0.99+, while retaining their existing text and input contracts.
+Scripts can inspect fields without parsing prose. Check envelope status **and**
+domain outcomes: a successfully inspected job can have failed, and a completed
+wait is not a passing test. Official MCP returns its own `CallToolResult` envelope,
+not this format. [Covered tools, examples and limits](docs/structured-results.md).
+
 ### Tool discovery and bundles
 
 `enterprise_list_bundles` discovers registered capabilities; load/unload tools
 select configured groups of active tool schemas. Bundle activation requires the
 machine-local configuration and already-registered tools. It does not install
-integrations, start services, or grant access.
-[Bundle configuration and limits](extensions/integration-bundles/README.md).
+integrations, start services, or grant access. An opt-in
+[conservative preset](extensions/integration-bundles/presets/conservative.yaml)
+keeps essential tools selected and groups optional capabilities for explicit
+loading. Configuration is per profile; no existing policy is overwritten.
+[Bundle configuration, preset activation and rollback](extensions/integration-bundles/README.md).
 
 ### Tool-result summaries and exact recall
 
@@ -517,3 +533,6 @@ CI (`.github/workflows/ci.yml`) runs `npm run typecheck`, `npm test`, and
 `python -m pytest tests` on macOS. Locally, run `npm ci --prefix tools/typecheck`
 once to install the pinned type-check toolchain before `npm run typecheck`.
 Extensions import only `extensions/_shared/`, never another extension.
+Real-Keychain Apple tests run locally on macOS; hosted CI skips those five checks
+unless `PI_APPLE_KEYCHAIN_TESTS=1` explicitly enables them in a usable security
+session. The other Apple tests and all MCP/structured-result checks still run.

@@ -6,6 +6,18 @@ import { commandLogs, getCommandRunner, shutdownCommandRunner } from "../_shared
 import { COMMAND_TERMINAL, type CommandRecord } from "../_shared/command-job-store.ts";
 import { createJobWaker, markJobObserved } from "../_shared/job-wake.ts";
 import { operationTool } from "../_shared/operation-tool.ts";
+import { structuredTool } from "../_shared/structured-result.ts";
+
+// Deliberately excludes owner/PIDs, workspace paths and retained-log bookkeeping.
+const commandSchema = Type.Object({
+	id: Type.String(), label: Type.String(), status: Type.String({ enum: ["starting", "running", "canceling", "succeeded", "failed", "canceled", "timed_out", "lost"] }),
+	createdAt: Type.Number(), updatedAt: Type.Number(), finishedAt: Type.Optional(Type.Number()),
+	exitCode: Type.Optional(Type.Integer({ type: ["integer", "null"] })),
+	exitSignal: Type.Optional(Type.String({ type: ["string", "null"] })),
+	cancelRequested: Type.Optional(Type.Boolean()), reason: Type.Optional(Type.String()),
+	readiness: Type.String({ enum: ["not_requested", "pending", "ready", "failed"] }),
+	cleanup: Type.Optional(Type.String({ enum: ["confirmed", "unconfirmed"] })),
+}, { additionalProperties: false });
 
 function projectScope(ctx: ExtensionContext, signal?: AbortSignal) {
 	if (signal?.aborted) throw new Error("Command request aborted");
@@ -41,7 +53,7 @@ export default function commandJobs(pi: ExtensionAPI) {
 			});
 		}, () => undefined);
 	};
-	pi.registerTool(operationTool(defineTool({
+	pi.registerTool(structuredTool(operationTool(defineTool({
 		name: "command_start",
 		label: "Start Command",
 		description: "Start a bounded local command job in a trusted workspace. Returns a cmd_ ID; use wait_for_jobs for completion or wait_for_ready for a configured probe. Jobs run only while their Pi owner lives; shutdown cancels, hard crashes may leave descendants. This tool grants no extra permission for external/destructive actions.",
@@ -78,8 +90,8 @@ export default function commandJobs(pi: ExtensionAPI) {
 			if (args.notify_on_complete) wakeOnFinish(record.id);
 			return evidence(record);
 		},
-	})));
-	pi.registerTool(operationTool(defineTool({
+	})), Type.Object({ job: commandSchema }, { additionalProperties: false }), result => ({ data: { job: result.details } })));
+	pi.registerTool(structuredTool(operationTool(defineTool({
 		name: "command_status",
 		label: "Command Status",
 		description: "Inspect lifecycle, exit code, readiness, and cleanup evidence for a command job in this workspace. Use command_logs for output, wait_for_jobs for completion, or wait_for_ready for probes; do not poll status to wait.",
@@ -91,8 +103,8 @@ export default function commandJobs(pi: ExtensionAPI) {
 			observeTerminal(record);
 			return evidence(record);
 		},
-	})));
-	pi.registerTool(operationTool(defineTool({
+	})), Type.Object({ job: commandSchema }, { additionalProperties: false }), result => ({ data: { job: result.details } })));
+	pi.registerTool(structuredTool(operationTool(defineTool({
 		name: "command_list",
 		label: "List Commands",
 		description: "List retained command jobs in the caller workspace. Takes no arguments. Use command_status or command_logs to inspect a job.",
@@ -103,7 +115,7 @@ export default function commandJobs(pi: ExtensionAPI) {
 			const project = projectScope(ctx, signal);
 			return evidence(getCommandRunner().store.list(project));
 		},
-	})));
+	})), Type.Object({ jobs: Type.Array(commandSchema) }, { additionalProperties: false }), result => ({ data: { jobs: result.details } })));
 	pi.registerTool(operationTool(defineTool({
 		name: "command_logs",
 		label: "Command Logs",
@@ -123,7 +135,7 @@ export default function commandJobs(pi: ExtensionAPI) {
 			return evidence(logs);
 		},
 	})));
-	pi.registerTool(operationTool(defineTool({
+	pi.registerTool(structuredTool(operationTool(defineTool({
 		name: "command_cancel",
 		label: "Cancel Command",
 		description: "Request cancellation of a command job in this workspace. Only the live owner signals its process tree; request publication is not termination. Use wait_for_jobs and inspect cleanup evidence afterward.",
@@ -135,7 +147,7 @@ export default function commandJobs(pi: ExtensionAPI) {
 			const { runner } = projectJob(args.id, project);
 			return evidence(await runner.store.cancel(args.id, project));
 		},
-	})));
+	})), Type.Object({ job: commandSchema }, { additionalProperties: false }), result => ({ data: { job: result.details } })));
 	pi.on("session_shutdown", async () => {
 		// Owned jobs are canceled during teardown; that is not news for the next session.
 		waker.stop();

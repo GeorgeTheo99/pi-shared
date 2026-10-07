@@ -41,6 +41,22 @@ subagent_steer({jobId:"sub_…", message:"Check the parser first"})
 subagent_followup({jobId:"sub_…", message:"Then run focused tests"})
 ```
 
+## Structured inspection results
+
+`subagent_status` and `subagent_list` declare `outputSchema`. Pi 0.99.1 codemode
+receives `{version:1,status:"ok",data:{job}}` or `data:{jobs:[...]}` directly.
+List entries contain job ID, lifecycle, mode, label, timestamps and interactive
+summary fields. Status additionally exposes the bounded sanitized error/current
+untrusted question and result entries (agent, exit code, status, output, optional
+error and validated child `structuredOutput`). Child structured output is
+intentionally arbitrary user-schema JSON, not renderer metadata.
+
+The transport status means inspection succeeded, **not** successful child work;
+check `data.job.status` and result outcomes. Missing IDs still throw. Owner
+leases/PIDs, agent directories, prompts/tasks, stderr and usage internals are not
+promoted to this contract. Text/details and launch/input contracts are unchanged.
+Older Pi can ignore the additive fields; Pi 0.87 does not gain codemode support.
+
 ## Agents
 
 Bundled shared agents live in `extensions/spawn-subagent/agents/`:

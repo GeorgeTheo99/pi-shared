@@ -95,7 +95,7 @@ export async function runWizard(ctx: WizardContext, run: Run, signal: AbortSigna
 		if (signal.aborted || !approved) return;
 		const applied = await run("apply", [...options, "--yes", "--expected-plan", plan.planId]);
 		ctx.ui.notify(formatReport(applied), applied.ok ? "info" : "warning");
-		if (applied.ok) ctx.ui.notify("Restart Pi or run /reload to load MCP configuration, then /setup peekaboo to check. Verify permissions again through the actual Pi MCP adapter; setup-process grants can differ. No desktop action was tested.", "info");
+		if (applied.ok) ctx.ui.notify("Restart Pi or run /reload to load MCP configuration, then /setup peekaboo to check. Verify permissions again through the actual Pi MCP process; setup-process grants can differ. No desktop action was tested.", "info");
 		return;
 	}
 }
@@ -149,11 +149,11 @@ export default function setupExtension(pi: ExtensionAPI) {
 					return outcome.report;
 				}
 				if (target === "peekaboo") {
-					if (!pi.getAllTools().some(tool => tool.name === "mcp")) ctx.ui.notify("Pi's MCP adapter is not currently loaded. Use /setup mcp to prepare adapter installation; this flow only configures Peekaboo.", "warning");
-					await runWizard(ctx, (action, extra) => progress(action, signal => runBackend(command, action, extra, signal)), controller.signal);
+					ctx.ui.notify("Peekaboo uses Pi's official MCP support. /setup mcp checks configuration and previews legacy-adapter migration; no adapter installation is required.", "info");
+					await runWizard(ctx, (action, extra) => progress(action, signal => runBackend(command, action, ["--agent-dir", getAgentDir(), ...extra], signal)), controller.signal);
 				} else if (isCapability(target)) {
 					const id = target;
-					if (id === "mcp") ctx.ui.notify(`Current-session MCP adapter tool: ${pi.getAllTools().some(tool => tool.name === "mcp") ? "registered (connections not tested)" : "not registered"}.`, "info");
+					if (id === "mcp") ctx.ui.notify(`Current-session legacy adapter tool: ${pi.getAllTools().some(tool => tool.name === "mcp") ? "registered; restart after migration" : "not registered"}. Official MCP connection status is in /mcp; tool registration alone is not readiness.`, "info");
 					await runCapabilityWizard(ctx, id, (action, options, extra) => progress(action, signal => runCapabilityBackend(command, id, action, options, {
 						project: realpathSync(ctx.cwd), agentDir: realpathSync(getAgentDir()), sharedRoot: realpathSync(fileURLToPath(new URL("../../", import.meta.url))), nodeExecutable: realpathSync(process.execPath),
 					}, signal, extra)), controller.signal);

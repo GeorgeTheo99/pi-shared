@@ -1,10 +1,23 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadPrivateCorpus, type PrivateCorpus } from "./corpus.ts";
 import { resolveKnowledgeRoot } from "./paths.ts";
+import { structuredTool } from "../_shared/structured-result.ts";
+
+const searchSchema = Type.Object({
+	query: Type.String(), mode: Type.String(), count: Type.Integer(), private_index: Type.String(),
+	warning: Type.Optional(Type.String()), source_id: Type.Optional(Type.String()),
+	results: Type.Array(Type.Object({
+		score: Type.Number(), kind: Type.String({ enum: ["metadata", "source_card", "document_page"] }),
+		source_id: Type.String(), source_title: Type.String(), title: Type.String(), snippet: Type.String(),
+		page: Type.Optional(Type.Integer()), method: Type.Optional(Type.String()), note: Type.Optional(Type.String()),
+		path: Type.Optional(Type.String()), url: Type.Optional(Type.String()), access: Type.Optional(Type.String()),
+		license_status: Type.Optional(Type.String()), ingest_policy: Type.Optional(Type.String()),
+	}, { additionalProperties: false })),
+}, { additionalProperties: false });
 
 interface SourceRecord {
 	id: string;
@@ -309,7 +322,7 @@ function privateStatus(corpus: PrivateCorpus) {
 export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 	const kbRoot = resolveKnowledgeRoot(packageRoot);
 	const corpusRoot = join(kbRoot, "corpus");
-	pi.registerTool({
+	pi.registerTool(structuredTool(defineTool({
 		name: "kb_search",
 		label: "Software KB Search",
 		description: "Search software-engineering source cards/catalog and available private extracted book pages. Returns source IDs, PDF page citations, content kind, and local-index status; availability is not completeness.",
@@ -369,7 +382,7 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 				},
 			};
 		},
-	});
+	}), searchSchema, result => ({ data: result.details })));
 
 	pi.registerTool({
 		name: "kb_read",

@@ -55,7 +55,12 @@ installation/load/activation cannot be inferred from authenticated inventory.
 Run `/mcp-connections` inside Pi for a quick inventory, or call `dev_doctor` to
 include it with environment diagnostics. No new model-callable tool is added.
 
-- **Adapter-managed:** the last bounded `pi-mcp-adapter/status/v1` event reports
+- **Official MCP:** counts tool registrations whose source is `builtin:mcp` and
+  whose namespace matches the server. Reports registered and active counts, not
+  connection health. Disabled, pending, failed, empty, or hidden-only servers may
+  have no visible tools; use `/mcp` for connection status. At most 50 servers are
+  displayed. No service is started or queried by this inventory.
+- **Legacy adapter-managed:** the last bounded `pi-mcp-adapter/status/v1` event reports
   server names, statuses and tool counts. This uses the adapter's public event
   contract, not its config files/private code, and never requests a connection.
   Absent/unsupported/malformed reports stay unknown; `cached` is not an outage
@@ -76,7 +81,7 @@ include it with environment diagnostics. No new model-callable tool is added.
 For actual checks, explicitly run `pi-browser-check` (authenticated inventory,
 not browser execution) and `local-search verify` (standalone search health and
 inventory, not a paid provider search). Keep the existing native wrappers;
-do not create duplicate adapter registrations merely for visibility.
+do not create duplicate MCP registrations merely for visibility.
 
 ## Safety and limits
 

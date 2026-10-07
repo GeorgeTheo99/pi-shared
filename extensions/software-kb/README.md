@@ -16,6 +16,17 @@ from an optional private corpus of book PDFs.
 
 Commands `/kb-search` and `/kb-sources` ask the agent to run the matching tools.
 
+## Structured search
+
+On Pi 0.99.1, `kb_search` declares `outputSchema` and codemode receives
+`{version:1,status:"ok",data:{query,mode,count,private_index,results:[...]}}`.
+Optional warning/source filter fields and result citations, snippets, scores,
+content kind, access/ingest/license caveats are included. Citation paths are
+intentional; the KB root and unrelated document inventory are not exported.
+Empty matches are a successful search, not a failed tool. Exceptions still
+throw. Existing text/details remain unchanged; older Pi can ignore the additive
+fields (Pi 0.87 does not gain codemode support).
+
 ## Storage
 
 The tools read exactly one complete layout, chosen in this order:

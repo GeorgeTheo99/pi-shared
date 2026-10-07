@@ -7,7 +7,8 @@ permission, or change the MCP gateway's independent discovery boundary.
 ## Activation contract
 
 - Reads `$PI_INTEGRATION_LIST`, or otherwise
-  `~/.pi/agent/master_integration_list.yaml`. An explicit path is authoritative.
+  `<agent-dir>/master_integration_list.yaml` (normally `~/.pi/agent`; respects
+  `PI_CODING_AGENT_DIR`). An explicit path is authoritative.
   Missing/unreadable/unparseable lists leave activation management **disabled**;
   the three enterprise routers remain registered and discovery still works.
   Load and unload then fail explicitly; `/bundles` is not registered.
@@ -107,6 +108,29 @@ registered tools are shown. Service-side/MCP catalogs are not queried.
 - Without arguments, returns a bounded first page of bundles, present capability
   groups and tools. Pagination discovers the remainder; search is never an
   implicit activation or external-service probe.
+
+## Conservative preset (opt-in)
+
+[`presets/conservative.yaml`](presets/conservative.yaml) hides optional app-testing,
+documents, knowledge, coordination, advanced delegation, panel, and diagnostic
+schemas until their bundle is loaded. It keeps core tools, research, jobs/waits,
+ordinary subagent runs/status/cancellation, memory and planning selected. There
+are no regex triggers, hard tool caps, or MCP patterns. Native MCP exposure is
+managed separately by Pi. This is schema selection, not an authorization boundary;
+codemode access is governed by Pi's tool contract.
+
+For a one-session trial, start a **new** Pi process with `PI_INTEGRATION_LIST`
+pointing to the absolute preset path in your installed pi-shared module. To opt
+in persistently, copy that preset to `<agent-dir>/master_integration_list.yaml`
+only if no policy exists there. Never overwrite an existing policy blindly.
+Repeat explicitly for each profile; there is no cross-profile fallback. Restart
+Pi after changing the policy. `/bundles status` shows the selection; use
+`/bundles load app-testing` or `enterprise_load_bundle` when needed. Loading takes
+effect for the next model response. An unavailable capability stays unavailable.
+
+To roll back, remove only the preset file you installed (or restore your prior
+file), unset `PI_INTEGRATION_LIST` if used, and start a new process. `/reload`
+cannot reconstruct tools hidden by an earlier controller instance.
 
 ## Verification
 

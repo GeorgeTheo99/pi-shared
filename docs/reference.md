@@ -446,14 +446,14 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - use for repeatable, multi-phase, scriptable orchestration; use `subagent_run`, `subagent_parallel`, or `subagent_chain` for ordinary one-off single/parallel/chain delegation
   - resume-by-replay journals are context-bound, exact, locked, and atomic; stale, corrupt, colliding, or oversized replay data fails closed
   - v1 scope: Pi-backed subagents only and no workflow-level structured-output schema validation
-- `extensions/integration-bundles` — lazy enterprise tool-bundle loader driven by a machine-local `master_integration_list.yaml`:
-  - keeps GPT / o-series safely under OpenAI's 128-tool API limit by exposing only a router toolset by default and loading bundles (jira, slack, glean, salesforce, google-workspace, databricks-aidk, ...) on demand
-  - injects an `<available_bundles>` block into the system prompt with NL `description` text so the model can self-discover when to load each bundle
-  - regex `triggers` auto-load high-confidence bundles (e.g. `ES-12345` → `jira`) before the first turn
-  - LRU-evicts non-default bundles when a new load would exceed the per-model cap; Claude / Sonnet / Opus / Gemini have `max_tools: null` and load everything eagerly
-  - exposes `enterprise_load_bundle`, `enterprise_unload_bundle`, `enterprise_list_bundles` tools and a `/bundles` slash command
-  - skill-driven loading: any skill `SKILL.md` whose YAML front-matter declares `requires_bundles: [...]` will pre-load those bundles when the skill name is mentioned in the user message
-  - configuration is machine-local (not in this repo): resolved from `$PI_INTEGRATION_LIST` or `~/.pi/agent/master_integration_list.yaml` (on Databricks machines this is a symlink into the local Databricks-specific package). Domain-specific bundle definitions do not belong in pi-shared.
+- `extensions/integration-bundles` — conservative schema selection driven by a profile-local `master_integration_list.yaml`:
+  - keeps essential/non-bundle tools selected and loads optional capabilities on demand; does not import extensions or start services
+  - injects an `<available_bundles>` block so the model can discover configured bundles
+  - optional regex triggers and per-model caps come only from user configuration; no hardcoded provider limits or eager-load policy
+  - exposes `enterprise_load_bundle`, `enterprise_unload_bundle`, `enterprise_list_bundles` and `/bundles` when activation is configured
+  - explicit tool exclusions remain authoritative; loading does not grant permission
+  - configuration resolves from `$PI_INTEGRATION_LIST` or `<agent-dir>/master_integration_list.yaml`; missing configuration leaves discovery only
+  - ships an opt-in [conservative preset](../extensions/integration-bundles/presets/conservative.yaml); existing machine/enterprise policies are never overwritten. See [activation and rollback](../extensions/integration-bundles/README.md).
 
 ## Included shared skills
 
@@ -595,14 +595,14 @@ There are two intentional connection paths; `/mcp` is not a complete inventory o
 
 | Capability | Connection owner | Discovery |
 |---|---|---|
-| Configured servers such as Blender/FreeCAD | Optional `pi-mcp-adapter` package | `/mcp` |
+| Configured servers such as Blender/FreeCAD/Peekaboo | Official Pi MCP (legacy adapter only during migration) | `/mcp`, codemode, `tool_search` |
 | `browser_fetch`, `browser_inspect` | Native `pi-browser-capture` wrapper → independent browser-worker MCP | `/mcp-connections` or `dev_doctor` |
 | `web_search`, `web_fetch`, `deep_research` | Native wrappers → independent search MCP broker | `/mcp-connections` or `dev_doctor` |
 | `app_*` | In-process private-app browser runtime, not MCP | Pi tool inventory |
 
-`/mcp-connections` is a read-only command provided by `extensions/dev-doctor`. It combines adapter-reported metadata with current-runtime, source-checked wrapper tool registration, without opening connections, reading credentials, or launching servers. Cached metadata, registered tools and active tools are **not service-readiness checks**. If the adapter is absent or has not published a snapshot, its status remains unknown. `dev_doctor` includes the same section; the standalone `bin/pi-doctor` cannot observe the active Pi runtime.
+`/mcp-connections` is a read-only command provided by `extensions/dev-doctor`. It combines source-checked official MCP registrations, optional legacy adapter metadata, and current-runtime wrapper tool registration, without opening connections, reading credentials, or launching servers. Cached metadata, registered tools and active tools are **not service-readiness checks**. If the adapter is absent or has not published a snapshot, its status remains unknown. `dev_doctor` includes the same section; the standalone `bin/pi-doctor` cannot observe the active Pi runtime.
 
-Keep the wrappers and servers separate. Do not also register the browser/search servers in the adapter merely to make them appear in `/mcp`; that can create duplicate tool routes and bypass wrapper-specific behavior. Repository folders under `local_code` are not scanned to discover servers.
+Keep the wrappers and servers separate. Do not also register the browser/search servers in official MCP or the adapter merely to make them appear in `/mcp`; that can create duplicate tool routes and bypass wrapper-specific behavior. Repository folders under `local_code` are not scanned to discover servers.
 
 ## Installation verification
 

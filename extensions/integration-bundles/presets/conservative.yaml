@@ -1,0 +1,37 @@
+# Opt-in, per-profile schema selection. No service changes or permission grants.
+# Core file tools, research, command jobs, waits, memory, goals, work plans,
+# ordinary subagent runs/status/cancellation and discovery stay selected.
+# No automatic triggers, tool cap, or MCP patterns: load only when needed.
+version: 1
+defaults:
+  always_load: []
+bundles:
+  app-testing:
+    description: Local/private app browser testing, tabs, screenshots, API requests and isolated app tests.
+    tools: ["app_*"]
+  documents:
+    description: Preview PowerPoint slides and clean up generated previews.
+    tools: ["pptx_preview", "pptx_preview_cleanup"]
+  knowledge:
+    description: Search/read the private software-engineering knowledge base and inspect source availability.
+    tools: ["kb_search", "kb_read", "kb_sources"]
+  coordination:
+    description: Discover other live Pi sessions and exchange or acknowledge bounded coordination messages.
+    tools: ["peer_*"]
+  delegation-advanced:
+    description: Parallel or chained subagents, interactive clarification/steering, isolated worktrees and resumable workflows.
+    tools:
+      - subagent_parallel
+      - subagent_chain
+      - subagent_interactive
+      - subagent_worktree
+      - subagent_answer
+      - subagent_steer
+      - subagent_followup
+      - workflow
+  panel:
+    description: Discover/select alternate models for an independent second opinion or vision-capable delegation.
+    tools: ["panel_models", "panel_select"]
+  diagnostics:
+    description: Inspect environment evidence, extension imports, dependencies and MCP registration without implying readiness.
+    tools: ["dev_doctor"]

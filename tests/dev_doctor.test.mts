@@ -54,6 +54,9 @@ test("wrapper executes the static CLI and retains structured unknown states and 
     process.env.PI_CODING_AGENT_DIR = agent;
     const result = await tool().execute("doctor", {}, new AbortController().signal);
     assert.equal(result.details.schema_version, 1);
+    assert.equal(result.structuredContent.version, 1);
+    assert.equal(result.structuredContent.data.outcome, result.details.outcome);
+    assert.deepEqual(result.structuredContent.data.mcp_connections.native, result.details.mcp_connections.native);
     const rows = Object.fromEntries(result.details.capabilities.map((row: any) => [row.capability, row]));
     assert.equal(rows.extensions.loaded, "unknown");
     assert.equal(rows.browser_worker.outcome, "disabled");
@@ -66,6 +69,8 @@ test("wrapper executes the static CLI and retains structured unknown states and 
     const failed = await tool().execute("doctor", {}, new AbortController().signal);
     assert.equal(failed.details.outcome, "issues_found");
     assert.equal(failed.details.checker_exit_code, 1);
+    assert.equal(failed.structuredContent.status, 'error');
+    assert.equal(failed.structuredContent.data.checker_exit_code, 1);
     assert.doesNotMatch(JSON.stringify(failed), /SECRET_MUST_NOT_LEAK/);
   } finally {
     for (const [key, value] of Object.entries(before)) {
@@ -114,6 +119,26 @@ test("MCP inventory separates adapter reports from source-attested wrappers with
   h.hooks.get("session_shutdown")!();
   assert.equal(h.events.listenerCount(MCP_STATUS_EVENT), 0);
   assert.equal(snapshot().adapter.evidence, "not_observed");
+});
+
+test("official MCP inventory uses built-in source and namespace, not names or guessed readiness", () => {
+  const h = harness();
+  const snapshot = createMcpInventory(h.pi);
+  h.tools.push(
+    { name: "mcp__cad__inspect", namespace: { name: "mcp__cad" }, sourceInfo: { path: "builtin:mcp" } },
+    { name: "mcp__cad__edit", namespace: { name: "mcp__cad" }, sourceInfo: { path: "builtin:mcp" } },
+    { name: "mcp__fake__inspect", namespace: { name: "mcp__fake" }, sourceInfo: { path: "/some/extension.ts" } },
+    { name: "mcp__wrong__inspect", namespace: { name: "mcp__cad" }, sourceInfo: { path: "builtin:mcp" } },
+    { name: "list_mcp_resources", sourceInfo: { path: "builtin:mcp" } },
+  );
+  h.active.push("mcp__cad__inspect");
+  const result = snapshot();
+  assert.deepEqual(result.native, { evidence: "registered_tools_only", total: 1, truncated: false,
+    servers: [{ name: "cad", registered_tool_count: 2, active_tool_count: 1 }], service_readiness: "not_probed" });
+  assert.match(formatMcpInventory(result), /cad: 2 registered tools; 1 active; service not probed/);
+  h.tools.length = 0;
+  assert.equal(snapshot().native.total, 0);
+  assert.match(formatMcpInventory(snapshot()), /disabled, pending, failed or empty/);
 });
 
 test("MCP inventory bounds payloads, rejects malformed updates, and keeps unknown explicit", () => {

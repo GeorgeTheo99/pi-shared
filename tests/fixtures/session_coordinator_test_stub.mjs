@@ -1,6 +1,8 @@
 function schema(kind, options = {}) {
-	return { kind, ...options };
+	return { kind, type: kind, ...options };
 }
+
+export const defineTool = tool => tool;
 
 export class Text {
 	constructor(text, padLeft = 0, padRight = 0) {
@@ -20,6 +22,9 @@ export const Type = {
 	Boolean(options = {}) {
 		return schema("boolean", options);
 	},
+	Number(options = {}) { return schema("number", options); },
+	Integer(options = {}) { return schema("integer", options); },
+	Array(items, options = {}) { return schema("array", { items, ...options }); },
 	Literal(value) {
 		return schema("literal", { value });
 	},

@@ -21,7 +21,7 @@ test('real SDK: pi-shared tools coexist with built-in MCP and codemode', { timeo
   try {
     // The MCP extension reads mcp.json from the process agent directory.
     process.env.PI_CODING_AGENT_DIR = dir;
-    writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ mcpServers: { fixture: { command: process.execPath, args: [server] } } }));
+    writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ mcpServers: { fixture: { command: process.execPath, args: [server, '--with-hidden'], exposure: 'hidden', toolExposure: { echo_text: 'codemode' } } } }));
     process.env.PI_INTEGRATION_LIST = join(dir, 'master.yaml');
     writeFileSync(process.env.PI_INTEGRATION_LIST, JSON.stringify({ version: 1, defaults: {},
       bundles: { fixture: { description: 'Fixture MCP server', tools: ['mcp__fixture__*'] },
@@ -49,7 +49,7 @@ test('real SDK: pi-shared tools coexist with built-in MCP and codemode', { timeo
     session.subscribe((event: any) => {
       if (event.type === 'tool_execution_end') results[event.toolCallId] = event.result.content.map((c: any) => c.text ?? '').join('');
     });
-    const script = `const r = await tools.${MCP_TOOL}({ text: "hi" });\nreturn JSON.stringify({ echo: r.content[0].text, askUser: "ask_user" in tools, askParent: "ask_parent" in tools });`;
+    const script = `const r = await tools.${MCP_TOOL}({ text: "hi" });\nreturn JSON.stringify({ echo: r.content[0].text, askUser: "ask_user" in tools, askParent: "ask_parent" in tools, blockedTool: "mcp__fixture__blocked_tool" in tools, resources: "read_mcp_resource" in tools });`;
     const calls = [
       { id: 'code-1', name: 'codemode', arguments: { code: script } },
       { id: 'load-direct', name: 'enterprise_load_bundle', arguments: { name: 'direct' } },
@@ -76,6 +76,8 @@ test('real SDK: pi-shared tools coexist with built-in MCP and codemode', { timeo
     assert.match(results['code-1'], /"echo":"echo:hi"/);
     // Interactive tools are model-only: declared to the model, never callable from scripts.
     assert.match(results['code-1'], /"askUser":false,"askParent":false/);
+    assert.match(results['code-1'], /"blockedTool":false,"resources":false/);
+    assert(seen.every(names => !names.includes('mcp__fixture__blocked_tool') && !names.includes('read_mcp_resource')));
     // Pi activating codemode for the MCP server is not an external selection that excludes direct bundles.
     assert.match(results['load-direct'], /Loaded bundle "direct"/);
     // Inactive codemode-exposure tools are loadable, not treated as excluded.

@@ -122,6 +122,24 @@ It waits for every probe to be ready while its command is still running; readine
 Shell evaluations respect the remaining overall deadline, plus bounded process
 cleanup grace, and retain at most 1 MiB stdout instead of unbounded capture.
 
+## Structured wait results
+
+All three wait tools declare `outputSchema`. Pi 0.99.1 codemode receives
+`{version:1,status:"ok"|"aborted",data:{met,aborted,timedOut,checks,elapsedMs,jobMode,jobSnapshots,...}}`.
+Job snapshots are captured at the decisive check, not reconstructed by parsing
+text or rereading later. They include IDs and normalized lifecycle status, plus
+exact command status, exit code, readiness and cleanup where applicable.
+Successful job waits also report `failedJobs` and `awaitingJobs` counts.
+`ok` means the **wait condition** was reached, not that all jobs succeeded;
+readiness and `awaiting_answer` remain distinct from completion.
+
+Shell predicates, progress commands, captured output and owner metadata are not
+part of the structured contract. Existing text/details are preserved (details
+also carry the captured job snapshots). Timeout, impossible outcomes and unknown
+jobs still throw. Aborting returns explicit `status:"aborted"` and leaves jobs
+running. Older Pi can ignore these additive fields; Pi 0.87 does not gain
+codemode support.
+
 ## Completion wake-ups
 
 A blocking wait keeps the session busy, so user messages queue until it returns.

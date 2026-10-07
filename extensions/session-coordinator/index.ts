@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { structuredTool } from "../_shared/structured-result.ts";
 import { Text } from "@earendil-works/pi-tui";
 import { inspectChildHandoffOrientation, latestWorkPlanState } from "../_shared/handoff-state.ts";
 import {
@@ -99,6 +100,17 @@ type PeerMessageStatusSummary = Pick<
 	| "acknowledgedAt"
 	| "repliedAt"
 >;
+
+const PeerSessionsData = Type.Object({
+	available: Type.Boolean(), scope: Type.String(), omittedPeers: Type.Integer(),
+	peers: Type.Array(Type.Object({
+		runtimeId: Type.String(), roomId: Type.String(), activity: Type.String(), cwd: Type.String(),
+		worktreeRoot: Type.String(), heartbeatAt: Type.Number(),
+		sessionName: Type.Optional(Type.String()), status: Type.Optional(Type.String()), branch: Type.Optional(Type.String()),
+		ephemeral: Type.Optional(Type.Boolean()), requestResponseVersion: Type.Optional(Type.Number()), autoWakeVersion: Type.Optional(Type.Number()),
+		workspaceChanges: Type.Optional(Type.Array(Type.String())), workspaceChangesOmitted: Type.Optional(Type.Integer()),
+	})),
+});
 
 type PeerToolDetails = {
 	scope?: PeerScope;
@@ -1103,7 +1115,7 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	pi.registerTool(structuredTool(defineTool({
 		name: "peer_sessions",
 		label: "Peer Sessions",
 		description: [
@@ -1138,7 +1150,11 @@ export default function sessionCoordinatorExtension(pi: ExtensionAPI) {
 				omittedPeers: summary.omitted,
 			});
 		},
-	});
+	}), PeerSessionsData, (result, args) => ({
+		status: result.details.peers ? "ok" : "error",
+		data: { available: Boolean(result.details.peers), scope: result.details.scope ?? args.scope ?? "machine",
+			peers: result.details.peers ?? [], omittedPeers: result.details.omittedPeers ?? 0 },
+	})));
 
 	pi.registerTool({
 		name: "peer_message_status",

@@ -34,6 +34,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { runShellProcess } from "../_shared/shell-process.ts";
 import { operationTool } from "../_shared/operation-tool.ts";
+import { structuredTool } from "../_shared/structured-result.ts";
 import {
 	type JobSnapshot,
 	TERMINAL_JOB_STATUS,
@@ -48,6 +49,20 @@ const MAX_TIMEOUT = 86400; // 24h cap; longer waits should use launchd + handoff
 const MAX_CONDITION_TIMEOUT = 30; // each condition/progress eval gets at most this many seconds
 
 type JobWaitMode = "all" | "any" | "any_success" | "any_failure";
+
+const waitSchema = Type.Object({
+	met: Type.Boolean(), aborted: Type.Boolean(), timedOut: Type.Boolean(), checks: Type.Integer(), elapsedMs: Type.Number(),
+	jobMode: Type.String(), failedJobs: Type.Optional(Type.Integer()), awaitingJobs: Type.Optional(Type.Integer()),
+	jobSnapshots: Type.Array(Type.Object({ id: Type.String(), status: Type.String(),
+		command: Type.Optional(Type.Object({ status: Type.String(), readiness: Type.String(), cleanup: Type.Optional(Type.String()),
+			exitCode: Type.Optional({ type: ["integer", "null"] } as any),
+		}, { additionalProperties: false })),
+	}, { additionalProperties: false })),
+}, { additionalProperties: false });
+
+function structuredWait<T extends Parameters<typeof structuredTool>[0]>(tool: T) {
+	return structuredTool(tool, waitSchema, result => ({ status: result.details.aborted ? "aborted" : "ok", data: result.details }));
+}
 
 /** Evaluate the job-wait mode against current snapshots. Returns done=true when the resume condition is met. */
 export function evaluateJobMode(
@@ -116,6 +131,7 @@ interface WaitForDetails {
 	lastProgress: string;
 	failedJobs?: number;
 	awaitingJobs?: number;
+	jobSnapshots: UnifiedJobSnapshot[];
 	error?: string;
 }
 
@@ -138,8 +154,7 @@ function textResult(text: string, details: WaitForDetails) {
 }
 
 function errorResult(text: string, _details: WaitForDetails): never {
-	// Pi marks resolved tool executions successful; throwing is required for a
-	// finalized isError tool-result message (a returned isError field is ignored).
+	// Preserve thrown failures on both older Pi and current codemode callers.
 	throw new Error(text);
 }
 
@@ -265,6 +280,7 @@ export const waitForEngine = defineTool({
 			lastStdout: "",
 			lastStderr: "",
 			lastProgress: "",
+			jobSnapshots: [],
 		};
 
 		if (useJobs && condition) {
@@ -351,6 +367,7 @@ export const waitForEngine = defineTool({
 				if (useJobs) {
 					outcomesReadAt = Date.now();
 					const snapshots = readUnifiedJobSnapshots(jobIds, cwd);
+					baseDetails.jobSnapshots = jobIds.flatMap(id => snapshots.has(id) ? [snapshots.get(id)!] : []);
 					let evalResult = evaluateJobMode(jobIds, snapshots, jobMode);
 					if (params.readiness && !evalResult.error) {
 						const records = jobIds.map(id => snapshots.get(id)!.command!);
@@ -493,7 +510,7 @@ const timingParameters = {
 	})),
 };
 
-export const waitForConditionTool = operationTool(defineTool({
+export const waitForConditionTool = structuredWait(operationTool(defineTool({
 	name: "wait_for_condition",
 	label: "Wait For Condition",
 	executionMode: "sequential",
@@ -532,9 +549,9 @@ export const waitForConditionTool = operationTool(defineTool({
 		}, theme, context);
 	},
 	renderResult: waitForEngine.renderResult,
-}));
+})));
 
-export const waitForJobsTool = operationTool(defineTool({
+export const waitForJobsTool = structuredWait(operationTool(defineTool({
 	name: "wait_for_jobs",
 	label: "Wait For Jobs",
 	executionMode: "sequential",
@@ -564,9 +581,9 @@ export const waitForJobsTool = operationTool(defineTool({
 		return waitForEngine.renderCall!({ jobs: args.jobs ?? [], timeout: args.timeout, poll_interval: args.poll_interval, job_mode: args.job_mode }, theme, context);
 	},
 	renderResult: waitForEngine.renderResult,
-}));
+})));
 
-export const waitForReadyTool = operationTool(defineTool({
+export const waitForReadyTool = structuredWait(operationTool(defineTool({
 	name: "wait_for_ready",
 	label: "Wait For Ready",
 	executionMode: "sequential",
@@ -593,7 +610,7 @@ export const waitForReadyTool = operationTool(defineTool({
 		return waitForEngine.renderCall!({ jobs: args.jobs ?? [], timeout: args.timeout, poll_interval: args.poll_interval, readiness: true, job_mode: "all" }, theme, context);
 	},
 	renderResult: waitForEngine.renderResult,
-}));
+})));
 
 export default function waitFor(pi: ExtensionAPI) {
 	pi.registerTool(waitForConditionTool);

@@ -60,9 +60,9 @@ export function parseCapabilityReport(text: string, component: CapabilityId, act
 		!["actions", "warnings", "errors", "nextSteps"].every(key => list(value[key], string)) ||
 		!list(value.handoffs, row => row && string(row.label) && string(row.command) && row.command.length > 0 &&
 			![...row.command].some(char => /[\x00-\x1f\x7f-\x9f]/.test(char)) &&
-			(row.kind === "terminal" || row.kind === "pi" && ["/login", "/model", "/mcp setup", "/verification-trust"].includes(row.command))) ||
+			(row.kind === "terminal" || row.kind === "pi" && ["/login", "/model", "/mcp", "/mcp setup", "/verification-trust"].includes(row.command))) ||
 		(value.planId !== undefined && (typeof value.planId !== "string" || !/^[a-f0-9]{64}$/.test(value.planId) ||
-			!["development", "knowledge"].includes(component)))) {
+			!["development", "knowledge", "mcp"].includes(component)))) {
 		throw new Error("Unsupported or malformed capability setup response. Update the owning pi-shared CLI; capability readiness is unknown.");
 	}
 	return value;
@@ -142,6 +142,13 @@ export async function collectCapabilityOptions(ctx: WizardContext, id: Capabilit
 		const mode = await choose(ctx, "Separate browser runtimes", [["public", "Public browser-worker service"], ["app", "Local/private app-testing dependencies"]], signal);
 		return mode ? { mode } : undefined;
 	}
+	if (id === "mcp") {
+		const mode = await choose(ctx, "Official MCP — current profile", [
+			["inventory", "Inspect official MCP configuration"],
+			["migrate", "Preview migration from the existing MCP adapter"],
+		], signal);
+		return mode ? (mode === "migrate" ? { mode } : {}) : undefined;
+	}
 	if (id === "development") {
 		if (!ctx.isProjectTrusted?.()) throw new Error("Project setup requires Pi project trust. Review /trust and restart Pi first; setup never grants trust.");
 		const mode = await choose(ctx, "Project development tools — current workspace only", [["code-intel", "TypeScript/JavaScript code intelligence"], ["verification", "Declare a verification command (do not execute it)"]], signal);
@@ -178,7 +185,7 @@ export async function runCapabilityWizard(ctx: WizardContext, id: CapabilityId, 
 	const report = await run("plan", options);
 	if (signal.aborted) return;
 	ctx.ui.notify(formatCapabilityReport(report), report.ok ? "info" : "warning");
-	const apply = "Review and create the missing configuration";
+	const apply = id === "mcp" ? "Review and migrate this profile to official MCP" : "Review and create the missing configuration";
 	const check = "Run explicit prerequisite checks (no installs)";
 	const handoffs = report.handoffs.map((handoff, index) => ({
 		...handoff, choice: `${index + 1}. ${handoff.kind === "pi" ? "Prepare Pi command" : "Show terminal command"}: ${clean(handoff.label)}`,
@@ -188,7 +195,10 @@ export async function runCapabilityWizard(ctx: WizardContext, id: CapabilityId, 
 	if (signal.aborted || !selected || !choices.includes(selected) || selected === "Done / cancel") return;
 	if (selected === apply) {
 		if (id === "development" && !ctx.isProjectTrusted?.()) throw new Error("Project trust is required; nothing was written.");
-		const approved = await ctx.ui.confirm("Create exactly this configuration?", `${formatCapabilityReport(report)}\n\nExisting files will not be overwritten. No commands are executed, and no project or verification trust is granted.`, { signal });
+		const warning = id === "mcp"
+			? "Creates a missing native MCP config and narrowly updates this profile's adapter/built-in selection, with private backups. Existing native config is not overwritten. Review all compatibility warnings; avoid concurrent settings edits and restart this profile after applying. No servers or credential commands are executed."
+			: "Existing files will not be overwritten. No commands are executed, and no project or verification trust is granted.";
+		const approved = await ctx.ui.confirm(id === "mcp" ? "Migrate exactly this MCP configuration?" : "Create exactly this configuration?", `${formatCapabilityReport(report)}\n\n${warning}`, { signal });
 		if (signal.aborted || !approved) return;
 		if (id === "development" && !ctx.isProjectTrusted?.()) throw new Error("Project trust changed; nothing was written.");
 		const applied = await run("apply", options, ["--yes", "--expected-plan", report.planId!]);
@@ -196,7 +206,7 @@ export async function runCapabilityWizard(ctx: WizardContext, id: CapabilityId, 
 		return;
 	}
 	if (selected === check) {
-		const checked = await run("check", options);
+		const checked = await run("check", id === "mcp" ? {} : options);
 		if (!signal.aborted) ctx.ui.notify(formatCapabilityReport(checked), checked.ok ? "info" : "warning");
 		return;
 	}

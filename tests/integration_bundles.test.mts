@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import extension from '../extensions/integration-bundles/index.ts';
@@ -46,6 +47,44 @@ async function harness(t: any, bundles: any, defaults: any = {}, names = ['read'
 }
 const bundle = (tools: string[], extra = {}) => ({ description: 'Test capability', tools, ...extra });
 const cap = (max_tools: number) => ({ model_overrides: { '*': { max_tools } } });
+
+test('conservative preset keeps essential tools and explicitly loads optional capabilities', async t => {
+  const require = createRequire(new URL('../extensions/integration-bundles/package.json', import.meta.url));
+  const preset = require('yaml').parse(readFileSync(new URL('../extensions/integration-bundles/presets/conservative.yaml', import.meta.url), 'utf8'));
+  const core = ['read', 'bash', 'edit', 'write', 'command_start', 'command_status', 'command_cancel',
+    'wait_for_jobs', 'wait_for_ready', 'wait_for_condition', 'ask_user', 'subagent_run', 'subagent_status',
+    'subagent_cancel', 'subagent_list', 'memory_read', 'work_plan', 'web_search', 'codemode'];
+  const optional = Object.values(preset.bundles).flatMap((b: any) => b.tools.map((n: string) => n.replace('*', 'fixture')));
+  const h = await harness(t, preset.bundles, preset.defaults, [...core, ...optional]);
+  assert(core.every(n => h.active().includes(n)));
+  assert(optional.every(n => !h.active().includes(n)));
+  for (const name of Object.keys(preset.bundles)) await h.load(name);
+  assert(optional.every(n => h.active().includes(n)));
+  assert(Object.values(preset.bundles).every((b: any) => !b.triggers));
+});
+
+test('profile-specific master list is used when no explicit override is set', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'integration-profile-'));
+  const oldProfile = process.env.PI_CODING_AGENT_DIR;
+  const oldList = process.env.PI_INTEGRATION_LIST;
+  t.after(() => {
+    if (oldProfile === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldProfile;
+    if (oldList === undefined) delete process.env.PI_INTEGRATION_LIST; else process.env.PI_INTEGRATION_LIST = oldList;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  delete process.env.PI_INTEGRATION_LIST;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  writeFileSync(join(dir, 'master_integration_list.yaml'), JSON.stringify({ version: 1, bundles: {}, defaults: {} }));
+  const commands = new Map();
+  extension({ registerTool() {}, registerCommand(n: string, c: any) { commands.set(n, c); }, on() {},
+    getAllTools: () => [], getActiveTools: () => [], setActiveTools() {} } as any);
+  assert(commands.has('bundles'));
+  process.env.PI_INTEGRATION_LIST = join(dir, 'absent.yaml');
+  commands.clear();
+  extension({ registerTool() {}, registerCommand(n: string, c: any) { commands.set(n, c); }, on() {},
+    getAllTools: () => [], getActiveTools: () => [], setActiveTools() {} } as any);
+  assert(!commands.has('bundles'), 'explicit missing path must not fall back to profile');
+});
 
 test('characterization: non-default hiding, load/unload/reload and enterprise router names', async t => {
   const h = await harness(t, { alpha: bundle(['a']) });

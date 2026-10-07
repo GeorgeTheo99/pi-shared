@@ -17,6 +17,13 @@ import {
 	type McpToolCallResult,
 } from "../_shared/mcp-client.js";
 import { normalizeCount, normalizeToolText, TOOL_OUTPUT_CHAR_LIMIT } from "./text.ts";
+import { structuredTool } from "../_shared/structured-result.ts";
+
+const searchSchema = Type.Object({
+	query: Type.String(), text: Type.String(),
+	results: Type.Array(Type.Object({ rank: Type.Number(), title: Type.String(), url: Type.String(), snippet: Type.String() }, { additionalProperties: false })),
+	status: Type.Optional(Type.String()),
+}, { additionalProperties: false });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -215,6 +222,19 @@ const webFetch = defineTool({
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
-	pi.registerTool(webSearch);
+	pi.registerTool(structuredTool(webSearch, searchSchema, (result, args) => ({
+		status: result.details.error ? "error" : "ok",
+		data: {
+			query: result.details.query,
+			text: result.content.filter(part => part.type === "text").map(part => part.text).join("\n"),
+			status: result.details.status,
+			results: (result.details.results ?? []).slice(0, normalizeCount(args.num_results ?? 8, 8)).map((item: SearchResult, index: number) => ({
+				rank: Number.isFinite(item.rank) ? item.rank : index + 1,
+				title: normalizeToolText(String(item.title ?? "Untitled"), 1_000),
+				url: normalizeToolText(String(item.url ?? ""), 4_000),
+				snippet: normalizeToolText(String(item.snippet ?? ""), 4_000),
+			})),
+		},
+	})));
 	pi.registerTool(webFetch);
 }

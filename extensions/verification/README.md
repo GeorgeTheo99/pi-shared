@@ -131,6 +131,23 @@ only when absent before execution or their content hash changes; even an identic
 legitimate rewrite is conservatively rejected as old evidence. The verifier never
 deletes existing reports or creates project output directories.
 
+## Codemode result contract
+
+`verify` declares `outputSchema`. Pi 0.99.1 codemode receives a direct
+`{version:1,status:"ok"|"error"|"aborted",data:{action,...}}` object.
+List data contains the config digest and declared check summaries. Run/result
+data contains the digest, result/check IDs, verdict, reasons, process outcome,
+report counts/failure locations and limitations, and source freshness status.
+Command/argv, workspace/artifact paths, full check config, source fingerprints
+and runtime internals remain only in the existing renderer details.
+
+Only `passed` maps to `ok`; every other verdict maps to `error`, except `canceled`
+which maps to `aborted`. List success is also `ok`. Trust, input and lookup errors
+still throw rather than becoming successful data. The original text/details and
+input contract are unchanged. Older Pi can ignore these additive output fields;
+Pi 0.87 does not gain codemode support. Scripts must inspect status/verdict, not
+assume that a resolved call means the check passed.
+
 ## Bounds, storage and limitations
 
 | Work/evidence | Limit |

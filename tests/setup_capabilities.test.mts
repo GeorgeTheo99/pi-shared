@@ -56,6 +56,7 @@ test('strict capability contract rejects wrong identity, oversized, malformed an
   assert.throws(() => parseCapabilityReport('old backend usage', 'documents', 'plan'), /newer owning/);
   assert.throws(() => parseCapabilityReport(' '.repeat(65537), 'documents', 'plan'), /size limit/);
   assert.equal(parseCapabilityReport(JSON.stringify({ ...report('knowledge'), planId: 'a'.repeat(64) }), 'knowledge', 'plan').planId, 'a'.repeat(64));
+  assert.equal(parseCapabilityReport(JSON.stringify({ ...report('mcp'), planId: 'a'.repeat(64), handoffs: [{kind: 'pi', label: 'Manage MCP', command: '/mcp'}] }), 'mcp', 'plan').planId, 'a'.repeat(64));
 });
 
 test('report presentation strips terminal escapes and separates setup from runtime checks', () => {
@@ -94,7 +95,7 @@ test('all option flows terminate on cancellation without backend invocation', as
   const cases: [CapabilityId, (string | undefined)[], (string | undefined)[]][] = [
     ['search', [undefined], []], ['search', ['Local Brave-backed search'], [undefined]],
     ['search', ['Connect an existing compatible search endpoint'], ['https://search.example/mcp', undefined]],
-    ['browser', [undefined], []], ['development', [undefined], []], ['development', [verify], ['npm', undefined]],
+    ['browser', [undefined], []], ['mcp', [undefined], []], ['development', [undefined], []], ['development', [verify], ['npm', undefined]],
     ['development', [verify], ['npm', '[]', undefined]], ['knowledge', [undefined], []], ['knowledge', [initKb, undefined], []],
     ['knowledge', [initKb, 'Choose a custom absolute location'], [undefined]], ['models', [undefined], []],
   ];
@@ -136,6 +137,27 @@ test('safe scaffold uses the exact approval digest and never auto-checks', async
   }
 });
 
+test('MCP migration requires exact approval and describes settings changes and restart', async () => {
+  for (const approved of [true, false]) {
+    const mock = ui(['Preview migration from the existing MCP adapter', 'Review and migrate this profile to official MCP'], [], approved);
+    const calls: any[] = [];
+    await runCapabilityWizard(mock.ctx, 'mcp', async (action, options, extra) => {
+      calls.push([action, options, extra]); return {...report('mcp', action), planId: 'c'.repeat(64)};
+    });
+    assert.equal(calls.length, approved ? 2 : 1);
+    assert.deepEqual(calls[0][1], {mode: 'migrate'});
+    if (approved) assert.deepEqual(calls[1], ['apply', {mode: 'migrate'}, ['--yes', '--expected-plan', 'c'.repeat(64)]]);
+    assert.match(mock.confirmations[0], /narrowly updates this profile/);
+    assert.match(mock.confirmations[0], /private backups/);
+    assert.match(mock.confirmations[0], /restart this profile/);
+  }
+  const calls: any[] = [];
+  await runCapabilityWizard(ui(['Preview migration from the existing MCP adapter', check]).ctx, 'mcp', async (action, options) => {
+    calls.push([action, options]); return report('mcp', action);
+  });
+  assert.deepEqual(calls, [['plan', {mode: 'migrate'}], ['check', {}]]);
+});
+
 test('declined approval, shutdown and lost project trust cannot create files', async () => {
   for (const variant of ['declined', 'aborted', 'trust-changed']) {
     const controller = new AbortController(); const mock = ui([codeIntel, apply]); let calls = 0;
@@ -164,9 +186,9 @@ test('terminal handoffs never execute or enter the Pi shell, Pi handoffs need ex
   assert.equal(calls, 1); assert.deepEqual(terminal.drafts, []);
   assert.ok(terminal.notices.some(text => text.includes(command) && text.includes('Nothing was executed')));
   for (const approved of [true, false]) {
-    const mock = ui(['1. Prepare Pi command: Onboard MCP'], [], approved);
-    await runCapabilityWizard(mock.ctx, 'mcp', async action => ({ ...report('mcp', action), handoffs: [{ label: 'Onboard MCP', command: '/mcp setup', kind: 'pi' }] }));
-    assert.deepEqual(mock.drafts, approved ? ['/mcp setup'] : []);
+    const mock = ui(['Inspect official MCP configuration', '1. Prepare Pi command: Onboard MCP'], [], approved);
+    await runCapabilityWizard(mock.ctx, 'mcp', async action => ({ ...report('mcp', action), handoffs: [{ label: 'Onboard MCP', command: '/mcp', kind: 'pi' }] }));
+    assert.deepEqual(mock.drafts, approved ? ['/mcp'] : []);
     assert.match(mock.confirmations[0], /replaces your current editor draft/);
   }
 });

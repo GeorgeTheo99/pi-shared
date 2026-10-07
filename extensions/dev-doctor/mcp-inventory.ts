@@ -48,9 +48,24 @@ export function createMcpInventory(pi: ExtensionAPI) {
 	return () => {
 		const tools = pi.getAllTools();
 		const active = new Set(pi.getActiveTools());
+		// Native MCP tools carry both the built-in source and a server namespace.
+		// Names alone are not evidence: other extensions can register mcp__* names.
+		const native = new Map<string, { name: string; registered_tool_count: number; active_tool_count: number }>();
+		for (const tool of tools) {
+			const namespace = tool.namespace?.name;
+			if (tool.sourceInfo?.path !== "builtin:mcp" || !namespace ||
+				!/^mcp__[-a-zA-Z0-9_]{1,128}$/.test(namespace) || !tool.name.startsWith(`${namespace}__`)) continue;
+			const name = namespace.slice(5);
+			const row = native.get(name) ?? { name, registered_tool_count: 0, active_tool_count: 0 };
+			row.registered_tool_count++;
+			if (active.has(tool.name)) row.active_tool_count++;
+			native.set(name, row);
+		}
 		return {
 			schema_version: 1,
 			scope: "current Pi runtime only, independent of doctor agentDir; registration and adapter reports are not service readiness",
+			native: { evidence: "registered_tools_only", total: native.size, truncated: native.size > MAX_SERVERS,
+				servers: [...native.values()].slice(0, MAX_SERVERS), service_readiness: "not_probed" },
 			adapter: { evidence: adapterEvidence, ...(adapter ? structuredClone(adapter) : {}) },
 			extension_managed: wrappers.map(wrapper => {
 				const expectedPath = canonical(fileURLToPath(new URL(wrapper.path, import.meta.url)));
@@ -66,7 +81,13 @@ export function createMcpInventory(pi: ExtensionAPI) {
 
 export function formatMcpInventory(report: ReturnType<ReturnType<typeof createMcpInventory>>): string {
 	const lines = ["MCP connections — current Pi runtime (no connections or service probes performed)",
-		"Adapter-managed (/mcp):"];
+		"Official MCP (registered tools only):"];
+	for (const row of report.native.servers) {
+		lines.push(`  ${row.name}: ${row.registered_tool_count} registered tools; ${row.active_tool_count} active; service not probed`);
+	}
+	if (!report.native.total) lines.push("  No native server tools observed; disabled, pending, failed or empty servers are not discoverable here. Use /mcp for connection status.");
+	if (report.native.truncated) lines.push(`  Showing first ${MAX_SERVERS} servers with registered tools.`);
+	lines.push("Legacy adapter-managed (when installed):");
 	if (report.adapter.evidence !== "adapter_reported") {
 		lines.push(`  ${report.adapter.evidence}: no usable adapter snapshot; adapter may be absent or not initialized.`);
 	} else {

@@ -11,6 +11,13 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const scripts = join(root, "skills", "apple-release", "scripts");
 const SECRET_ID = "KEYID12345";
 const SECRET_ISSUER = "00000000-1111-2222-3333-444444444444";
+// Hosted macOS runners can block forever in Security.framework without a user
+// security session. Keep these real-keychain checks explicit there; other Apple
+// tests remain in CI. Local macOS runs still exercise the disposable keychain.
+const keychainTest = (name, fn) => test(name, {
+  skip: process.platform !== 'darwin' ? 'requires macOS Keychain' :
+    process.env.CI && process.env.PI_APPLE_KEYCHAIN_TESTS !== '1' ? 'real Keychain needs an interactive security session; opt in with PI_APPLE_KEYCHAIN_TESTS=1' : false,
+}, fn);
 
 function sandbox(t) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "apple-release-test-")));
@@ -147,8 +154,9 @@ function keychainSandbox(t) {
   const dir = sandbox(t);
   const keychain = join(dir, "signing.keychain-db");
   const password = privateFile(join(dir, "password"), "rehearsal-password\n");
-  spawnSync("/usr/bin/security", ["create-keychain", "-p", "rehearsal-password", keychain]);
-  t.after(() => spawnSync("/usr/bin/security", ["delete-keychain", keychain]));
+  const created = spawnSync("/usr/bin/security", ["create-keychain", "-p", "rehearsal-password", keychain], { timeout: 10000, killSignal: 'SIGKILL' });
+  assert.equal(created.status, 0, 'disposable keychain creation failed or timed out');
+  t.after(() => spawnSync("/usr/bin/security", ["delete-keychain", keychain], { timeout: 10000, killSignal: 'SIGKILL' }));
   const config = privateFile(join(dir, "config.env"),
     `APPLE_TEAM_ID="ABCDE12345"\nSIGNING_KEYCHAIN="${keychain}"\nSIGNING_KEYCHAIN_PASSWORD_FILE="${password}"\n`);
   return { dir, keychain, config };
@@ -166,7 +174,7 @@ if [ "$1" = list-keychains ]; then
 fi
 exec /usr/bin/security "$@"`;
 
-test("with-signing-keychain.sh restores the search list and always relocks", (t) => {
+keychainTest("with-signing-keychain.sh restores the search list and always relocks", (t) => {
   for (const [command, status] of [["true", 0], ["false", 1]]) {
     const { dir, keychain, config } = keychainSandbox(t);
     const tools = shims(dir, { security: fakeSearchList(false) });
@@ -181,7 +189,7 @@ test("with-signing-keychain.sh restores the search list and always relocks", (t)
   }
 });
 
-test("with-signing-keychain.sh still locks when restoring the search list fails", (t) => {
+keychainTest("with-signing-keychain.sh still locks when restoring the search list fails", (t) => {
   const { dir, keychain, config } = keychainSandbox(t);
   const tools = shims(dir, { security: fakeSearchList(true) });
   const result = run("with-signing-keychain.sh", ["--search-list", "--", "true"],
@@ -192,7 +200,7 @@ test("with-signing-keychain.sh still locks when restoring the search list fails"
   assert.notEqual(info.status, 0, "keychain must be locked");
 });
 
-test("with-signing-keychain.sh waits for a concurrent holder of the keychain lock", async (t) => {
+keychainTest("with-signing-keychain.sh waits for a concurrent holder of the keychain lock", async (t) => {
   const { dir, config } = keychainSandbox(t);
   const holder = spawn("/usr/bin/lockf", ["-k", join(dir, ".keychain.lock"), "sleep", "2"]);
   await new Promise((resolve) => setTimeout(resolve, 300));
@@ -203,7 +211,7 @@ test("with-signing-keychain.sh waits for a concurrent holder of the keychain loc
   assert.ok(Date.now() - started >= 1200, "the run must wait for the lock holder");
 });
 
-test("with-signing-keychain.sh relocks and releases its lock when terminated", async (t) => {
+keychainTest("with-signing-keychain.sh relocks and releases its lock when terminated", async (t) => {
   const { dir, keychain, config } = keychainSandbox(t);
   const child = spawn(join(scripts, "with-signing-keychain.sh"), ["--", "sleep", "1"],
     { env: { ...process.env, APPLE_RELEASE_CONFIG: config } });
@@ -216,7 +224,7 @@ test("with-signing-keychain.sh relocks and releases its lock when terminated", a
     "the lock must be released");
 });
 
-test("release-macos-app.sh passes xcodebuild its single-dash container flag", (t) => {
+keychainTest("release-macos-app.sh passes xcodebuild its single-dash container flag", (t) => {
   for (const [flag, container] of [["--project", "App.xcodeproj"], ["--workspace", "App.xcworkspace"]]) {
     const { dir, config } = keychainSandbox(t);
     const key = privateFile(join(dir, "AuthKey.p8"), "k\n");
