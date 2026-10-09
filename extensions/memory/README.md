@@ -19,6 +19,8 @@ No global memory is implemented. Do not store user-wide preferences here.
 - `memory_read` — read active, all, or review-due memories for the current project.
 - `memory_write` — add, update, archive, or mark reviewed a memory for the current project.
 
+`text`, `source`, and `reason` are whitespace-normalized and limited to 2,000 characters each; longer values are rejected, never truncated, so the agent must shorten or split the memory.
+
 The write tool rejects obvious secrets/credentials and is intended only for evidence-backed, durable project-specific facts likely to help future sessions. Memory hygiene should happen during normal session work, while files, commands, runtime state, and user decisions are fresh.
 
 ## Structured reads

@@ -21,7 +21,7 @@ const memoryReadSchema = Type.Object({
 
 const MEMORY_VERSION = 1;
 const MAX_INJECTED_MEMORIES = 25;
-const MAX_MEMORY_TEXT_CHARS = 800;
+const MAX_MEMORY_FIELD_CHARS = 2_000;
 const MAX_PROMPT_CHARS = 12_000;
 const DEFAULT_REVIEW_AFTER_DAYS = 90;
 
@@ -184,13 +184,16 @@ function normalizeTags(tags: unknown): string[] {
 	return [...new Set(tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean))].slice(0, 12);
 }
 
-function clampText(text: string) {
-	return text.trim().replace(/\s+/g, " ").slice(0, MAX_MEMORY_TEXT_CHARS);
+function normalizeText(text: string) {
+	return text.trim().replace(/\s+/g, " ");
 }
 
 function sanitizeStoredField(value: string | undefined, fieldName: string) {
-	const text = clampText(value ?? "");
+	const text = normalizeText(value ?? "");
 	if (!text) return undefined;
+	if (text.length > MAX_MEMORY_FIELD_CHARS) {
+		throw new Error(`Memory ${fieldName} is ${text.length} characters; the limit is ${MAX_MEMORY_FIELD_CHARS}. Shorten it or split it into separate memories.`);
+	}
 	if (looksSecretish(text)) throw new Error(`Refusing to store memory ${fieldName} that looks like a secret or credential`);
 	return text;
 }
@@ -207,7 +210,7 @@ function looksSecretish(text: string) {
 function formatMemory(memory: ProjectMemory) {
 	const tags = memory.tags.length ? ` #${memory.tags.join(" #")}` : "";
 	const stale = isDue(memory) ? " [review due]" : "";
-	const source = memory.source ? ` (source: ${clampText(memory.source)})` : "";
+	const source = memory.source ? ` (source: ${normalizeText(memory.source)})` : "";
 	return `- [${memory.id}]${stale} ${memory.text}${source}${tags}`;
 }
 
@@ -293,12 +296,12 @@ const memoryWrite = defineTool({
 	parameters: Type.Object({
 		action: StringEnum(["add", "update", "archive", "mark_reviewed"] as const),
 		id: Type.Optional(Type.String({ description: "Memory id for update, archive, or mark_reviewed" })),
-		text: Type.Optional(Type.String({ description: "Memory text for add or update" })),
+		text: Type.Optional(Type.String({ description: `Memory text for add or update (max ${MAX_MEMORY_FIELD_CHARS} characters after whitespace normalization)` })),
 		tags: Type.Optional(Type.Array(Type.String(), { description: "Short tags like setup, commands, architecture" })),
-		source: Type.Optional(Type.String({ description: "Brief evidence or reason for the memory" })),
+		source: Type.Optional(Type.String({ description: `Brief evidence or reason for the memory (max ${MAX_MEMORY_FIELD_CHARS} characters)` })),
 		confidence: Type.Optional(StringEnum(["low", "medium", "high"] as const, { default: "medium" })),
 		review_after_days: Type.Optional(Type.Number({ description: "Days until this memory should be reviewed again" })),
-		reason: Type.Optional(Type.String({ description: "Reason for archive or review" })),
+		reason: Type.Optional(Type.String({ description: `Reason for archive or review (max ${MAX_MEMORY_FIELD_CHARS} characters)` })),
 	}),
 	async execute(_id, params, _signal, _onUpdate, ctx) {
 		const location = detectProject(ctx.cwd);
