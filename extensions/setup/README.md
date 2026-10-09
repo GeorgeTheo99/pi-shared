@@ -6,7 +6,7 @@ User-invoked `/setup` opens an optional-capability menu. Direct subcommands and 
 
 | Command | Guided flow | What can change here |
 | --- | --- | --- |
-| `/setup search` | Local Brave search (private key-file path), existing compatible endpoint, or owning guided setup | Prepares a terminal command; the owning installer displays its full plan and asks for approval |
+| `/setup search` | Local Brave search (private key-file path, plus an optional Decodo token-file path; needs pi-shared setup 0.1.31+), existing compatible endpoint, or owning guided setup | Prepares a terminal command; the owning installer displays its full plan and asks for approval |
 | `/setup browser` | Public browser-worker provisioning **or** separate private-app browser dependencies | Terminal handoff, never browser actions or automatic service restarts |
 | `/setup mcp` | Official MCP inventory or explicit migration of a legacy adapter profile | Exact-plan approval creates a missing native config and narrowly updates profile selection with private backups; `/mcp` handoff is never auto-submitted |
 | `/setup development` | TypeScript/JavaScript intelligence or an explicitly entered verification command, argv and source paths | Exact-plan approval creates a **missing** project config; never executes checks, overwrites files, or grants trust |

@@ -136,7 +136,14 @@ export async function collectCapabilityOptions(ctx: WizardContext, id: Capabilit
 		}
 		const keyFile = await input(ctx, mode === "local" ? "Absolute path to your private Brave API-key file (not the key)" : "Absolute private bearer-key file path (blank for no authentication)", "/absolute/path/to/key-file", signal, mode === "existing");
 		if (keyFile === undefined) return;
-		return { mode, ...(url ? { url } : {}), ...(keyFile ? { keyFile: absolute(keyFile) } : {}) };
+		if (keyFile) absolute(keyFile);
+		// Optional Decodo page-fetch fallback; blank keeps fetch recovery on Jina only.
+		const decodoKeyFile = mode === "local"
+			? await input(ctx, "Optional absolute path to a private Decodo token file (blank to skip)", "/absolute/path/to/decodo-key-file", signal, true)
+			: "";
+		if (decodoKeyFile === undefined) return;
+		return { mode, ...(url ? { url } : {}), ...(keyFile ? { keyFile } : {}),
+			...(decodoKeyFile ? { decodoKeyFile: absolute(decodoKeyFile) } : {}) };
 	}
 	if (id === "browser") {
 		const mode = await choose(ctx, "Separate browser runtimes", [["public", "Public browser-worker service"], ["app", "Local/private app-testing dependencies"]], signal);

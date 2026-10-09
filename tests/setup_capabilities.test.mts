@@ -68,8 +68,12 @@ test('report presentation strips terminal escapes and separates setup from runti
 });
 
 test('search collects file paths not secret values, preserves URL/path as single values', async () => {
-  const local = ui(['Local Brave-backed search'], ['/private/key with spaces']);
+  const local = ui(['Local Brave-backed search'], ['/private/key with spaces', '']);
   assert.deepEqual(await collectCapabilityOptions(local.ctx, 'search', signal()), { mode: 'local', keyFile: '/private/key with spaces' });
+  const decodo = ui(['Local Brave-backed search'], ['/private/brave', '/private/decodo key']);
+  assert.deepEqual(await collectCapabilityOptions(decodo.ctx, 'search', signal()),
+    { mode: 'local', keyFile: '/private/brave', decodoKeyFile: '/private/decodo key' });
+  await assert.rejects(collectCapabilityOptions(ui(['Local Brave-backed search'], ['/private/brave', 'dk-not-a-file']).ctx, 'search', signal()), /absolute/);
   const existing = ui(['Connect an existing compatible search endpoint'], ['https://search.example/mcp', '']);
   assert.deepEqual(await collectCapabilityOptions(existing.ctx, 'search', signal()), { mode: 'existing', url: 'https://search.example/mcp' });
   for (const url of ['https://user:secret@search.example/mcp', 'https://search.example/mcp?key=secret', 'file:///etc/passwd', 'not-a-url']) {
@@ -94,6 +98,7 @@ test('browser, model and private-corpus choices preserve explicit scope', async 
 test('all option flows terminate on cancellation without backend invocation', async () => {
   const cases: [CapabilityId, (string | undefined)[], (string | undefined)[]][] = [
     ['search', [undefined], []], ['search', ['Local Brave-backed search'], [undefined]],
+    ['search', ['Local Brave-backed search'], ['/private/brave', undefined]],
     ['search', ['Connect an existing compatible search endpoint'], ['https://search.example/mcp', undefined]],
     ['browser', [undefined], []], ['mcp', [undefined], []], ['development', [undefined], []], ['development', [verify], ['npm', undefined]],
     ['development', [verify], ['npm', '[]', undefined]], ['knowledge', [undefined], []], ['knowledge', [initKb, undefined], []],
