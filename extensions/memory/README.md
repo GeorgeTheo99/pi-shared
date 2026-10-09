@@ -14,10 +14,20 @@ Project identity is derived from the git repo root plus `remote.origin.url` when
 
 No global memory is implemented. Do not store user-wide preferences here.
 
+Data safety:
+
+- Writes hold an interprocess lock (`<file>.lock`), so concurrent Pi sessions in the same project cannot overwrite each other's changes.
+- Files are replaced atomically with mode `0600`; the previous version is kept as `<file>.bak`.
+- A file that is not valid JSON, is not a version-1 store, or has a non-array `memories` field is never read or overwritten: memory tools fail with the path and reason, and the prompt reports memory as unavailable. Repair or move the file aside.
+- Entries that fail validation are ignored but written back unchanged.
+- Nothing is deleted: `archive` only hides a memory from the prompt and active reads.
+
 ## Tools
 
 - `memory_read` — read active, all, or review-due memories for the current project.
 - `memory_write` — add, update, archive, or mark reviewed a memory for the current project.
+
+`mark_reviewed` stores its `reason` as `reviewReason`; it does not replace `source`.
 
 `text`, `source`, and `reason` are whitespace-normalized and limited to 2,000 characters each; longer values are rejected, never truncated, so the agent must shorten or split the memory.
 
@@ -33,6 +43,10 @@ confidence and maintenance timestamps, not extra stored fields; project remote,
 root and storage paths are omitted. Memory text remains untrusted evidence.
 Text/details and invocation parameters are unchanged. The additional output
 fields are ignorable on older Pi; they do not add codemode to Pi 0.87.
+
+## Prompt injection
+
+Each turn appends a section of at most 12,000 characters: the untrusted-memory notice and policy first, then active memories, most recently updated first, as whole entries (text, tags, review-due flag; `source` and review notes are omitted). When not everything fits, a third of the budget is kept for 120-character previews of older memories, followed by a count of any memories not shown. The section is never truncated mid-entry; use `memory_read` for full details.
 
 ## Command
 
