@@ -42,7 +42,7 @@ GUIDANCE = (
     "for custom deployments, or install/repair browser-worker through pi-setup or browser-worker/install.sh. "
     "The installer creates a local production token automatically; no external API key is needed. "
     "See pi-shared/extensions/pi-browser-capture/README.md; "
-    "restart Pi or /reload after setup. app_* and web_search/web_fetch are independent."
+    "restart Pi or /reload after setup. app_inspect/app_test and web_search/web_fetch are independent."
 )
 
 
@@ -172,7 +172,7 @@ def main():
     try:
         config = worker_config()
         if config.get("browserWorkerEnabled") is False:
-            print("DISABLED: standalone browser-worker is not selected (browserWorkerEnabled=false); web_search/web_fetch and app_* are separate capabilities.")
+            print("DISABLED: standalone browser-worker is not selected (browserWorkerEnabled=false); web_search/web_fetch and app_inspect/app_test are separate capabilities.")
             return 0
         url = check(args.timeout, config)
     except ValueError as error:

@@ -103,6 +103,6 @@ export function formatMcpInventory(report: ReturnType<ReturnType<typeof createMc
 		lines.push(`  ${row.name}: ${row.registered_tools.length ? row.registered_tools.join(", ") : "no tools registered by this wrapper"}; ${row.active_tools.length} active; service not probed`);
 	}
 	lines.push("Registered/active tools and cached/connected metadata do not prove backend health. Missing wrapper tools may be disabled, unloaded, or unavailable.",
-		"For explicit checks: pi-browser-check verifies browser inventory only; local-search verify checks the search service. app_* tools are in-process, not MCP.");
+		"For explicit checks: pi-browser-check verifies browser inventory only; local-search verify checks the search service. app_inspect/app_test are in-process, not MCP.");
 	return lines.join("\n");
 }

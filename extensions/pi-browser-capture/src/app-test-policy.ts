@@ -1,7 +1,7 @@
 import http from "node:http";
 import net, { type Socket } from "node:net";
 
-/** Same hostname rules as persistent app_*, but fail closed and reject URL credentials. */
+/** Same hostname rules as persistent app_inspect, but fail closed and reject URL credentials. */
 export function appTargetPolicy(baseUrl: string | undefined, rawHosts = "") {
 	const hosts = new Set(rawHosts.split(",").map(x => x.trim().toLowerCase()).filter(Boolean));
 	if (baseUrl) hosts.add(new URL(baseUrl).hostname.toLowerCase());

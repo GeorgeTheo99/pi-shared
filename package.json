@@ -27,7 +27,7 @@
     "test:doctor": "node --no-warnings --experimental-loader ./tests/fixtures/dev_doctor_test_loader.mjs --test tests/dev_doctor.test.mts",
     "test:verification": "node --no-warnings --experimental-loader ./tests/fixtures/verification_test_loader.mjs --test tests/verification*.test.mts",
     "test:code-intel": "node --no-warnings --test tests/code_intel*.test.mts",
-    "test:app-test": "node --no-warnings --test tests/app_test_runtime.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/app_test_loader.mjs --test tests/app_test_tool.test.mts",
+    "test:app-test": "node --no-warnings --test tests/app_test_runtime.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/app_test_loader.mjs --test tests/app_test_tool.test.mts tests/app_inspect_tool.test.mts",
     "test:integration-bundles": "npm --prefix extensions/integration-bundles test",
     "test:native-mcp": "node --no-warnings --experimental-loader ./tests/fixtures/integration_bundles_test_loader.mjs --test tests/native_mcp_codemode_sdk.test.mts",
     "test:structured-results": "node --no-warnings --experimental-loader ./tests/structured_results_loader.mjs --test tests/structured_results*.test.mts",

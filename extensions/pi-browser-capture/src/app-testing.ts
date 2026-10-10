@@ -1,9 +1,9 @@
 /**
  * App Testing Tools — native pi Playwright tools.
  *
- * This replaces the old MCP subprocess for app_* tools. The tool names and
- * behavior are kept compatible, but all browser work runs directly in this pi
- * extension.
+ * One action-based app_inspect tool (mirroring browser_inspect) over a persistent
+ * Patchright context for local/private apps. All browser work runs directly in
+ * this pi extension; nothing goes through browser-worker.
  */
 
 import { Type, StringEnum } from "@earendil-works/pi-ai";
@@ -566,267 +566,185 @@ function rawHttpRequest(args: {
 // Tools
 // ---------------------------------------------------------------------------
 
-const appOpenApp = defineTool({
-	name: "app_open",
-	label: "App Open",
-	description: "Open the app at a relative path or approved absolute URL.",
-	promptSnippet: "app_open to navigate to the app under test",
+const APP_INSPECT_ACTIONS = [
+	"open",
+	"open_tab",
+	"list_tabs",
+	"switch_tab",
+	"close_tab",
+	"click",
+	"type",
+	"wait",
+	"extract_text",
+	"evaluate",
+	"screenshot",
+	"console",
+	"network",
+	"request",
+	"state",
+] as const;
+
+type AppInspectParams = {
+	action: (typeof APP_INSPECT_ACTIONS)[number];
+	url?: string;
+	tab_index?: number;
+	selector?: string;
+	text?: string;
+	clear?: boolean;
+	submit?: boolean;
+	url_contains?: string;
+	state?: "visible" | "hidden" | "attached" | "detached";
+	timeout_ms?: number;
+	max_chars?: number;
+	script?: string;
+	arg?: unknown;
+	label?: string;
+	full_page?: boolean;
+	limit?: number;
+	level?: "log" | "warn" | "error" | "info" | "debug";
+	status_min?: number;
+	method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
+	headers?: Record<string, string>;
+	body?: string;
+	timeout_seconds?: number;
+	max_body_chars?: number;
+};
+
+function need<T>(value: T | undefined, name: string, action: string): T {
+	if (value === undefined || value === null) throw new Error(`app_inspect action=${action} requires ${name}`);
+	return value;
+}
+
+function plain(details: unknown): { text: string; details: unknown } {
+	return { text: jsonText(details), details };
+}
+
+function truncated(result: Record<string, unknown>): { text: string; details: unknown } {
+	const truncation = truncateHead(jsonText(result), { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
+	let text = truncation.content;
+	if (truncation.truncated) {
+		text += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)})]`;
+	}
+	return { text, details: { ...result, truncated: truncation.truncated } };
+}
+
+async function runAppInspect(params: AppInspectParams): Promise<{ text: string; details: unknown }> {
+	const { action } = params;
+	switch (action) {
+		case "open":
+			return plain(await runtime.run(() => runtime.openUrl(resolveAppUrl(params.url ?? "/"))));
+		case "open_tab": {
+			const url = params.url ? resolveAppUrl(params.url) : undefined;
+			return plain(await runtime.run(() => runtime.newTab(url)));
+		}
+		case "list_tabs": {
+			const tabs = await runtime.run(() => runtime.listTabs());
+			return { text: jsonText(tabs), details: { tabs } };
+		}
+		case "switch_tab": {
+			const index = need(params.tab_index, "tab_index", action);
+			return plain(await runtime.run(() => runtime.setActiveTab(index)));
+		}
+		case "close_tab":
+			return plain(await runtime.run(() => runtime.closeTab(params.tab_index)));
+		case "click": {
+			const selector = need(params.selector, "selector", action);
+			return plain(await runtime.run(() => runtime.click(selector)));
+		}
+		case "type": {
+			const selector = need(params.selector, "selector", action);
+			const text = need(params.text, "text", action);
+			return plain(await runtime.run(() => runtime.typeText(selector, text, params.clear ?? true, params.submit ?? false)));
+		}
+		case "wait":
+			return plain(await runtime.run(() =>
+				runtime.waitFor(params.selector, params.url_contains, params.state ?? "visible", params.timeout_ms ?? 15_000),
+			));
+		case "extract_text":
+			return truncated(await runtime.run(() => runtime.extractText(params.selector, params.max_chars ?? 8_000)));
+		case "evaluate": {
+			const script = need(params.script, "script", action);
+			return truncated(await runtime.run(() => runtime.evaluate(script, params.arg)));
+		}
+		case "screenshot":
+			return plain(await runtime.run(() => runtime.screenshot(params.label, params.full_page ?? true)));
+		case "console": {
+			const logs = runtime.getConsoleLogs(params.limit ?? 50, params.level);
+			return { text: jsonText(logs), details: { logs } };
+		}
+		case "network": {
+			const entries = runtime.getNetworkLog(params.limit ?? 50, params.status_min, params.url_contains);
+			return { text: jsonText(entries), details: { entries } };
+		}
+		case "request":
+			return plain(await apiRequest({
+				method: need(params.method, "method", action),
+				url_or_path: need(params.url, "url", action),
+				headers: params.headers,
+				body: params.body,
+				timeout_seconds: params.timeout_seconds,
+				max_body_chars: params.max_body_chars,
+			}));
+		case "state":
+			return plain(await runtime.run(() => runtime.pageState()));
+		default:
+			throw new Error(`Unknown app_inspect action: ${String(action)}`);
+	}
+}
+
+const appInspect = defineTool({
+	name: "app_inspect",
+	label: "App Inspect",
+	description:
+		"Operate the persistent, authenticated local/private app-testing browser through one explicit action. " +
+		"Relative paths resolve against the configured app base URL; absolute URLs must be on allowed hosts. " +
+		"request sends a direct HTTP call to an app endpoint.",
+	promptSnippet: "app_inspect to explore, debug, or call the API of a local/private app",
 	promptGuidelines: [
-		"Use app_open, app_click, app_type_text etc. for authenticated app testing against the configured base URL.",
-		"Use app_api_request for direct HTTP API calls to app endpoints.",
+		"Use app_inspect to explore or debug local/private apps in the persistent authenticated app browser; use app_test instead for reproducible pass/fail runs in a fresh context.",
+		"app_inspect never reaches public sites: use browser_inspect for signed-out public sites and Peekaboo for signed-in ones.",
+		"app_inspect action=wait is a page wait, not a process/job wait; use wait_for_ready for managed command readiness or wait_for_jobs for completion.",
 	],
 	parameters: Type.Object({
-		url_or_path: Type.String({ description: 'Relative path (e.g. "/") or absolute URL', default: "/" }),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const result = await runtime.run(() => runtime.openUrl(resolveAppUrl(params.url_or_path ?? "/")));
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: result };
-	},
-});
-
-const appOpenTab = defineTool({
-	name: "app_open_tab",
-	label: "App Open Tab",
-	description: "Open a new tab, optionally navigating to an approved app URL.",
-	promptSnippet: "app_open_tab to open a new tab in the app browser",
-	parameters: Type.Object({
-		url_or_path: Type.Optional(Type.String({ description: "Relative path or approved URL" })),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const url = params.url_or_path ? resolveAppUrl(params.url_or_path) : undefined;
-		const result = await runtime.run(() => runtime.newTab(url));
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: result };
-	},
-});
-
-const appListTabs = defineTool({
-	name: "app_list_tabs",
-	label: "App List Tabs",
-	description: "List open tabs in the persistent app-testing browser context.",
-	promptSnippet: "app_list_tabs to list app browser tabs",
-	parameters: Type.Object({}),
-	async execute(_id, _params, signal) {
-		abortIfNeeded(signal);
-		const result = await runtime.run(() => runtime.listTabs());
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: { tabs: result } };
-	},
-});
-
-const appSwitchTab = defineTool({
-	name: "app_switch_tab",
-	label: "App Switch Tab",
-	description: "Switch the active tab by index.",
-	promptSnippet: "app_switch_tab to switch app browser tab",
-	parameters: Type.Object({
-		tab_index: Type.Number({ description: "Tab index to switch to" }),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const result = await runtime.run(() => runtime.setActiveTab(params.tab_index));
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: result };
-	},
-});
-
-const appCloseTab = defineTool({
-	name: "app_close_tab",
-	label: "App Close Tab",
-	description: "Close a tab by index. Defaults to the active tab.",
-	promptSnippet: "app_close_tab to close an app browser tab",
-	parameters: Type.Object({
-		tab_index: Type.Optional(Type.Number({ description: "Tab index to close" })),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const result = await runtime.run(() => runtime.closeTab(params.tab_index));
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: result };
-	},
-});
-
-const appClick = defineTool({
-	name: "app_click",
-	label: "App Click",
-	description: "Click the first element matching a Playwright selector.",
-	promptSnippet: "app_click to click an element in the app",
-	parameters: Type.Object({
-		selector: Type.String({ description: "Playwright CSS selector" }),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const result = await runtime.run(() => runtime.click(params.selector));
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: result };
-	},
-});
-
-const appTypeText = defineTool({
-	name: "app_type_text",
-	label: "App Type Text",
-	description: "Fill an input or textarea matched by selector.",
-	promptSnippet: "app_type_text to type into an app input",
-	parameters: Type.Object({
-		selector: Type.String({ description: "Playwright CSS selector" }),
-		text: Type.String({ description: "Text to type" }),
-		clear: Type.Optional(Type.Boolean({ description: "Clear field first", default: true })),
-		submit: Type.Optional(Type.Boolean({ description: "Press Enter after typing", default: false })),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const result = await runtime.run(() => runtime.typeText(params.selector, params.text, params.clear ?? true, params.submit ?? false));
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: result };
-	},
-});
-
-const appWaitFor = defineTool({
-	name: "app_wait_for",
-	label: "App Wait For",
-	description: "Wait for a selector, URL fragment, or page idle state. This is a page wait, not a process/job wait; use wait_for_ready for managed command readiness or wait_for_jobs for completion.",
-	promptSnippet: "app_wait_for to wait for an app condition",
-	parameters: Type.Object({
-		selector: Type.Optional(Type.String({ description: "CSS selector to wait for" })),
-		url_contains: Type.Optional(Type.String({ description: "URL fragment to wait for" })),
-		state: Type.Optional(
-			StringEnum(["visible", "hidden", "attached", "detached"] as const, {
-				description: "Element state",
-				default: "visible",
-			}),
-		),
-		timeout_ms: Type.Optional(Type.Number({ description: "Timeout in ms", default: 15000 })),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const result = await runtime.run(() => runtime.waitFor(params.selector, params.url_contains, params.state ?? "visible", params.timeout_ms ?? 15_000));
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: result };
-	},
-});
-
-const appExtractText = defineTool({
-	name: "app_extract_text",
-	label: "App Extract Text",
-	description: "Extract visible text from the page or a specific selector.",
-	promptSnippet: "app_extract_text to read text from the app page",
-	parameters: Type.Object({
-		selector: Type.Optional(Type.String({ description: "CSS selector, defaults to entire page" })),
-		max_chars: Type.Optional(Type.Number({ description: "Max characters", default: 8000 })),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const result = await runtime.run(() => runtime.extractText(params.selector, params.max_chars ?? 8_000));
-		const text = jsonText(result);
-		const truncation = truncateHead(text, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
-		let output = truncation.content;
-		if (truncation.truncated) {
-			output += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)})]`;
-		}
-		return { content: [{ type: "text" as const, text: output }], details: { ...result, truncated: truncation.truncated } };
-	},
-});
-
-const appEvaluate = defineTool({
-	name: "app_evaluate",
-	label: "App Evaluate",
-	description: "Evaluate a JavaScript expression or function in the active app page and return a JSON-serializable result.",
-	promptSnippet: "app_evaluate to inspect the active app page with JavaScript, such as computed styles, DOM state, and client-side data",
-	parameters: Type.Object({
-		script: Type.String({ description: "JavaScript expression, IIFE, or function expression. If it evaluates to a function, it is called with arg." }),
-		arg: Type.Optional(Type.Unknown({ description: "Optional JSON-serializable argument passed to a function expression." })),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const result = await runtime.run(() => runtime.evaluate(params.script, params.arg));
-		const text = jsonText(result);
-		const truncation = truncateHead(text, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
-		let output = truncation.content;
-		if (truncation.truncated) {
-			output += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)})]`;
-		}
-		return { content: [{ type: "text" as const, text: output }], details: { ...result, truncated: truncation.truncated } };
-	},
-});
-
-const appScreenshot = defineTool({
-	name: "app_screenshot",
-	label: "App Screenshot",
-	description: "Capture a screenshot into the app-testing artifact directory.",
-	promptSnippet: "app_screenshot to take an app screenshot",
-	parameters: Type.Object({
-		label: Type.Optional(Type.String({ description: "Label for the screenshot filename" })),
-		full_page: Type.Optional(Type.Boolean({ description: "Capture full page", default: true })),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const result = await runtime.run(() => runtime.screenshot(params.label, params.full_page ?? true));
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: result };
-	},
-});
-
-const appConsoleLogs = defineTool({
-	name: "app_console_logs",
-	label: "App Console Logs",
-	description: "Return recent browser console events.",
-	promptSnippet: "app_console_logs to get app console output",
-	parameters: Type.Object({
-		limit: Type.Optional(Type.Number({ description: "Max entries", default: 50 })),
-		level: Type.Optional(
-			StringEnum(["log", "warn", "error", "info", "debug"] as const, { description: "Filter by level" }),
-		),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const result = runtime.getConsoleLogs(params.limit ?? 50, params.level);
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: { logs: result } };
-	},
-});
-
-const appNetworkLog = defineTool({
-	name: "app_network_log",
-	label: "App Network Log",
-	description: "Return recent request and response events seen by the browser.",
-	promptSnippet: "app_network_log to inspect app network traffic",
-	parameters: Type.Object({
-		limit: Type.Optional(Type.Number({ description: "Max entries", default: 50 })),
-		status_min: Type.Optional(Type.Number({ description: "Filter by minimum HTTP status code" })),
-		url_contains: Type.Optional(Type.String({ description: "Filter by URL substring" })),
-	}),
-	async execute(_id, params, signal) {
-		abortIfNeeded(signal);
-		const result = runtime.getNetworkLog(params.limit ?? 50, params.status_min, params.url_contains);
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: { entries: result } };
-	},
-});
-
-const appApiRequest = defineTool({
-	name: "app_api_request",
-	label: "App API Request",
-	description: "Send an HTTP request to an approved app endpoint.",
-	promptSnippet: "app_api_request to make HTTP calls to the app API",
-	parameters: Type.Object({
-		method: StringEnum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const, {
-			description: "HTTP method",
+		action: StringEnum(APP_INSPECT_ACTIONS, {
+			description:
+				"open/open_tab: navigate (url); list_tabs/switch_tab/close_tab: tabs (tab_index); click/type: selector (+text, clear, submit); " +
+				"wait: selector, url_contains, state; extract_text: selector, max_chars; evaluate: script, arg; screenshot: label, full_page; " +
+				"console: limit, level; network: limit, status_min, url_contains; request: method, url, headers, body; state: page/tab state",
 		}),
-		url_or_path: Type.String({ description: "Relative path or approved absolute URL" }),
-		headers: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Request headers" })),
-		body: Type.Optional(Type.String({ description: "Request body" })),
-		timeout_seconds: Type.Optional(Type.Number({ description: "Timeout in seconds", default: 30 })),
-		max_body_chars: Type.Optional(Type.Number({ description: "Max response body chars", default: 12000 })),
+		url: Type.Optional(Type.String({ description: "Relative path or approved absolute URL (open defaults to /)" })),
+		tab_index: Type.Optional(Type.Number({ description: "switch_tab/close_tab: tab index (close defaults to active tab)" })),
+		selector: Type.Optional(Type.String({ description: "Playwright CSS selector (extract_text defaults to the whole page)" })),
+		text: Type.Optional(Type.String({ description: "type: text to fill" })),
+		clear: Type.Optional(Type.Boolean({ description: "type: clear field first", default: true })),
+		submit: Type.Optional(Type.Boolean({ description: "type: press Enter after typing", default: false })),
+		url_contains: Type.Optional(Type.String({ description: "wait: URL fragment to wait for; network: URL substring filter" })),
+		state: Type.Optional(
+			StringEnum(["visible", "hidden", "attached", "detached"] as const, { description: "wait: element state", default: "visible" }),
+		),
+		timeout_ms: Type.Optional(Type.Number({ description: "wait: timeout in ms", default: 15000 })),
+		max_chars: Type.Optional(Type.Number({ description: "extract_text: max characters", default: 8000 })),
+		script: Type.Optional(Type.String({ description: "evaluate: JavaScript expression, IIFE, or function expression (called with arg)" })),
+		arg: Type.Optional(Type.Unknown({ description: "evaluate: optional JSON-serializable argument for a function expression" })),
+		label: Type.Optional(Type.String({ description: "screenshot: filename label" })),
+		full_page: Type.Optional(Type.Boolean({ description: "screenshot: capture full page", default: true })),
+		limit: Type.Optional(Type.Number({ description: "console/network: max entries", default: 50 })),
+		level: Type.Optional(
+			StringEnum(["log", "warn", "error", "info", "debug"] as const, { description: "console: filter by level" }),
+		),
+		status_min: Type.Optional(Type.Number({ description: "network: minimum HTTP status" })),
+		method: Type.Optional(
+			StringEnum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const, { description: "request: HTTP method" }),
+		),
+		headers: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "request: headers" })),
+		body: Type.Optional(Type.String({ description: "request: body" })),
+		timeout_seconds: Type.Optional(Type.Number({ description: "request: timeout in seconds", default: 30 })),
+		max_body_chars: Type.Optional(Type.Number({ description: "request: max response body chars", default: 12000 })),
 	}),
 	async execute(_id, params, signal) {
 		abortIfNeeded(signal);
-		const result = await apiRequest(params);
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: result };
-	},
-});
-
-const appPageState = defineTool({
-	name: "app_page_state",
-	label: "App Page State",
-	description: "Return the active tab URL, title, current tab list, and allowed hosts.",
-	promptSnippet: "app_page_state to get current app browser state",
-	parameters: Type.Object({}),
-	async execute(_id, _params, signal) {
-		abortIfNeeded(signal);
-		const result = await runtime.run(() => runtime.pageState());
-		return { content: [{ type: "text" as const, text: jsonText(result) }], details: result };
+		const { text, details } = await runAppInspect(params as AppInspectParams);
+		return { content: [{ type: "text" as const, text }], details };
 	},
 });
 
@@ -835,21 +753,7 @@ const appPageState = defineTool({
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
-	pi.registerTool(appOpenApp);
-	pi.registerTool(appOpenTab);
-	pi.registerTool(appListTabs);
-	pi.registerTool(appSwitchTab);
-	pi.registerTool(appCloseTab);
-	pi.registerTool(appClick);
-	pi.registerTool(appTypeText);
-	pi.registerTool(appWaitFor);
-	pi.registerTool(appExtractText);
-	pi.registerTool(appEvaluate);
-	pi.registerTool(appScreenshot);
-	pi.registerTool(appConsoleLogs);
-	pi.registerTool(appNetworkLog);
-	pi.registerTool(appApiRequest);
-	pi.registerTool(appPageState);
+	pi.registerTool(appInspect);
 
 	pi.on("session_shutdown", async () => {
 		await runtime.shutdown();

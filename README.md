@@ -208,7 +208,7 @@ These tools are **not isolated fresh tests**.
 
 `app_test` creates fresh desktop/mobile contexts for explicit steps, assertions,
 accessibility snapshots, and opt-in traces. It stops at the first failure and
-keeps its contexts separate from persistent `app_*` authentication. Requires the
+keeps its contexts separate from persistent `app_inspect` authentication. Requires the
 local browser runtime. Evidence is deleted on normal close, expiry, or session
 cleanup; crashes can leave private artifacts.
 [Isolation and artifact limits](extensions/pi-browser-capture/README.md).

@@ -9,7 +9,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(defineTool({
 		name: "app_test",
 		label: "App test",
-		description: "Reproducible local/private app tests in a fresh session-owned context, separate from authenticated app_*. Create desktop/mobile, configure viewport, accessibility snapshot, run explicit steps, close, opt-in trace_start/trace_stop. Stops at the first failure; no mutation replay. Context IDs cannot cross Pi sessions. Failure evidence and traces are private and deleted on close/15-minute expiry/shutdown. Trace recording stops after 60s; retained output size checks are not hard disk quotas. Not a public-browser fallback.",
+		description: "Reproducible local/private app tests in a fresh session-owned context, separate from authenticated app_inspect. Create desktop/mobile, configure viewport, accessibility snapshot, run explicit steps, close, opt-in trace_start/trace_stop. Stops at the first failure; no mutation replay. Context IDs cannot cross Pi sessions. Failure evidence and traces are private and deleted on close/15-minute expiry/shutdown. Trace recording stops after 60s; retained output size checks are not hard disk quotas. Not a public-browser fallback.",
 		parameters: Type.Object({
 			action: StringEnum(["create", "close", "configure", "snapshot", "run", "trace_start", "trace_stop"] as const),
 			contextId: Type.Optional(Type.String({ maxLength: 128 })),

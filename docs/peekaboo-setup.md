@@ -29,7 +29,7 @@ Do not run a direct MCP capture host concurrently with an app-Bridge MCP host. A
 
 ## Desktop app Bridge (4.5.0 compatibility)
 
-Prefer one permission-owning desktop app for this configuration. The user must approve the temporary omission of Peekaboo's browser tool; Pi's `browser_fetch`/`browser_inspect` and `app_*` tools remain unchanged. This is a narrow compatibility workaround, not a security boundary or permission bypass.
+Prefer one permission-owning desktop app for this configuration. The user must approve the temporary omission of Peekaboo's browser tool; Pi's `browser_fetch`/`browser_inspect` and `app_inspect`/`app_test` tools remain unchanged. This is a narrow compatibility workaround, not a security boundary or permission bypass.
 
 1. Start the trusted Peekaboo.app and have the user grant its required macOS permissions. Do not request new CLI permissions when the app Bridge is the selected owner.
 2. Discover and verify the app's socket with `peekaboo bridge status --json` and `peekaboo permissions status --bridge-socket <absolute-socket-path> --json`. A bridge handshake alone does not establish MCP readiness.

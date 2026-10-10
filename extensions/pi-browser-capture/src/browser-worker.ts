@@ -243,7 +243,7 @@ export default async function register(pi: ExtensionAPI) {
       "(default http://127.0.0.1:8890/mcp) and BROWSER_WORKER_MCP_TOKEN_FILE " +
       "(default ~/srv/browser-worker/shared/tokens/pi-production) for a separately managed browser-worker. " +
       "Install/repair the browser-worker dependency with pi-setup (or browser-worker/install.sh); its local production token is created automatically. " +
-      "See pi-shared/extensions/pi-browser-capture/README.md, then restart Pi or /reload. app_* tools are unaffected.";
+      "See pi-shared/extensions/pi-browser-capture/README.md, then restart Pi or /reload. app_inspect/app_test are unaffected.";
     pi.on("session_start", (_event, ctx) => {
       if (ctx.hasUI) ctx.ui.notify(message, "warning");
       else console.error(`WARN: ${message}`);

@@ -44,7 +44,7 @@ verification, and activation prerequisites for the development-tooling roadmap.
 | `enterprise_list_bundles` | Bounded discovery without overriding user tool exclusions |
 | `safe_edit` | Exact single-file preview/apply with stale-input rejection |
 
-Existing `bash`, `read`, `edit`, persistent `app_*`, and public browser-worker tools
+Existing `bash`, `read`, `edit`, persistent `app_inspect`, and public browser-worker tools
 remain available. Reload/restart is a user action; verification trust and language-
 server configuration are not granted automatically. None of these tools is an OS
 sandbox, and process completion is not the same as test success or service readiness.
@@ -414,9 +414,9 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - `peer_message_status` exposes truthful `pending`, `queued`, `delivered`, `surfaced`, `acknowledged`, `replied`, `expired`, and `unread_session_ended` checkpoints; `surfaced` never claims read
   - exact same-session successors can safely adopt unread dead-runtime inboxes; ambiguous, different-session, and legacy ownership fails closed
   - see `extensions/session-coordinator/README.md` for storage, compatibility, lifecycle, and trust semantics
-- `extensions/pi-browser-capture` — standalone public-browser wrappers plus unchanged local app testing:
+- `extensions/pi-browser-capture` — standalone public-browser wrappers plus local app testing:
   - exactly two public browser tools backed by browser-worker: `browser_fetch` for one-shot rendered retrieval and `browser_inspect` for short-lived sessions/actions
-  - `app_*` tools for local/private web app testing remain in-process and unchanged: `app_open`, `app_click`, `app_type_text`, `app_wait_for`, `app_extract_text`, `app_screenshot`, `app_console_logs`, `app_network_log`, `app_api_request`, `app_page_state`, and tab helpers
+  - in-process local/private app testing: `app_inspect` (one action-based tool over the persistent authenticated app browser, mirroring `browser_inspect`) and `app_test` (fresh, reproducible step runs)
   - browser-worker enforces authenticated public-network-only egress; the retired granular public `browser_*` family must never be loaded with the two worker tools
 - `extensions/spawn-subagent` — native subagent delegation:
   - `subagent_run`, `subagent_parallel`, and `subagent_chain` keep existing isolated `pi --mode json -p --no-session` behavior for non-interactive single, parallel, or chained specialist work
@@ -600,7 +600,7 @@ There are two intentional connection paths; `/mcp` is not a complete inventory o
 | Configured servers such as Blender/FreeCAD/Peekaboo | Official Pi MCP (legacy adapter only during migration) | `/mcp`, codemode, `tool_search` |
 | `browser_fetch`, `browser_inspect` | Native `pi-browser-capture` wrapper → independent browser-worker MCP | `dev_doctor` |
 | `web_search`, `web_fetch`, `deep_research` | Native wrappers → independent search MCP broker | `dev_doctor` |
-| `app_*` | In-process private-app browser runtime, not MCP | Pi tool inventory |
+| `app_inspect`, `app_test` | In-process private-app browser runtime, not MCP | Pi tool inventory |
 
 The `dev_doctor` tool (from `extensions/dev-doctor`) includes a read-only MCP inventory that combines source-checked official MCP registrations, optional legacy adapter metadata, and current-runtime wrapper tool registration, without opening connections, reading credentials, or launching servers. Cached metadata, registered tools and active tools are **not service-readiness checks**. If the adapter is absent or has not published a snapshot, its status remains unknown. The standalone `bin/pi-doctor` cannot observe the active Pi runtime.
 
@@ -655,7 +655,7 @@ Normal Pi use is unchanged when Omnigent is absent.
 2. Run `./install.sh --no-catalog` for shared tools without a model-gateway catalog. The installer preserves existing settings, registers this checkout globally, wires helper/context symlinks, and runs locked `npm ci --ignore-scripts` in extensions with lockfiles. Use the catalog options above when needed. Plain `pi install git:…` alone does not install these nested extension dependencies.
 3. For search/research, separately install/configure `local_web_search` (Brave Search). Provision its private Brave key **before** starting its installer, following that repository's README. Override the default `http://127.0.0.1:8889/mcp` with `PI_WEBSEARCH_MCP_URL`, `SEARCH_MCP_URL`, `WEBSEARCH_MCP_URL`, or the research config. Missing search affects search/research calls, not unrelated Pi tools.
 4. For public browser tools, use pi-setup's recommended `browser-worker` module (automatic local service/token provisioning), or install it independently as documented in [Pi Browser Capture](../extensions/pi-browser-capture/README.md). Its persisted client URL/token path are honored by the native wrapper and checker; environment overrides still take precedence. If not using it, merge `"browserWorkerEnabled": false` into `~/.pi/research/config.json`; this suppresses optional-worker warnings, not search or `app_*`.
-5. For private `app_*` tests, install Chromium explicitly (see below) and set `BROWSER_MCP_APP_BASE_URL` / `BROWSER_MCP_APP_ALLOWED_HOSTS` for the intended app. These tools do not use browser-worker.
+5. For private `app_inspect`/`app_test` use, install Chromium explicitly (see below) and set `BROWSER_MCP_APP_BASE_URL` / `BROWSER_MCP_APP_ALLOWED_HOSTS` for the intended app. These tools do not use browser-worker.
 6. Run the static doctor, then explicitly chosen dependency/import/service checks. Restart Pi or run `/reload`, then use `/mcp` and `dev_doctor` to see both MCP integration paths. Failed optional services must remain clearly reported as unavailable, not mistaken for successful full setup.
 
 Example:
@@ -675,7 +675,7 @@ pi-vanilla --list-models gpt-5.5
 # Optional endpoint selection: merge websearchMcpUrl into ~/.pi/research/config.json
 # rather than overwriting existing research/browser settings.
 
-# Optional app_* target config if the app is not on 127.0.0.1:8100
+# Optional app_inspect/app_test target config if the app is not on 127.0.0.1:8100
 export BROWSER_MCP_APP_BASE_URL='http://127.0.0.1:8100'
 
 # If the optional services were installed, run their explicit checks:
@@ -744,7 +744,7 @@ source ~/.pi/generated/pi-launchers.zsh
 
 If `package.json` dependencies changed for an extension, re-run `./install.sh` (or `npm ci --ignore-scripts` in that extension directory), then run `/reload` in Pi.
 
-The browser extension's JavaScript packages are installed by `./install.sh`; the Chromium binary is a separate, explicit step (hundreds of MB) for the in-process `app_*` tools. Public browser binaries are managed separately by browser-worker:
+The browser extension's JavaScript packages are installed by `./install.sh`; the Chromium binary is a separate, explicit step (hundreds of MB) for the in-process `app_inspect`/`app_test` tools. Public browser binaries are managed separately by browser-worker:
 
 ```bash
 cd ~/local_code/pi-shared/extensions/pi-browser-capture

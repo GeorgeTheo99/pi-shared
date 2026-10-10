@@ -69,7 +69,7 @@ diagnostics. No separate slash command or model-callable tool is added.
   separately because they call their MCP backends directly and do not appear in
   `/mcp`. Tool names are matched to this checkout's canonical extension source
   paths. Registered and active tools are reported separately; neither proves
-  the service is installed or working. `app_*` is explicitly not MCP.
+  the service is installed or working. `app_inspect`/`app_test` are explicitly not MCP.
 - The section is always scoped to the **current Pi runtime**, even when
   `agentDir` selects another profile for static/import checks. The CLI runs
   outside Pi and cannot observe this section. No URLs, commands, credentials,

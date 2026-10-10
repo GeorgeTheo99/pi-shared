@@ -24,7 +24,7 @@ service and distinct owner-only `pi-production` token automatically. No external
 API key is required, and credentials are never copied from another machine.
 At startup an authenticated, read-only `tools/list` check must identify exactly
 these two browser tools; otherwise they remain disabled and Pi reports an
-actionable warning. `app_*` is unaffected. After setup, check the worker and
+actionable warning. `app_inspect`/`app_test` are unaffected. After setup, check the worker and
 restart Pi or run `/reload`:
 
 ```bash
@@ -38,7 +38,7 @@ Distributions that select a separate web-research backend can explicitly set
 `"browserWorkerEnabled": false` in `~/.pi/research/config.json`. Then these two
 standalone browser tools are not loaded or probed, there is no unconfigured-worker
 startup warning, and the checker reports `DISABLED:` (exit `0`), not `READY:`.
-This does not disable `web_search`/`web_fetch` or `app_*`, and does not imply that
+This does not disable `web_search`/`web_fetch` or `app_inspect`/`app_test`, and does not imply that
 the alternative backend supports screenshots or interactive browser sessions.
 Omitting the setting, or setting it to `true`, preserves the generic default.
 
@@ -53,25 +53,26 @@ a substitute browser backend.
 
 ## App testing tools
 
-`app_*` remains loaded from the existing `src/app-testing.ts` entrypoint for local/private app testing:
+`src/app-testing.ts` registers one action-based tool, `app_inspect`, over a persistent authenticated
+Patchright context for local/private apps. Its action vocabulary mirrors `browser_inspect`:
 
-- `app_open`
-- `app_open_tab`
-- `app_list_tabs`
-- `app_switch_tab`
-- `app_close_tab`
-- `app_click`
-- `app_type_text`
-- `app_wait_for`
-- `app_extract_text`
-- `app_evaluate`
-- `app_screenshot`
-- `app_console_logs`
-- `app_network_log`
-- `app_api_request`
-- `app_page_state`
+| Action | Parameters |
+|---|---|
+| `open`, `open_tab` | `url` (relative path or approved absolute URL; `open` defaults to `/`) |
+| `list_tabs`, `switch_tab`, `close_tab` | `tab_index` (`close_tab` defaults to the active tab) |
+| `click`, `type` | `selector`; `type` also `text`, `clear`, `submit` |
+| `wait` | `selector`, `url_contains`, `state`, `timeout_ms` |
+| `extract_text` | `selector`, `max_chars` |
+| `evaluate` | `script`, `arg` |
+| `screenshot` | `label`, `full_page` |
+| `console` | `limit`, `level` (Patchright suppresses most page console events) |
+| `network` | `limit`, `status_min`, `url_contains` |
+| `request` | `method`, `url`, `headers`, `body`, `timeout_seconds`, `max_body_chars` |
+| `state` | active page, tabs, base URL and allowed hosts |
 
-`app_wait_for` waits on browser page state, not process lifecycle. Start a local app with `command_start({command,timeout_seconds,readiness})`, do independent preparation first, then use `wait_for_ready({jobs:["cmd_…"],timeout:60})` for its declared readiness before opening it. Use `wait_for_jobs({jobs:["cmd_…"],timeout:3600})` for terminal completion instead; readiness is not test success. These job tools do not change app target permissions or public-browser boundaries.
+It replaces the former 15 granular `app_*` tools; bundle patterns such as `app_*` still match it.
+
+`app_inspect` action `wait` waits on browser page state, not process lifecycle. Start a local app with `command_start({command,timeout_seconds,readiness})`, do independent preparation first, then use `wait_for_ready({jobs:["cmd_…"],timeout:60})` for its declared readiness before opening it. Use `wait_for_jobs({jobs:["cmd_…"],timeout:3600})` for terminal completion instead; readiness is not test success. These job tools do not change app target permissions or public-browser boundaries.
 
 Default app target: `http://127.0.0.1:8100`.
 
@@ -86,7 +87,7 @@ export BROWSER_MCP_APP_ALLOWED_HOSTS='127.0.0.1,localhost,dev.internal'
 ## Reproducible isolated app tests
 
 `src/app-test.ts` adds one private router, `app_test`. The persistent/authenticated
-`app_*` tools above remain the default and are unchanged. `app_test` never reads,
+`app_inspect` tool above remains the default for exploration. `app_test` never reads,
 copies, or writes `BROWSER_MCP_APP_PROFILE_DIR`, storage state, or credentials.
 It uses installed Playwright Chromium; existing persistent tools still use Patchright.
 
@@ -187,8 +188,9 @@ and is included in root `npm test`; these commands do not activate a Pi profile.
 
 - Use `browser_fetch` / `browser_inspect` for actual interaction with public web pages.
 - Use `web_search` / `web_fetch` for informational research and current-facts lookup. Their configured backend is independent: generic Pi defaults to `local_web_search`; the Databricks overlay selects its own shim.
-- Use `app_*` for local/private app UI and API testing.
+- Use `app_inspect` to explore/debug local/private app UI and APIs, and `app_test` for reproducible pass/fail runs.
 - Use the privileged `browser_inspect` actions only when the authenticated caller has the matching server-side capability.
+- Use Peekaboo (the user's desktop browser) for signed-in public sites; browser-worker sessions are always signed out.
 
 ## Safety boundary
 
@@ -202,7 +204,7 @@ npm ci --ignore-scripts
 npx playwright install chromium
 ```
 
-The Playwright/Patchright dependencies above are for the separate `app_*` runtime. Public browser execution belongs to the standalone browser-worker service.
+The Playwright/Patchright dependencies above are for the separate `app_inspect`/`app_test` runtime. Public browser execution belongs to the standalone browser-worker service.
 
 ## App environment variables
 
