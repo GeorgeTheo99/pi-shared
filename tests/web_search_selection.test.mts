@@ -15,6 +15,11 @@ test("webSearchEnabled defaults on, honors false, and fails closed on non-boolea
 		assert.equal(selection.enabled, false);
 		assert.match(selection.warning ?? "", /webSearchEnabled .* must be true or false/);
 	}
+	for (const config of [null, [1], true, "x"]) {
+		const selection = webSearchSelection(config);
+		assert.equal(selection.enabled, false);
+		assert.match(selection.warning ?? "", /not a valid JSON object/);
+	}
 });
 
 const loader = new URL("./fixtures/research_test_loader.mjs", import.meta.url).href;
@@ -23,12 +28,12 @@ const extensions = {
 	research: new URL("../extensions/deep-research/index.ts", import.meta.url).href,
 };
 
-function registered(config: Record<string, unknown> | undefined) {
+function registered(config: unknown, raw?: string) {
 	const home = realpathSync(mkdtempSync(join(tmpdir(), "pi-search-select-")));
 	try {
-		if (config) {
+		if (config !== undefined || raw !== undefined) {
 			mkdirSync(join(home, ".pi", "research"), { recursive: true, mode: 0o700 });
-			writeFileSync(join(home, ".pi", "research", "config.json"), JSON.stringify(config), { mode: 0o600 });
+			writeFileSync(join(home, ".pi", "research", "config.json"), raw ?? JSON.stringify(config), { mode: 0o600 });
 		}
 		const script = `
 			const tools = [], commands = [], events = [];
@@ -54,7 +59,8 @@ test("search extensions register by default and step aside when webSearchEnabled
 	}
 	const off = registered({ webSearchEnabled: false, websearchMcpUrl: "http://127.0.0.1:9/mcp" });
 	assert.deepEqual(off, { tools: [], commands: [], events: [] });
-	const invalid = registered({ webSearchEnabled: "no" });
-	assert.deepEqual(invalid.tools, []);
-	assert.deepEqual(invalid.events, ["session_start", "session_start"]);
+	for (const [config, raw] of [[{ webSearchEnabled: "no" }], [undefined, '{"webSearchEnabled": false,}'], [null], [[1]]] as const) {
+		const invalid = registered(config, raw);
+		assert.deepEqual(invalid, { tools: [], commands: [], events: ["session_start"] });
+	}
 });

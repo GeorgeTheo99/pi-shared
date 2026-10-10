@@ -294,11 +294,13 @@ def test_invalid_deadlines_are_refused(setup, timeout):
     ('{"webSearchEnabled": false}', "disabled", False),
     ('{"webSearchEnabled": "no"}', "invalid_config", True),
     ('[1]', "invalid_config", True),
+    ('{"webSearchEnabled": false,}', "invalid_config", True),
 ])
 def test_web_search_selection_row(setup, config, outcome, failed):
     setup["config"].write_text(config)
     result, rows = invoke(setup)
     assert rows["web_search"]["outcome"] == outcome
     assert rows["web_search"]["probe_type"] == "static"
+    assert isinstance(rows["web_search"].get("selected", True), bool)
     if failed:
         assert result.returncode == 1

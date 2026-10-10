@@ -34,7 +34,8 @@ def web_search_row():
         if not isinstance(config, dict):
             raise ValueError
     except (CheckError, OSError, ValueError):
-        row.update(outcome="invalid_config", guidance=f"Fix {RESEARCH_CONFIG}; search wrappers stay registered only when it parses.")
+        row.update(outcome="invalid_config", selected=False, configured="no",
+                   guidance=f"Fix {RESEARCH_CONFIG}; search wrappers stay off until it is a valid JSON object.")
         return row, True
     enabled = config.get("webSearchEnabled", True)
     row["selected"] = enabled
@@ -42,7 +43,7 @@ def web_search_row():
         row.update(outcome="disabled", configured="no",
                    guidance="webSearchEnabled=false: pi-shared registers no web_search/web_fetch/deep_research; the environment provides its own search.")
     elif enabled is not True:
-        row.update(outcome="invalid_config", configured="no",
+        row.update(outcome="invalid_config", selected=False, configured="no",
                    guidance="webSearchEnabled must be true or false; search wrappers are disabled until fixed.")
         return row, True
     return row, False

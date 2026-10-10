@@ -45,14 +45,26 @@ function readSearchConfig(): Record<string, unknown> {
 /**
  * pi-shared search tools (web_search, web_fetch, deep_research) are on unless a
  * distribution explicitly sets `webSearchEnabled: false` to bring its own search.
- * A non-boolean value fails closed (tools off) with a warning to fix the config.
+ * A missing file keeps the default. An unreadable/invalid file or a non-boolean
+ * value fails closed (tools off) with a warning, so a broken bring-your-own config
+ * never silently re-registers pi-shared tools over the distribution's own.
  */
-export function webSearchSelection(
-	config: Record<string, unknown> = readSearchConfig(),
-): { enabled: boolean; warning?: string } {
-	const value = config.webSearchEnabled;
-	if (value === undefined || value === true) return { enabled: true };
-	if (value === false) return { enabled: false };
+export function webSearchSelection(config?: unknown): { enabled: boolean; warning?: string } {
+	let value: unknown = config;
+	if (arguments.length === 0) {
+		if (!existsSync(CONFIG_PATH)) return { enabled: true };
+		try {
+			value = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+		} catch {
+			value = undefined;
+		}
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return { enabled: false, warning: `Web search tools disabled: ${CONFIG_PATH} is not a valid JSON object.` };
+	}
+	const enabled = (value as Record<string, unknown>).webSearchEnabled;
+	if (enabled === undefined || enabled === true) return { enabled: true };
+	if (enabled === false) return { enabled: false };
 	return {
 		enabled: false,
 		warning: `Web search tools disabled: webSearchEnabled in ${CONFIG_PATH} must be true or false.`,

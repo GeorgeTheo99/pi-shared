@@ -14,8 +14,9 @@ Distributions that bring their own search tools set `"webSearchEnabled": false` 
 `~/.pi/research/config.json` (or run `pi-shared setup --search own`). Then this extension
 and `deep_research` register nothing, so another extension can own `web_search`,
 `web_fetch` and `deep_research` without a tool-name conflict. Endpoint settings are left
-untouched. Omitting the key or setting `true` keeps the default. A non-boolean value
-turns the tools off and shows one warning until it is fixed. To keep these tools but use
+untouched. Omitting the key (or the file) or setting `true` keeps the default. A
+non-boolean value, invalid JSON, or a non-object file turns the tools off and shows one
+warning until it is fixed. To keep these tools but use
 a different backend, point `websearchMcpUrl` at a compatible broker instead.
 
 ## MCP broker requirement
