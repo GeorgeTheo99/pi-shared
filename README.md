@@ -201,7 +201,7 @@ The `app_inspect` tool (actions such as `open`, `click`, `type`, `screenshot`,
 `console`/`network`, and `request`) targets configured local/private apps. It uses an
 in-process browser with persistent app state, separate from browser-worker;
 configure the app base URL/allowed hosts and install browser dependencies.
-These tools are **not isolated fresh tests**.
+It is **not** an isolated fresh test.
 [App-testing configuration](extensions/pi-browser-capture/README.md).
 
 ### Isolated app tests

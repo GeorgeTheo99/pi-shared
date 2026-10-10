@@ -87,6 +87,7 @@ test("policy assigns LLM, deterministic, error, unknown, and exempt classes", ()
 	const pageText = JSON.stringify({ url: "http://127.0.0.1/", title: "App", selector: "body", text: "long page prose" });
 	assert.equal(resolvePolicy("app_inspect", textContent(pageText), false).method, "llm");
 	assert.equal(resolvePolicy("app_inspect", textContent(pageText), true).method, "deterministic");
+	assert.equal(resolvePolicy("app_inspect", textContent(`${pageText.slice(0, -2)}\n\n[Output truncated: 1 of 2 lines (1B of 2B)]`), false).method, "llm");
 	assert.equal(
 		resolvePolicy(
 			"app_inspect",

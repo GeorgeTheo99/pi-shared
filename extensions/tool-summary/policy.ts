@@ -282,7 +282,8 @@ function extractedTextEnvelope(text: string) {
 		const parsed = JSON.parse(text) as { text?: unknown; selector?: unknown; body?: unknown };
 		return typeof parsed?.text === "string" && typeof parsed?.selector === "string" && parsed?.body === undefined;
 	} catch {
-		return false;
+		// Oversized results carry a truncation trailer that breaks JSON.parse.
+		return /^\{[^{}]*"selector":\s*"[^"\n]*",\s*"text":\s*"/.test(text.slice(0, 4096));
 	}
 }
 
