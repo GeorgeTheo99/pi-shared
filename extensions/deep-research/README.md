@@ -52,6 +52,10 @@ Config file example:
 
 `mcpUrl` is also accepted for compatibility with other local-search clients.
 
+`"webSearchEnabled": false` in the same file turns off `deep_research` and `/research`
+together with `web_search`/`web_fetch`, for distributions that bring their own search
+tools; see the websearch README.
+
 ## Credentials and request safety
 
 Broker authentication and legacy Tavily forwarding are separate. Tavily forwarding is retained for compatible alternative brokers, not required by the Brave-only standalone service:

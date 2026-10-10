@@ -42,6 +42,35 @@ function readSearchConfig(): Record<string, unknown> {
 	}
 }
 
+/**
+ * pi-shared search tools (web_search, web_fetch, deep_research) are on unless a
+ * distribution explicitly sets `webSearchEnabled: false` to bring its own search.
+ * A non-boolean value fails closed (tools off) with a warning to fix the config.
+ */
+export function webSearchSelection(
+	config: Record<string, unknown> = readSearchConfig(),
+): { enabled: boolean; warning?: string } {
+	const value = config.webSearchEnabled;
+	if (value === undefined || value === true) return { enabled: true };
+	if (value === false) return { enabled: false };
+	return {
+		enabled: false,
+		warning: `Web search tools disabled: webSearchEnabled in ${CONFIG_PATH} must be true or false.`,
+	};
+}
+
+/** Surface a configuration warning once per session without registering tools. */
+export function warnOnce(
+	pi: { on(event: "session_start", handler: (event: unknown, ctx: { hasUI: boolean; ui: { notify(message: string, level: "warning"): void } }) => void): void },
+	message: string | undefined,
+): void {
+	if (!message) return;
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx.hasUI) ctx.ui.notify(message, "warning");
+		else console.error(`WARN: ${message}`);
+	});
+}
+
 export function resolveConfiguredMcpUrls(
 	env: Environment,
 	config: Record<string, unknown>,

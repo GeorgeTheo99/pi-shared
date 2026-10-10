@@ -2,7 +2,7 @@
 
 - Project memory is machine-local and project-only via `extensions/memory`, stored under `~/.pi/memory/projects/`. Treat memory maintenance as part of normal session work: read relevant memories before relying on prior state; write/update immediately when a verified durable project fact is discovered or corrected; and before finishing substantive work, audit whether touched memories should be updated, archived, or marked reviewed. Store only evidence-backed, project-specific facts likely useful in future sessions; never store global user preferences, cross-project rules, secrets, credentials, transient task state, todos, guesses, or raw logs. Prefer updating or archiving existing memories over adding duplicates, and include concrete evidence in `source` such as files, commands, commits, service status, or explicit user decisions.
 - Always use Peekaboo through Pi's official MCP integration for native macOS desktop interaction (retain a legacy adapter only during explicit migration/rollback); Peekaboo is the opinionated recommendation, not a separate Pi skill. Discover the live `peekaboo` tool catalog and schemas through codemode/tool_search before use; see `docs/peekaboo.md` for targeting, permissions, and safety guidance. Do not substitute another desktop-control backend. Keep structured API/file work and Xcode tests on their purpose-built tools.
-- Route web and app work by need; the first matching row wins:
+- Route web and app work by need; the first matching row wins. Skip rows whose tool is not available in this environment and use its equivalent instead (for example, a provider's own web search when pi-shared search is turned off):
 
   | Need | Tool | Boundary |
   |---|---|---|

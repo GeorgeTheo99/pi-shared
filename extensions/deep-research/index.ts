@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { CONFIG_PATH, throwIfCallerAborted } from "../_shared/mcp-client.js";
+import { CONFIG_PATH, throwIfCallerAborted, warnOnce, webSearchSelection } from "../_shared/mcp-client.js";
 import { MAX_QUESTION_CHARS, normalizeOptions, runResearch, type ResearchOptions } from "./research.js";
 import { buildSynthesisPrompt, formatToolResult, saveBundle } from "./output.js";
 
@@ -75,6 +75,11 @@ export function parseArgs(raw: string): ResearchOptions {
 }
 
 export default function deepResearchExtension(pi: ExtensionAPI) {
+  const selection = webSearchSelection();
+  if (!selection.enabled) {
+    warnOnce(pi, selection.warning);
+    return;
+  }
   pi.registerCommand("research", {
     description: "Bounded multi-source research through the local-search MCP broker.",
     handler: async (rawArgs, ctx) => {

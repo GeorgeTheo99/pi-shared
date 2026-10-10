@@ -19,7 +19,33 @@ import sys
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "extensions/dev-doctor"))
-from doctor_common import bounded_run, capability, timeout_value, timestamp
+from doctor_common import CheckError, bounded_run, capability, read_bytes, timeout_value, timestamp
+
+RESEARCH_CONFIG = Path.home() / ".pi" / "research" / "config.json"
+
+
+def web_search_row():
+    """Static selection of pi-shared's web_search/web_fetch/deep_research wrappers."""
+    row = capability("web_search", "static", "selected",
+                     "pi-shared search tools are selected; `local_web_search` verify checks the search service.",
+                     execution="not_tested")
+    try:
+        config = json.loads(read_bytes(RESEARCH_CONFIG)) if RESEARCH_CONFIG.exists() else {}
+        if not isinstance(config, dict):
+            raise ValueError
+    except (CheckError, OSError, ValueError):
+        row.update(outcome="invalid_config", guidance=f"Fix {RESEARCH_CONFIG}; search wrappers stay registered only when it parses.")
+        return row, True
+    enabled = config.get("webSearchEnabled", True)
+    row["selected"] = enabled
+    if enabled is False:
+        row.update(outcome="disabled", configured="no",
+                   guidance="webSearchEnabled=false: pi-shared registers no web_search/web_fetch/deep_research; the environment provides its own search.")
+    elif enabled is not True:
+        row.update(outcome="invalid_config", configured="no",
+                   guidance="webSearchEnabled must be true or false; search wrappers are disabled until fixed.")
+        return row, True
+    return row, False
 
 
 def run_checker(name, args, probe_type, seconds):
@@ -58,6 +84,9 @@ def main():
                        f"Install {name} explicitly if needed; PATH presence is not execution evidence.",
                        installed="yes" if shutil.which(name) else "no") for name in ("pi", "node", "python3")]
     failed = any(row["outcome"] == "missing" for row in rows)
+    search_row, search_failed = web_search_row()
+    rows.append(search_row)
+    failed |= search_failed
     probes = [
         ("pi-profile-check", ["--agent-dir", str(args.agent_dir.expanduser().resolve()),
                               *([] if args.probe_imports else ["--static"])], "import" if args.probe_imports else "static"),
@@ -73,7 +102,7 @@ def main():
             break  # Cancellation must not start any remaining opt-in probes.
     report = {"schema_version": 1, "verified_at": timestamp(),
               "outcome": "issues_found" if failed else "inspection_complete", "capabilities": rows,
-              "scope": "Selected profile declarations and pi-shared dependencies (or explicit extension directories); not current-session load/activation. Browser selection uses ~/.pi/research/config.json. No model or browser execution tests."}
+              "scope": "Selected profile declarations and pi-shared dependencies (or explicit extension directories); not current-session load/activation. Browser and web-search selection use ~/.pi/research/config.json. No model or browser execution tests."}
     if args.json:
         print(json.dumps(report))
     else:

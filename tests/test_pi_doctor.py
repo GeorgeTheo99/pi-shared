@@ -287,3 +287,18 @@ def test_invalid_deadlines_are_refused(setup, timeout):
     result = subprocess.run([sys.executable, str(DOCTOR), "--timeout", timeout],
                             env=setup["env"], capture_output=True, text=True, timeout=2)
     assert result.returncode == 2
+
+
+@pytest.mark.parametrize(("config", "outcome", "failed"), [
+    ('{"browserWorkerEnabled": false}', "selected", False),
+    ('{"webSearchEnabled": false}', "disabled", False),
+    ('{"webSearchEnabled": "no"}', "invalid_config", True),
+    ('[1]', "invalid_config", True),
+])
+def test_web_search_selection_row(setup, config, outcome, failed):
+    setup["config"].write_text(config)
+    result, rows = invoke(setup)
+    assert rows["web_search"]["outcome"] == outcome
+    assert rows["web_search"]["probe_type"] == "static"
+    if failed:
+        assert result.returncode == 1

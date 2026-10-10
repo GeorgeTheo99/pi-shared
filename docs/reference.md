@@ -624,7 +624,10 @@ The profile check loads extensions through the installed Pi SDK, inspects its
 error list, and fails on process errors, missing reports, or timeouts. It does
 not call a model or source shell startup files. Optional browser readiness has
 separate `READY`/`WARN` results, or `DISABLED` when a distribution explicitly
-sets `browserWorkerEnabled=false`; see the browser extension README. Successful
+sets `browserWorkerEnabled=false`; see the browser extension README. The doctor's
+static `web_search` row reports `selected`, `disabled` (`webSearchEnabled=false`, the
+distribution brings its own search tools; see the websearch README), or
+`invalid_config`. Successful
 local checks are not proof that remote credentials, model calls, or browser
 execution work.
 

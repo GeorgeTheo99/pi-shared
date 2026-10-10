@@ -10,6 +10,8 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	CONFIG_PATH,
+	warnOnce,
+	webSearchSelection,
 	mcpToolCall,
 	readConfiguredMcpUrls,
 	WEB_FETCH_TIMEOUT_MS,
@@ -223,6 +225,11 @@ const webFetch = defineTool({
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
+	const selection = webSearchSelection();
+	if (!selection.enabled) {
+		warnOnce(pi, selection.warning);
+		return;
+	}
 	pi.registerTool(structuredTool(webSearch, searchSchema, (result, args) => ({
 		status: result.details.error ? "error" : "ok",
 		data: {

@@ -8,6 +8,16 @@ Shared Pi extension that provides `web_search` and `web_fetch` through the local
 - Pi clients do **not** fall back directly to search providers. If the broker is down, the tool reports a broker error so reliability issues are fixed at the shared entry point instead of bypassed.
 - For low-risk, reversible local actions, treat strong `web_search` results as execution hints: try the most plausible fix or workflow quickly, verify it directly, and only escalate to deeper research if that concrete path fails.
 
+## Turning pi-shared search off
+
+Distributions that bring their own search tools set `"webSearchEnabled": false` in
+`~/.pi/research/config.json` (or run `pi-shared setup --search own`). Then this extension
+and `deep_research` register nothing, so another extension can own `web_search`,
+`web_fetch` and `deep_research` without a tool-name conflict. Endpoint settings are left
+untouched. Omitting the key or setting `true` keeps the default. A non-boolean value
+turns the tools off and shows one warning until it is fixed. To keep these tools but use
+a different backend, point `websearchMcpUrl` at a compatible broker instead.
+
 ## MCP broker requirement
 
 This extension does **not** install or run local-search. Using these tools requires a reachable MCP broker exposing the following JSON-RPC tools; unrelated Pi features remain usable without it:

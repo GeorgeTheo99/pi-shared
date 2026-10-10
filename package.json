@@ -9,7 +9,7 @@
     "test:setup": "node --no-warnings --experimental-loader ./tests/fixtures/setup_test_loader.mjs --test tests/setup*.test.mts",
     "test:software-kb": "node --no-warnings --experimental-loader ./tests/fixtures/research_test_loader.mjs --test tests/software_kb*.test.mts && python3 -m unittest discover -s tests -p test_software_kb_ingest.py",
     "test:websearch": "node --no-warnings --test tests/websearch_mcp_client.test.mts",
-    "test:research": "node --no-warnings --experimental-loader ./tests/fixtures/research_test_loader.mjs --test tests/deep_research*.test.mts",
+    "test:research": "node --no-warnings --experimental-loader ./tests/fixtures/research_test_loader.mjs --test tests/deep_research*.test.mts tests/web_search_selection.test.mts",
     "test:browser": "node --no-warnings --test tests/browser_tool_inventory.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/browser_worker_test_loader.mjs --test tests/browser_worker_wrapper.test.mts",
     "test:goal": "node --no-warnings --experimental-loader ./tests/fixtures/goal_test_loader.mjs --test tests/goal_abort.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/integration_bundles_test_loader.mjs --test tests/goal_sdk.test.mts",
     "test:ask-user": "node --no-warnings --experimental-loader ./tests/fixtures/ask_user_test_loader.mjs --test tests/ask_user.test.mts",
