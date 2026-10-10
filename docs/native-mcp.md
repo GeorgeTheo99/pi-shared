@@ -41,8 +41,11 @@ apply also requires `--yes --expected-plan <digest>`. Check without migration
 options is static; it does not start servers or sign in. See the
 [complete backend CLI and rollback contract](https://github.com/GeorgeTheo99/pi-setup/blob/main/docs/mcp.md).
 
-Each profile is migrated separately. The ordinary managed update does **not**
-automatically migrate profiles, remove packages, or change credentials. Existing
+Each profile is migrated separately. From Homebrew pi-shared **0.1.33**,
+`pi-shared update` migrates its saved profile automatically when the plan is
+unambiguous (an adapter without servers changes settings only) and otherwise prints
+why it left the profile unchanged. It never removes packages or changes
+credentials. Other profiles still use `/setup mcp`. Existing
 native files, unsupported policy, other conflicting config layers, and untranslatable
 filters require explicit resolution; never discard them to make a migration pass.
 Adapter OAuth tokens are not imported; some HTTP services may require new native
