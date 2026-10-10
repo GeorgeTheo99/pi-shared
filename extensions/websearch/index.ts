@@ -169,6 +169,7 @@ const webFetch = defineTool({
 	promptGuidelines: [
 		"Use web_fetch to read a specific URL's content — typically a URL found via web_search.",
 		"Do NOT use web_fetch for research questions — use web_search or deep_research instead.",
+		"If web_fetch fails, looks incomplete, or the page needs JavaScript, use browser_fetch when available; use browser_fetch directly for sensitive URLs because web_fetch may fall back to third-party fetchers.",
 	],
 	parameters: Type.Object({
 		url: Type.String({ description: "URL to fetch" }),

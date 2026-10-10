@@ -33,23 +33,7 @@ const legacyPublicNames = new Set([
   "browser_close",
 ]);
 const workerNames = new Set(["browser_fetch", "browser_inspect"]);
-const expectedAppNames = [
-  "app_api_request",
-  "app_click",
-  "app_close_tab",
-  "app_console_logs",
-  "app_evaluate",
-  "app_extract_text",
-  "app_list_tabs",
-  "app_network_log",
-  "app_open",
-  "app_open_tab",
-  "app_page_state",
-  "app_screenshot",
-  "app_switch_tab",
-  "app_type_text",
-  "app_wait_for",
-].sort();
+const expectedAppNames = ["app_inspect"];
 
 test("public browser cutover loads only browser_fetch and browser_inspect", () => {
   assert.deepEqual(loadedEntrypoints, ["./src/browser-worker.ts", "./src/app-testing.ts", "./src/app-test.ts"]);
@@ -68,7 +52,7 @@ test("legacy and worker public browser families can never be loaded together", (
   assert.equal(hasLegacy && hasWorker, false);
 });
 
-test("app testing inventory remains unchanged and separately loaded", () => {
+test("app testing inventory is app_inspect plus app_test, separately loaded", () => {
   assert.ok(loadedEntrypoints.includes("./src/app-testing.ts"));
   assert.deepEqual(registeredNames("./src/app-testing.ts").sort(), expectedAppNames);
   assert.deepEqual(registeredNames("./src/app-test.ts"), ["app_test"]);

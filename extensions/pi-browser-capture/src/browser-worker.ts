@@ -170,6 +170,9 @@ const browserInspect = defineTool({
   description:
     "Create or operate a short-lived, signed-out public browser session using one explicit action. " +
     "After a page downloads a file, downloads lists it with an artifact handle.",
+  promptGuidelines: [
+    "browser_inspect sessions are always signed out and public-only; use Peekaboo for signed-in sites or bot checks, and app_inspect/app_test for local/private apps.",
+  ],
   parameters: Type.Object({
     action: StringEnum([
       "open",
