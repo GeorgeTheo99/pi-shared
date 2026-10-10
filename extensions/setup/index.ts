@@ -7,6 +7,11 @@ import { resolveSetupExecutable, runBackend, type SetupAction, type SetupReport 
 import { CAPABILITIES, clean, isCapability, runCapabilityBackend, runCapabilityWizard } from "./capabilities.ts";
 
 type Run = (action: SetupAction, extra: string[]) => Promise<SetupReport>;
+
+const RECOMMENDED = "Set up Peekaboo (recommended)";
+const ADVANCED = "Advanced…";
+/** Where Peekaboo.app opens its Bridge socket; the backend still verifies it. */
+const APP_SOCKET = join(homedir(), "Library/Application Support/Peekaboo/bridge.sock");
 type WizardContext = Pick<ExtensionCommandContext, "ui">;
 
 export function formatReport(report: SetupReport): string {
@@ -34,52 +39,81 @@ function replaceOptions(options: string[], remove: string[], add: string[]): str
 export async function runWizard(ctx: WizardContext, run: Run, signal: AbortSignal = new AbortController().signal): Promise<void> {
 	let options: string[] = [];
 	let plan = await run("plan", options);
+	// The first menu offers one opinionated route; every individual choice
+	// stays one step away under Advanced.
+	let advanced = false;
 	while (!signal.aborted) {
 		ctx.ui.notify(formatReport(plan), plan.ok ? "info" : "warning");
 		const choices: string[] = [];
-		if (plan.evidence.binaryPresent) choices.push("Check CLI and permissions (no desktop actions)");
-		if (plan.ok && plan.planId && plan.evidence.binaryPresent && plan.evidence.configuration === "missing") choices.push("Configure Peekaboo MCP");
-		choices.push("Use desktop app Bridge (25 tools; no Peekaboo browser)", "Use direct CLI (full tool catalog)", "Choose an existing Peekaboo executable");
-		if (!plan.evidence.binaryPresent && !["conflict", "invalid"].includes(plan.evidence.configuration)) choices.push("Preview compatibility CLI install (4.5.0; known limitations)");
-		choices.push("Done / cancel");
-		const choice = await ctx.ui.select("Peekaboo setup — choose the permission host", choices, { signal });
-		if (signal.aborted || !choice || !choices.includes(choice) || choice === "Done / cancel") return;
-		if (choice.startsWith("Use desktop app Bridge")) {
-			const socket = await ctx.ui.input("Absolute socket path for your running Peekaboo desktop app",
-				plan.evidence.bridgeSocketPath ?? join(homedir(), "Library/Application Support/Peekaboo/bridge.sock"), { signal });
-			if (signal.aborted || socket === undefined || !socket.trim()) return;
-			if (!isAbsolute(socket.trim()) || /[\x00-\x1f\x7f]/.test(socket)) {
-				ctx.ui.notify("Use an absolute socket path, not a shell command or ~/ shortcut.", "error");
+		const fresh = plan.evidence.configuration === "missing";
+		if (!advanced) {
+			if (fresh) choices.push(RECOMMENDED);
+			if (plan.evidence.binaryPresent) choices.push("Check CLI and permissions (no desktop actions)");
+			choices.push(ADVANCED, "Done / cancel");
+			const choice = await ctx.ui.select("Peekaboo setup", choices, { signal });
+			if (signal.aborted || !choice || !choices.includes(choice) || choice === "Done / cancel") return;
+			if (choice === ADVANCED) {
+				advanced = true;
+				continue;
+			}
+			if (choice.startsWith("Check CLI")) {
+				const checked = await run("check", options);
+				ctx.ui.notify(formatReport(checked), checked.ok ? "info" : "warning");
 				return;
 			}
-			options = replaceOptions(options, ["--mode", "--bridge-socket"], ["--mode", "bridge", "--bridge-socket", socket.trim()]);
+			// Recommended: the desktop app owns permissions (Bridge), with the
+			// compatibility CLI installed only when none was found.
+			options = ["--mode", "bridge", "--bridge-socket", plan.evidence.bridgeSocketPath ?? APP_SOCKET, ...(plan.evidence.binaryPresent ? [] : ["--install"])];
 			plan = await run("plan", options);
-			continue;
-		}
-		if (choice.startsWith("Use direct CLI")) {
-			options = replaceOptions(options, ["--mode", "--bridge-socket"], ["--mode", "direct"]);
-			plan = await run("plan", options);
-			continue;
-		}
-		if (choice === "Choose an existing Peekaboo executable") {
-			const path = await ctx.ui.input("Absolute path to a trusted Peekaboo executable", plan.evidence.binaryPath ?? "/absolute/path/to/peekaboo", { signal });
-			if (signal.aborted || path === undefined || !path.trim()) return;
-			if (!isAbsolute(path.trim()) || /[\x00-\x1f\x7f]/.test(path)) {
-				ctx.ui.notify("Use an absolute executable path, not a shell command or ~/ shortcut.", "error");
+			if (plan.evidence.bridgeSocketState !== "present") {
+				ctx.ui.notify(`${formatReport(plan)}\n\nOpen Peekaboo.app (install it from https://github.com/openclaw/Peekaboo/releases if needed), grant the permissions it asks for, keep it running, then run /setup peekaboo again.`, "warning");
 				return;
 			}
-			options = replaceOptions(options, ["--binary", "--install"], ["--binary", path.trim()]);
-			plan = await run("plan", options);
-			continue;
-		}
-		if (choice.startsWith("Check CLI")) {
-			const checked = await run("check", options);
-			ctx.ui.notify(formatReport(checked), checked.ok ? "info" : "warning");
-			return;
-		}
-		if (choice.startsWith("Preview compatibility")) {
-			options = replaceOptions(options, ["--binary", "--install"], ["--install"]);
-			plan = await run("plan", options);
+		} else {
+			if (plan.evidence.binaryPresent) choices.push("Check CLI and permissions (no desktop actions)");
+			if (plan.ok && plan.planId && plan.evidence.binaryPresent && plan.evidence.configuration === "missing") choices.push("Configure Peekaboo MCP");
+			choices.push("Use desktop app Bridge (25 tools; no Peekaboo browser)", "Use direct CLI (full tool catalog)", "Choose an existing Peekaboo executable");
+			if (!plan.evidence.binaryPresent && !["conflict", "invalid"].includes(plan.evidence.configuration)) choices.push("Preview compatibility CLI install (4.5.0; known limitations)");
+			choices.push("Done / cancel");
+			const choice = await ctx.ui.select("Peekaboo setup — choose the permission host", choices, { signal });
+			if (signal.aborted || !choice || !choices.includes(choice) || choice === "Done / cancel") return;
+			if (choice.startsWith("Use desktop app Bridge")) {
+				const socket = await ctx.ui.input("Absolute socket path for your running Peekaboo desktop app",
+					plan.evidence.bridgeSocketPath ?? APP_SOCKET, { signal });
+				if (signal.aborted || socket === undefined || !socket.trim()) return;
+				if (!isAbsolute(socket.trim()) || /[\x00-\x1f\x7f]/.test(socket)) {
+					ctx.ui.notify("Use an absolute socket path, not a shell command or ~/ shortcut.", "error");
+					return;
+				}
+				options = replaceOptions(options, ["--mode", "--bridge-socket"], ["--mode", "bridge", "--bridge-socket", socket.trim()]);
+				plan = await run("plan", options);
+				continue;
+			}
+			if (choice.startsWith("Use direct CLI")) {
+				options = replaceOptions(options, ["--mode", "--bridge-socket"], ["--mode", "direct"]);
+				plan = await run("plan", options);
+				continue;
+			}
+			if (choice === "Choose an existing Peekaboo executable") {
+				const path = await ctx.ui.input("Absolute path to a trusted Peekaboo executable", plan.evidence.binaryPath ?? "/absolute/path/to/peekaboo", { signal });
+				if (signal.aborted || path === undefined || !path.trim()) return;
+				if (!isAbsolute(path.trim()) || /[\x00-\x1f\x7f]/.test(path)) {
+					ctx.ui.notify("Use an absolute executable path, not a shell command or ~/ shortcut.", "error");
+					return;
+				}
+				options = replaceOptions(options, ["--binary", "--install"], ["--binary", path.trim()]);
+				plan = await run("plan", options);
+				continue;
+			}
+			if (choice.startsWith("Check CLI")) {
+				const checked = await run("check", options);
+				ctx.ui.notify(formatReport(checked), checked.ok ? "info" : "warning");
+				return;
+			}
+			if (choice.startsWith("Preview compatibility")) {
+				options = replaceOptions(options, ["--binary", "--install"], ["--install"]);
+				plan = await run("plan", options);
+			}
 		}
 		if (!plan.ok || !plan.planId) {
 			ctx.ui.notify(formatReport(plan), "warning");
