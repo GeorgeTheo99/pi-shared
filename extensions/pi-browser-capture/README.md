@@ -7,7 +7,7 @@ Shared Pi package entrypoints for the standalone public browser worker and the u
 The production public-browser inventory is exactly:
 
 - `browser_fetch` — render one public page in an isolated one-shot browser and return visible text, optional links, or an owner-bound screenshot handle.
-- `browser_inspect` — create and operate a short-lived caller-owned browser session through one explicit action.
+- `browser_inspect` — create and operate a caller-owned browser session through one explicit action. `open` with `profile` (for example `default`) reattaches to a durable browser whose sign-ins persist; `downloads` lists files the page downloaded (requires the worker's `inspect.persistent` / `inspect.download` grants).
 
 The retired granular public-browser entrypoint (`src/index.ts`) remains in source only for whole-revision rollback and is not loaded. It must never be loaded at the same time as `src/browser-worker.ts`.
 

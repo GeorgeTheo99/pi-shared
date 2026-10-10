@@ -167,7 +167,10 @@ const browserFetch = defineTool({
 const browserInspect = defineTool({
   name: "browser_inspect",
   label: "Browser Inspect",
-  description: "Create or operate a short-lived browser session using one explicit action.",
+  description:
+    "Create or operate a browser session using one explicit action. open with profile (e.g. \"default\") " +
+    "reattaches to a durable browser whose sign-ins persist across sessions; without it the session is ephemeral. " +
+    "After a page downloads a file, downloads lists it with an artifact handle.",
   parameters: Type.Object({
     action: StringEnum([
       "open",
@@ -183,6 +186,7 @@ const browserInspect = defineTool({
       "extract_links",
       "wait",
       "console",
+      "downloads",
       "screenshot",
       "export_pdf",
       "click",
@@ -217,6 +221,13 @@ const browserInspect = defineTool({
     print_background: Type.Optional(Type.Boolean({ default: true })),
     script: Type.Optional(Type.String({ maxLength: 20000 })),
     arg: Type.Optional(Type.Any()),
+    profile: Type.Optional(
+      Type.String({
+        pattern: "^[a-z0-9][a-z0-9_-]{0,63}$",
+        maxLength: 64,
+        description: "open only: durable named profile whose cookies and sign-ins persist",
+      }),
+    ),
   }),
   async execute(_id, params, signal) {
     const text = await call("browser_inspect", params, signal);
