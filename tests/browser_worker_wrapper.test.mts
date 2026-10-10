@@ -277,7 +277,7 @@ test("healthy worker enables exactly two tools; probes are read-only and token i
   assert.deepEqual(inspectSchema.format.enum, ["A4", "Letter"]);
   assert.ok(inspectSchema.action.enum.includes("cleanup_scope"));
   assert.ok(inspectSchema.action.enum.includes("downloads"));
-  assert.equal(inspectSchema.profile.pattern, "^[a-z0-9][a-z0-9_-]{0,63}$");
+  assert.equal("profile" in inspectSchema, false);
   assert.equal("anyOf" in inspectSchema.action, false);
 });
 
