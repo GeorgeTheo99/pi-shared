@@ -24,13 +24,19 @@ from doctor_common import CheckError, bounded_run, capability, read_bytes, timeo
 RESEARCH_CONFIG = Path.home() / ".pi" / "research" / "config.json"
 
 
+def reject_constant(name):
+    raise ValueError(f"non-standard JSON constant {name}")
+
+
 def web_search_row():
     """Static selection of pi-shared's web_search/web_fetch/deep_research wrappers."""
     row = capability("web_search", "static", "selected",
                      "pi-shared search tools are selected; `local_web_search` verify checks the search service.",
                      execution="not_tested")
     try:
-        config = json.loads(read_bytes(RESEARCH_CONFIG)) if RESEARCH_CONFIG.exists() else {}
+        # Match the extension's JSON.parse: strict UTF-8 (no BOM) and no NaN/Infinity.
+        config = json.loads(read_bytes(RESEARCH_CONFIG).decode("utf-8"), parse_constant=reject_constant) \
+            if RESEARCH_CONFIG.exists() else {}
         if not isinstance(config, dict):
             raise ValueError
     except (CheckError, OSError, ValueError):

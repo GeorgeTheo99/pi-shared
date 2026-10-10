@@ -295,6 +295,8 @@ def test_invalid_deadlines_are_refused(setup, timeout):
     ('{"webSearchEnabled": "no"}', "invalid_config", True),
     ('[1]', "invalid_config", True),
     ('{"webSearchEnabled": false,}', "invalid_config", True),
+    ('\ufeff{}', "invalid_config", True),
+    ('{"x": NaN}', "invalid_config", True),
 ])
 def test_web_search_selection_row(setup, config, outcome, failed):
     setup["config"].write_text(config)

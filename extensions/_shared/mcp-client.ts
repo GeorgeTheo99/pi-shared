@@ -42,6 +42,18 @@ function readSearchConfig(): Record<string, unknown> {
 	}
 }
 
+const MISSING_CONFIG = Symbol("missing research config");
+
+/** Raw selection input: MISSING_CONFIG when absent, undefined when unreadable or invalid JSON. */
+function readSelectionConfig(): unknown {
+	if (!existsSync(CONFIG_PATH)) return MISSING_CONFIG;
+	try {
+		return JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * pi-shared search tools (web_search, web_fetch, deep_research) are on unless a
  * distribution explicitly sets `webSearchEnabled: false` to bring its own search.
@@ -49,16 +61,8 @@ function readSearchConfig(): Record<string, unknown> {
  * value fails closed (tools off) with a warning, so a broken bring-your-own config
  * never silently re-registers pi-shared tools over the distribution's own.
  */
-export function webSearchSelection(config?: unknown): { enabled: boolean; warning?: string } {
-	let value: unknown = config;
-	if (arguments.length === 0) {
-		if (!existsSync(CONFIG_PATH)) return { enabled: true };
-		try {
-			value = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-		} catch {
-			value = undefined;
-		}
-	}
+export function webSearchSelection(value: unknown = readSelectionConfig()): { enabled: boolean; warning?: string } {
+	if (value === MISSING_CONFIG) return { enabled: true };
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return { enabled: false, warning: `Web search tools disabled: ${CONFIG_PATH} is not a valid JSON object.` };
 	}
