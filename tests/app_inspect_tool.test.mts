@@ -43,6 +43,17 @@ test("app_inspect is the single persistent app tool and dispatches actions again
 	assert.equal((await call({ action: "request", method: "GET", url: "/asset" })).body, "asset");
 	assert.equal((await call({ action: "state" })).active_page.url, `${fixture.baseUrl}/`);
 
+	const opened = await call({ action: "open_tab", url: "/asset" });
+	assert.equal(opened.url, `${fixture.baseUrl}/asset`);
+	assert.equal((await call({ action: "list_tabs" })).tabs.length, 2);
+	await call({ action: "switch_tab", tab_index: 0 });
+	await call({ action: "wait", url_contains: "127.0.0.1" });
+	await call({ action: "close_tab", tab_index: 1 });
+	assert.equal((await call({ action: "list_tabs" })).tabs.length, 1);
+	assert.match((await call({ action: "screenshot", label: "inspect" })).path, /inspect.*\.png$/);
+
+	await assert.rejects(call({ action: "switch_tab" }), /action=switch_tab requires tab_index/);
+	await assert.rejects(call({ action: "request", method: "GET", url: "https://example.com/" }), /not allowed|allowed hosts/i);
 	await assert.rejects(call({ action: "click" }), /action=click requires selector/);
 	await assert.rejects(call({ action: "request", method: "GET" }), /action=request requires url/);
 	await assert.rejects(call({ action: "open", url: "https://example.com/" }), /not allowed|allowed hosts/i);

@@ -197,8 +197,8 @@ private apps, or bypassing site access controls.
 
 ### Persistent private-app testing
 
-The `app_open`, `app_click`, `app_type_text`, screenshot, console/network, and
-`app_api_request` tools target configured local/private apps. They use an
+The `app_inspect` tool (actions such as `open`, `click`, `type`, `screenshot`,
+`console`/`network`, and `request`) targets configured local/private apps. It uses an
 in-process browser with persistent app state, separate from browser-worker;
 configure the app base URL/allowed hosts and install browser dependencies.
 These tools are **not isolated fresh tests**.

@@ -6,13 +6,13 @@
 
   | Need | Tool | Boundary |
   |---|---|---|
-  | Find information | `web_search`; `deep_research` for multi-source questions | Not for interacting with pages |
-  | Read a known URL | `web_fetch`, then `browser_fetch` if it fails, looks incomplete, or needs JavaScript | Use `browser_fetch` directly for sensitive URLs: `web_fetch` may fall back to third-party Decodo/Jina |
-  | Interact with a public site, signed out | `browser_inspect` | Browser-worker: ephemeral sessions (15-minute cap), public-network egress only, never signed in |
-  | Signed-in site, bot check/CAPTCHA, blocked page, or a native macOS app | Peekaboo (the user's desktop browser or the app) | Explicitly authorized for the user's logged-in sessions and working past bot checks; hand control to the user only for fresh credential or MFA entry |
+  | iOS/macOS native app tests | Xcode/XCUITest and simulator tooling | — |
   | Explore or debug a local/private app (UI or API) | `app_inspect` | Persistent authenticated app profile; configured base URL and allowed hosts only |
   | Reproducible local/private app test with assertions | `app_test` | Fresh context per run, explicit steps, stops at the first failure |
-  | iOS/native app tests | Xcode/XCUITest and simulator tooling | — |
+  | Signed-in site, bot check/CAPTCHA, blocked page, or operating a native macOS app | Peekaboo (the user's desktop browser or the app) | Explicitly authorized for the user's logged-in sessions and working past bot checks; hand control to the user only for fresh credential or MFA entry |
+  | Find information | `web_search`; `deep_research` for multi-source questions | Not for interacting with pages |
+  | Read a known public URL | `web_fetch`, then `browser_fetch` if it fails, looks incomplete, or needs JavaScript | Use `browser_fetch` directly for sensitive URLs: `web_fetch` may fall back to third-party Decodo/Jina |
+  | Interact with a public site, signed out | `browser_inspect` | Browser-worker: short-lived sessions (default 15-minute cap), public-network egress only, never signed in |
 - Browser-worker restrictions are tool-local, not machine-wide: if `browser_fetch` or `browser_inspect` hits an access error, bot check, or security verification, do not work around it inside browser-worker; retry through Peekaboo and report the limitation only if that also fails. Browser-worker is exposed only as `browser_fetch` and `browser_inspect`; never register them together with the retired granular public `browser_*` family.
 - Answer as succinctly as possible. The user prefers bullets. The response should be direct and to the point. Code needs to be perfect and best practice.
 - Default to action: when the user asks for work that can be advanced with available tools or executed code/commands, run the relevant commands, inspect files, edit code, and verify results on the user's behalf instead of merely describing what they could do.

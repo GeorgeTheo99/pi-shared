@@ -13,6 +13,7 @@ import {
 	isValidImageRetention,
 	MAX_RECALL_OUTPUT_CHARS,
 	makeSummaryReplacement,
+	reducerFlavor,
 	replacementIsWorthwhile,
 	resolvePolicy,
 	searchExactLines,
@@ -83,6 +84,19 @@ test("policy assigns LLM, deterministic, error, unknown, and exempt classes", ()
 		).method,
 		"llm",
 	);
+	const pageText = JSON.stringify({ url: "http://127.0.0.1/", title: "App", selector: "body", text: "long page prose" });
+	assert.equal(resolvePolicy("app_inspect", textContent(pageText), false).method, "llm");
+	assert.equal(resolvePolicy("app_inspect", textContent(pageText), true).method, "deterministic");
+	assert.equal(
+		resolvePolicy(
+			"app_inspect",
+			textContent(JSON.stringify({ status: 200, headers: { "content-type": "text/html" }, body: "<html>prose</html>" })),
+			false,
+		).method,
+		"llm",
+	);
+	assert.equal(resolvePolicy("app_inspect", textContent('{"result":{"rows":[1,2]}}'), false).method, "deterministic");
+	assert.equal(reducerFlavor("app_inspect"), "structured");
 	assert.equal(resolvePolicy("custom_tool", textContent('{"rows":[1,2]}'), false).method, "deterministic");
 	assert.equal(resolvePolicy("custom_tool", textContent("long prose"), false).method, "llm");
 	assert.equal(resolvePolicy("tool_result_recall", textContent("x"), false).class, "exempt");

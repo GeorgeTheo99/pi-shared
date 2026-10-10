@@ -81,6 +81,7 @@ const CONTROL_OR_MUTATION_TOOLS = new Set([
 	"subagent_cancel",
 	"subagent_steer",
 	"subagent_followup",
+	// Removed app_* tools below: historical transcripts; app_inspect replaced them.
 	"app_open",
 	"app_open_tab",
 	"app_list_tabs",
@@ -275,6 +276,16 @@ export function looksLogLike(text: string) {
 	return matches >= Math.min(3, Math.ceil(lines.length / 3));
 }
 
+/** app_inspect extract_text results: a page description plus a string `text` field. */
+function extractedTextEnvelope(text: string) {
+	try {
+		const parsed = JSON.parse(text) as { text?: unknown; selector?: unknown; body?: unknown };
+		return typeof parsed?.text === "string" && typeof parsed?.selector === "string" && parsed?.body === undefined;
+	} catch {
+		return false;
+	}
+}
+
 function apiEnvelopeHasTextBody(text: string) {
 	try {
 		const parsed = JSON.parse(text) as {
@@ -340,7 +351,12 @@ export function resolvePolicy(
 		};
 	}
 
-	if (name === "app_api_request") {
+	if (name === "app_inspect" && !isError && extractedTextEnvelope(text)) {
+		return { class: "standard", method: "llm", threshold: thresholds.standard, reason: "extracted prose" };
+	}
+
+	// app_api_request: historical transcripts; app_inspect request results share its envelope.
+	if (name === "app_api_request" || name === "app_inspect") {
 		const textualBody = apiEnvelopeHasTextBody(text);
 		const deterministic = isError || (!textualBody && (looksStructured(text) || looksLogLike(text)));
 		return {
@@ -629,7 +645,7 @@ export function reducerFlavor(toolName: string) {
 	const name = normalizedToolName(toolName);
 	if (name === "bash" || /(?:^|_)(?:log|logs)(?:_|$)/.test(name)) return "tail" as const;
 	if (name === "web_search" || name === "kb_search") return "head" as const;
-	if (name.includes("evaluate") || name === "app_api_request") return "structured" as const;
+	if (name.includes("evaluate") || name === "app_api_request" || name === "app_inspect") return "structured" as const;
 	return "balanced" as const;
 }
 
