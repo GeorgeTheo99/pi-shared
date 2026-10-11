@@ -387,11 +387,10 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - defaults to 16K standard and 24K high-fidelity thresholds; exempts `memory_read`; deterministic reductions reserve every recognized non-2xx HTTP status and diff file header or keep the result raw when they cannot fit; retains a 3K target, 4K hard cap, and 40% minimum savings requirement
   - provides exact bounded `tool_result_recall` search/head/tail/line-range retrieval plus live `/tool-summary on|pause|off|status|threshold|reset` controls; see `extensions/tool-summary/README.md`
 - `extensions/memory` — machine-local, project-only memory:
-  - stores canonical JSON in `~/.pi/memory/projects/`
-  - injects active memories into the prompt as untrusted project context
-  - provides `memory_read` and `memory_write` tools plus `/memory [active|all|review|path|help]`
-  - memory hygiene happens during normal session work: read relevant memories before relying on prior state, write/update verified durable facts while evidence is fresh, and archive stale entries before finishing substantive work
-  - global memory is intentionally not implemented; store only evidence-backed durable project-specific facts and never secrets, global/user-wide preferences, transient task state, todos, guesses, or raw logs
+  - stores one curated Markdown file per repository in `~/.pi/memory/projects/`, limited to 12,000 characters (growth past the limit is refused)
+  - injects the file once per session (refreshed after compaction) as untrusted project context, together with the memory policy
+  - provides `memory_read` and `memory_write` (`set_section`, `replace`, optional `path` to target another repository) plus `/memory [path|help]`
+  - global memory is intentionally not implemented; store only durable facts that are costly to rediscover and not derivable from the repository, never secrets, task progress, logs, or guesses
 - `extensions/websearch` — local-search MCP-backed web tools:
   - `web_search` calls the MCP broker tool `web_search(query, num_results)`
   - `web_fetch` calls the MCP broker tool `web_fetch(url, max_chars)`

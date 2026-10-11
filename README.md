@@ -311,10 +311,11 @@ guarantee answers, or lock shared files.
 
 ### Project memory
 
-`memory_read`, `memory_write`, and `/memory` maintain machine-local facts for the
-current project, including review/archive operations. Memories enter context as
-untrusted references; there is no global or cross-machine memory service.
-Do not store secrets. [Memory storage and scope](extensions/memory/README.md).
+Each repository gets one curated, machine-local Markdown memory file (12,000
+characters at most), loaded once per session as untrusted context and edited
+with `memory_read`, `memory_write`, and `/memory`. There is no global or
+cross-machine memory service. Do not store secrets.
+[Memory storage and scope](extensions/memory/README.md).
 
 ### Fresh-session handoff
 

@@ -194,10 +194,14 @@ export async function withInterprocessLock<T>(
 }
 
 export async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
+	await atomicWriteText(filePath, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+export async function atomicWriteText(filePath: string, text: string): Promise<void> {
 	await fs.promises.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
 	const tmpPath = `${filePath}.tmp-${process.pid}-${crypto.randomUUID()}`;
 	try {
-		await fs.promises.writeFile(tmpPath, `${JSON.stringify(data, null, 2)}\n`, {
+		await fs.promises.writeFile(tmpPath, text, {
 			encoding: "utf8",
 			mode: 0o600,
 		});

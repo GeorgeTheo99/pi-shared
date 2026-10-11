@@ -149,16 +149,12 @@ test('priority tools: real schemas, outcomes, privacy projections and SDK codemo
       const actionable = await call('wait_for_jobs', { jobs: ['sub_question'], timeout: 2 });
       assert.equal(actionable.structuredContent.data.awaitingJobs, 1); assert.equal(actionable.structuredContent.data.jobSnapshots[0].status, 'awaiting_answer');
     });
-    await t.test('memory respects mode; KB and web search return selected bounded data', async () => {
-      const first = await call('memory_write', { action: 'add', text: 'Durable fixture fact', source: 'fixture test' });
-      const second = await call('memory_write', { action: 'add', text: 'Archived fixture fact', source: 'fixture test' });
-      await call('memory_write', { action: 'archive', id: second.details.memory.id });
-      const active = await call('memory_read', {});
-      assert.equal(active.details.memories.length, 2); assert.equal(active.structuredContent.data.memories.length, 1);
-      assert.equal(active.structuredContent.data.memories[0].id, first.details.memory.id);
-      assert.equal((await call('memory_read', { mode: 'all' })).structuredContent.data.memories.length, 2);
-      assert.equal((await call('memory_read', { mode: 'review' })).structuredContent.data.memories.length, 0);
-      assert.equal(active.structuredContent.data.project.root, undefined);
+    await t.test('memory returns the document; KB and web search return selected bounded data', async () => {
+      await call('memory_write', { action: 'set_section', section: 'Fixture', content: 'Durable fixture fact' });
+      const memory = await call('memory_read', {});
+      assert.match(memory.structuredContent.data.document, /## Fixture\n<!-- updated: [\d-]+ -->\nDurable fixture fact\n$/);
+      assert.equal(memory.structuredContent.data.limit, 12000);
+      assert.equal(memory.structuredContent.data.project.root, undefined); assert.equal(memory.structuredContent.data.path, undefined);
       const kb = await call('kb_search', { query: 'reliability' });
       assert.equal(kb.structuredContent.data.results[0].source_id, 'fixture'); assert.equal(kb.structuredContent.data.kb_root, undefined);
       assert.equal((await call('kb_search', { query: 'no-matching-phrase', mode: 'exact' })).structuredContent.data.count, 0);
@@ -200,7 +196,7 @@ test('priority tools: real schemas, outcomes, privacy projections and SDK codemo
         check((await tools.subagent_list({})).data.jobs.find(j => j.id === 'sub_fixture').status === 'failed', 'subagent list');
         const w = await tools.wait_for_jobs({jobs:[${JSON.stringify(commandId)}],timeout:2});
         check(w.data.met && w.data.failedJobs === 1, 'wait != job success');
-        check((await tools.memory_read({})).data.memories.length === 1, 'filtered memory');
+        check((await tools.memory_read({})).data.document.includes('Durable fixture fact'), 'memory document');
         check((await tools.kb_search({query:'reliability'})).data.results[0].source_id === 'fixture', 'KB object');
         check((await tools.web_search({query:'fixture',num_results:1})).data.results[0].url === 'https://example.com/', 'search object');
         check((await tools.web_search({query:'failure'})).status === 'error', 'search failure');

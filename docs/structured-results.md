@@ -35,7 +35,7 @@ convert exceptions, missing data or unknown states into successful empty results
 | `command_start`, `command_status`, `command_list`, `command_cancel` | Job lifecycle, readiness, exit and cleanup evidence; no command argv or environment |
 | `subagent_status`, `subagent_list` | Bounded job summaries, status results and clarification state; no raw child transcripts |
 | `wait_for_condition`, `wait_for_jobs`, `wait_for_ready` | Whether the wait condition was met, elapsed time and applicable job snapshots |
-| `memory_read` | Memories matching the requested mode and bounded project identity |
+| `memory_read` | The project memory document, its size and limit, and bounded project identity |
 | `kb_search` | Search results with source identifiers, citations and availability evidence |
 | `web_search` | Results and explicit search outcome; not private broker configuration |
 | `peer_sessions` | Bounded advisory peer metadata; not authentication or permission |
