@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { atomicWriteJson, withInterprocessLock } from "../_shared/file-lock.ts";
 import { structuredTool } from "../_shared/structured-result.ts";
 
@@ -106,8 +106,14 @@ function gitValue(cwd: string, args: string[]): string | undefined {
 	}
 }
 
+// Linked worktrees share the main checkout's memory; submodules keep their own.
+function gitRoot(cwd: string) {
+	const [commonDir, topLevel] = gitValue(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"])?.split("\n") ?? [];
+	return commonDir && basename(commonDir) === ".git" ? dirname(commonDir) : topLevel;
+}
+
 function detectProject(cwd: string): ProjectLocation {
-	const rootRaw = gitValue(cwd, ["rev-parse", "--show-toplevel"]);
+	const rootRaw = gitRoot(cwd);
 	const root = rootRaw ? realpathSafe(rootRaw) : realpathSafe(cwd);
 	const remote = gitValue(root, ["config", "--get", "remote.origin.url"]);
 	const id = sha256(`${root}\0${remote ?? ""}`).slice(0, 24);
@@ -234,6 +240,11 @@ function sanitizeStoredField(value: string | undefined, fieldName: string) {
 function looksSecretish(text: string) {
 	const secretPatterns = [
 		/\b(?:sk|pk|ghp|gho|ghu|github_pat|xox[baprs])-[-_a-z0-9]{12,}\b/i,
+		/\b(?:gh[oprsu]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|[rs]k_(?:live|test)_[A-Za-z0-9]{16,})\b/,
+		/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,
+		/\beyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}/,
+		/\bBearer\s+[\w.~+/-]{20,}/i,
+		/\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]*:[^\s/@]+@/i,
 		/\b(?:api[_-]?key|token|secret|password|credential)\b\s*[:=]/i,
 		/-----BEGIN [A-Z ]*PRIVATE KEY-----/,
 	];

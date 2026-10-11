@@ -10,7 +10,7 @@ Canonical storage is JSON under the native Pi folder:
 ~/.pi/memory/projects/<project-name>-<project-id>.json
 ```
 
-Project identity is derived from the git repo root plus `remote.origin.url` when available, falling back to the canonical current working directory for non-git folders.
+Project identity is derived from the git repo root plus `remote.origin.url` when available, falling back to the canonical current working directory for non-git folders. Linked worktrees use the main checkout's root, so they share its memory; submodules keep their own.
 
 No global memory is implemented. Do not store user-wide preferences here.
 

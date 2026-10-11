@@ -223,3 +223,28 @@ test("concurrent writers in separate processes do not lose updates", { timeout: 
 	assert.equal(texts.length, 1 + writers * writesPerProcess);
 	assert.equal(new Set(texts).size, texts.length);
 });
+
+test("memory_write rejects common credential formats", async () => {
+	const jwtPart = "eyJhbGciOiJIUzI1NiJ9";
+	for (const secret of [
+		`ghp_${"a".repeat(36)}`,
+		`github_pat_${"A1".repeat(20)}`,
+		"AKIAIOSFODNN7EXAMPLE",
+		`${jwtPart}.${jwtPart.replace("hbGci", "zdWIi")}.signature_abc123`,
+		`Authorization: Bearer ${"x".repeat(32)}`,
+		"postgres://app:hunter2@db.internal/app",
+	]) {
+		await assert.rejects(call("memory_write", { action: "add", text: `uses ${secret}` }), /looks like a secret/, secret);
+	}
+	await call("memory_write", { action: "add", text: "Token is stored in the Keychain item pi-gh; see https://example.com/docs" });
+});
+
+test("linked worktrees share the main checkout's memory", async () => {
+	const run = promisify(execFile);
+	const repo = newProject();
+	const worktree = join(newProject(), "wt");
+	await run("git", ["-C", repo, "init", "-q"]);
+	await run("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+	await run("git", ["-C", repo, "worktree", "add", "-q", "--detach", worktree]);
+	assert.equal(await storePathFor(worktree), await storePathFor(join(repo, ".")));
+});
