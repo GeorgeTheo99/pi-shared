@@ -42,9 +42,9 @@ options is static; it does not start servers or sign in. See the
 [complete backend CLI and rollback contract](https://github.com/GeorgeTheo99/pi-setup/blob/main/docs/mcp.md).
 
 Each profile is migrated separately. From Homebrew pi-shared **0.1.33**,
-`pi-shared update` migrates its saved profile automatically when the plan is
-unambiguous (an adapter without servers changes settings only) and otherwise prints
-why it left the profile unchanged. It never removes packages or changes
+`pi-shared update` migrates its saved profile automatically (0.1.34+: it rebuilds the
+adapter's merged configuration including the profile `mcp.json` layer and `imports`,
+converts each server independently, and lists any server it leaves out). It never removes packages or changes
 credentials. Other profiles still use `/setup mcp`. Existing
 native files, unsupported policy, other conflicting config layers, and untranslatable
 filters require explicit resolution; never discard them to make a migration pass.
