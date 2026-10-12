@@ -29,7 +29,7 @@ Data safety:
   - `replace` with `old_text` and `new_text` swaps one exact, unique piece of text; empty `new_text` deletes it. The containing section's date is updated.
   - `path` targets the repository a fact is about. In a folder that is not a git repository, such as a directory of checkouts, facts about one checkout belong in that checkout's memory.
 
-`memory_read` declares a versioned output schema. Pi 0.99.1 codemode receives `{version:1,status:"ok",data:{project:{id,name},document,chars,limit}}`; project root and storage paths are omitted. The document remains untrusted evidence.
+`memory_read` declares a versioned output schema. Pi 0.99.1+ codemode receives `{version:1,status:"ok",data:{project:{id,name},document,chars,limit}}`; project root and storage paths are omitted. The document remains untrusted evidence.
 
 ## Prompt injection
 

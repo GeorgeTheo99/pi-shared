@@ -133,7 +133,7 @@ deletes existing reports or creates project output directories.
 
 ## Codemode result contract
 
-`verify` declares `outputSchema`. Pi 0.99.1 codemode receives a direct
+`verify` declares `outputSchema`. Pi 0.99.1+ codemode receives a direct
 `{version:1,status:"ok"|"error"|"aborted",data:{action,...}}` object.
 List data contains the config digest and declared check summaries. Run/result
 data contains the digest, result/check IDs, verdict, reasons, process outcome,

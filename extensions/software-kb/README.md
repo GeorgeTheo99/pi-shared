@@ -18,7 +18,7 @@ Commands `/kb-search` and `/kb-sources` ask the agent to run the matching tools.
 
 ## Structured search
 
-On Pi 0.99.1, `kb_search` declares `outputSchema` and codemode receives
+On Pi 0.99.1+, `kb_search` declares `outputSchema` and codemode receives
 `{version:1,status:"ok",data:{query,mode,count,private_index,results:[...]}}`.
 Optional warning/source filter fields and result citations, snippets, scores,
 content kind, access/ingest/license caveats are included. Citation paths are

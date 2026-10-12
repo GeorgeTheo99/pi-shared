@@ -285,6 +285,18 @@ test("OpenAI Responses and Google serialize every real tool with strict/fallback
 	assert.equal(google.resolveGoogleFunctionCallingMode(definitions, undefined, false), undefined);
 });
 
+// Mirrors Pi 1.x anthropic-messages ANTHROPIC_STRICT_UNSUPPORTED_KEYWORDS (structured-outputs limits).
+const anthropicUnsupported = new Set(["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "maxItems", "uniqueItems", "minContains", "maxContains", "minProperties", "maxProperties"]);
+const anthropicFormats = new Set(["date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"]);
+function anthropicStrictCompatible(node: any): boolean {
+	if (Array.isArray(node)) return node.every(anthropicStrictCompatible);
+	if (!node || typeof node !== "object") return true;
+	return Object.entries(node).every(([key, value]) => key === "properties"
+		? Object.values(value as object).every(anthropicStrictCompatible)
+		: !(anthropicUnsupported.has(key) || (key === "minItems" && value !== 0 && value !== 1)
+			|| (key === "format" && (typeof value !== "string" || !anthropicFormats.has(value)))) && anthropicStrictCompatible(value));
+}
+
 test("Anthropic public stream serializes tools before any network call", async () => {
 	// Anthropic's converter is private. Capture its actual stream payload using
 	// public onPayload, then abort there; injected client makes networking impossible.
@@ -306,7 +318,11 @@ test("Anthropic public stream serializes tools before any network call", async (
 		assert.deepEqual(payload.tools.map((tool: any) => tool.name), [...tools.keys()]);
 		for (const serialized of payload.tools) {
 			const tool = tools.get(serialized.name);
-			const isStrict = supported && !fallbackTools.has(tool.name);
+			// Pi 1.x resolves Anthropic strictness itself: schemas using keywords
+			// Anthropic strict mode rejects (numeric/array bounds) fall back to non-strict.
+			const anthropicStrict = strict.resolveJsonSchemaStrictSampling.length < 3
+				|| anthropicStrictCompatible(tool.parameters);
+			const isStrict = supported && !fallbackTools.has(tool.name) && anthropicStrict;
 			assert.equal(serialized.strict, isStrict ? true : undefined, tool.name);
 			// Installed Anthropic fallback intentionally sends only these root
 			// keys. Closed-object enforcement still happens locally for every call.

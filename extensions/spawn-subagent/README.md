@@ -43,7 +43,7 @@ subagent_followup({jobId:"sub_…", message:"Then run focused tests"})
 
 ## Structured inspection results
 
-`subagent_status` and `subagent_list` declare `outputSchema`. Pi 0.99.1 codemode
+`subagent_status` and `subagent_list` declare `outputSchema`. Pi 0.99.1+ codemode
 receives `{version:1,status:"ok",data:{job}}` or `data:{jobs:[...]}` directly.
 List entries contain job ID, lifecycle, mode, label, timestamps and interactive
 summary fields. Status additionally exposes the bounded sanitized error/current

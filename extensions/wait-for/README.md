@@ -124,7 +124,7 @@ cleanup grace, and retain at most 1 MiB stdout instead of unbounded capture.
 
 ## Structured wait results
 
-All three wait tools declare `outputSchema`. Pi 0.99.1 codemode receives
+All three wait tools declare `outputSchema`. Pi 0.99.1+ codemode receives
 `{version:1,status:"ok"|"aborted",data:{met,aborted,timedOut,checks,elapsedMs,jobMode,jobSnapshots,...}}`.
 Job snapshots are captured at the decisive check, not reconstructed by parsing
 text or rereading later. They include IDs and normalized lifecycle status, plus

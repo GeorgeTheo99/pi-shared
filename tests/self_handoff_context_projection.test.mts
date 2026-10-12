@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -133,7 +133,10 @@ test("handoff and summary status use canonical context, with stock old-SDK fallb
 	}
 
 	await t.test(`stock ${manifest.version}: handoff generation dispatches through a registered provider`, async () => {
-		const ai = await import(pathToFileURL(join(sdkDir, "node_modules/@earendil-works/pi-ai/dist/index.js")).href);
+		// Pi <=0.99 shrinkwraps pi-ai under the SDK; 1.x hoists it beside the SDK.
+		const aiEntry = [join(sdkDir, "node_modules/@earendil-works/pi-ai/dist/index.js"), join(sdkDir, "../pi-ai/dist/index.js")].find(file => existsSync(file));
+		assert.ok(aiEntry, "installed SDK dependency missing: @earendil-works/pi-ai");
+		const ai = await import(pathToFileURL(aiEntry).href);
 		const runtime = await sdk.ModelRuntime.create({ credentials: new ai.InMemoryCredentialStore(),
 			modelsPath: join(directory, "models.json"), modelsStorePath: join(directory, "models-store.json"), allowModelNetwork: false });
 		runtime.registerProvider("claude-bridge", {

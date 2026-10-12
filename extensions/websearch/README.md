@@ -120,7 +120,7 @@ When supplied by the broker, `web_search` preserves `status`, `backend`, `attemp
 
 ## Structured search results
 
-`web_search` declares `outputSchema`; Pi 0.99.1 codemode receives
+`web_search` declares `outputSchema`; Pi 0.99.1+ codemode receives
 `{version:1,status:"ok"|"error",data:{query,text,results:[{rank,title,url,snippet}],status?}}`
 without parsing JSON strings. The optional nested status is the broker's status;
 the outer status is the tool outcome. Result count respects `num_results` and

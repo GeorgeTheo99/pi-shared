@@ -18,13 +18,13 @@
         "./tools/typecheck/node_modules/@earendil-works/pi-coding-agent"
       ],
       "@earendil-works/pi-ai/compat": [
-        "./tools/typecheck/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.d.ts"
+        "./tools/typecheck/node_modules/@earendil-works/pi-ai/dist/compat.d.ts"
       ],
       "@earendil-works/*": [
-        "./tools/typecheck/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/*"
+        "./tools/typecheck/node_modules/@earendil-works/*"
       ],
       "typebox": [
-        "./tools/typecheck/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox"
+        "./tools/typecheck/node_modules/typebox"
       ]
     }
   },

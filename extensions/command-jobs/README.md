@@ -83,7 +83,7 @@ wait modes fail promptly. Aborting a wait never cancels its jobs.
 
 ## Structured results
 
-On Pi 0.99.1, `command_start`, `command_status`, `command_cancel` and `command_list`
+On Pi 0.99.1+, `command_start`, `command_status`, `command_cancel` and `command_list`
 declare `outputSchema` and return `{version:1,status:"ok",data:{job}}` or
 `data:{jobs:[...]}` to codemode.
 The job contract includes ID, label, lifecycle/timestamps, exit code/signal,
