@@ -47,6 +47,8 @@ type WorkPlanDetails = {
 };
 
 const CUSTOM_TYPE = "pi-work-plan-state";
+// Owned by extensions/goal; read here only to stay out of active autopilot runs.
+const GOAL_STATE_TYPE = "pi-goal-state";
 const MAX_ITEMS = 40;
 const MAX_WIDGET_ITEMS = 12;
 const BLOCKED_ARROW = " › blocked by ";
@@ -56,6 +58,12 @@ const BLOCKED_ARROW = " › blocked by ";
 const KEEP_RECENT_DONE = 3;
 
 let state: WorkPlanState = emptyState();
+// Open-item reminders are in-memory: at worst one extra reminder after reload.
+let lastStopReason: string | undefined;
+// Plan signature the model was last shown open items for; never remind twice for it.
+let notifiedSignature: string | undefined;
+let reconcileRunPending = false;
+let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
 
 function now() {
 	return Date.now();
@@ -87,6 +95,16 @@ function activeItem() {
 	return state.activeId === undefined ? undefined : findItem(state.activeId);
 }
 
+// Pending work, including items waiting on other plan items. Items blocked
+// without plan dependencies wait on something external and are left alone.
+function openItems() {
+	return state.items.filter((item) => item.status !== "done" && (item.status !== "blocked" || item.blockedBy.length > 0));
+}
+
+function planSignature() {
+	return JSON.stringify(state.items.map(({ id, status, title }) => [id, status, title]));
+}
+
 function effectiveActiveMs(item: PlanItem) {
 	const base = item.activeMs ?? 0;
 	if (item.runStartedAt) return base + Math.max(0, now() - item.runStartedAt);
@@ -110,12 +128,12 @@ function formatDuration(ms: number) {
 	return `${secs}s`;
 }
 
-function itemLine(item: PlanItem, theme: Theme | undefined, width: number) {
+function itemLine(item: PlanItem, theme: Theme | undefined, width: number, showId = false) {
 	const isActive = state.activeId === item.id || item.status === "active";
 	const icon = iconFor(item.status, isActive);
 	const blocked = item.blockedBy.length ? `${BLOCKED_ARROW}${item.blockedBy.map((id) => `#${id}`).join(", ")}` : "";
 	const note = item.note ? ` — ${item.note}` : "";
-	const raw = `${icon} ${item.title}${blocked}${note}`;
+	const raw = `${icon} ${showId ? `#${item.id} ` : ""}${item.title}${blocked}${note}`;
 	if (!theme) return truncateToWidth(raw, width);
 	const color = item.status === "done" ? "success" : item.status === "blocked" ? "warning" : isActive ? "accent" : "text";
 	const mutedTail = blocked || note ? theme.fg("dim", `${blocked}${note}`) : "";
@@ -160,15 +178,40 @@ function summaryLine(count: number, theme: Theme | undefined, width: number) {
 	return truncateToWidth(theme.fg("dim", raw), width);
 }
 
-function renderLines(theme: Theme | undefined, width: number, items?: PlanItem[]) {
+function renderLines(theme: Theme | undefined, width: number, items?: PlanItem[], showIds = false) {
 	return renderEntries(items).map((entry) =>
-		entry.kind === "summary" ? summaryLine(entry.count, theme, width) : itemLine(entry.item, theme, width),
+		entry.kind === "summary" ? summaryLine(entry.count, theme, width) : itemLine(entry.item, theme, width, showIds),
 	);
 }
 
+// Model-facing text carries ids so follow-up calls can address items directly.
 function formatPlainPlan() {
 	if (state.items.length === 0) return "No work plan.";
-	return renderLines(undefined, 160).join("\n");
+	return renderLines(undefined, 160, undefined, true).join("\n");
+}
+
+function formatOpenItems(open: PlanItem[]) {
+	return open.map((item) => itemLine(item, undefined, 160, true)).join("\n");
+}
+
+// True while the reconcile check is still the newest input, i.e. no user
+// steer or extension follow-up has joined the reconcile run since.
+function reconcileIsLatestInput(ctx: ExtensionContext) {
+	const branch = ctx.sessionManager.getBranch();
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
+		if (entry.type === "custom_message") return entry.customType === "work-plan-reconcile";
+		if (entry.type === "message" && entry.message.role === "user") return false;
+	}
+	return false;
+}
+
+function goalActive(ctx: ExtensionContext) {
+	let status: unknown;
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type === "custom" && entry.customType === GOAL_STATE_TYPE) status = (entry.data as { status?: unknown } | null)?.status;
+	}
+	return status === "active";
 }
 
 function flushRun(item: PlanItem) {
@@ -304,6 +347,10 @@ const PlanItemInput = Type.Object({
 export default function workPlanExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		restore(ctx);
+		lastStopReason = undefined;
+		notifiedSignature = undefined;
+		reconcileRunPending = false;
+		clearTimeout(reconcileTimer);
 		setUi(ctx);
 	});
 
@@ -317,8 +364,22 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 		// initial session_start. Re-read transferred state before the first prompt.
 		restore(ctx);
 		setUi(ctx);
+		// The system prompt stays static (prompt-cache friendly); open items ride in
+		// a hidden message, sent only when the model has not seen this plan state.
+		const open = openItems();
+		const signature = planSignature();
+		let message;
+		if (open.length && signature !== notifiedSignature && !selfHandoffPending(ctx)) {
+			notifiedSignature = signature;
+			message = {
+				customType: "work-plan-open",
+				content: `The work plan has ${open.length} open item(s):\n${formatOpenItems(open)}\nClose any that are already finished (work_plan complete with ids). If this request starts unrelated work, replace the plan with set or clear it.`,
+				display: false,
+			};
+		}
 		return {
-			systemPrompt: `${event.systemPrompt}\n\nWork planning protocol:\n- For non-trivial implementation, refactor, debugging, or multi-step UI work, maintain a visible work plan with the work_plan tool.\n- Create or update the plan before doing substantial work; keep exactly one active item when possible.\n- Mark dependencies with blockedBy so blocked items render as \"blocked by #N\".\n- Update the plan as soon as a task becomes active, done, or blocked.\n- Older done items are condensed automatically into a single \"✔ N earlier tasks done\" line; full state is preserved on disk, so you do not need to delete or rewrite finished items to keep the plan readable.\n- Do not use work_plan for tiny one-shot answers or trivial edits.`,
+			message,
+			systemPrompt: `${event.systemPrompt}\n\nWork planning protocol:\n- For non-trivial implementation, refactor, debugging, or multi-step UI work, maintain a visible work plan with the work_plan tool.\n- Create or update the plan before doing substantial work; keep exactly one active item when possible.\n- Mark dependencies with blockedBy so blocked items render as \"blocked by #N\"; completing a blocker unblocks its dependents.\n- Update the plan as soon as a task becomes active, done, or blocked. complete accepts ids to close several items in one call and defaults to the active item.\n- Before your final answer, make sure every finished item is marked done. Closing finished items is expected bookkeeping, not a stall by itself.\n- Older done items are condensed automatically into a single \"✔ N earlier tasks done\" line; full state is preserved on disk, so you do not need to delete or rewrite finished items to keep the plan readable.\n- Do not use work_plan for tiny one-shot answers or trivial edits.`,
 		};
 	});
 
@@ -326,6 +387,7 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 	// represents agent work spent on the active task, not wall-clock time since
 	// the task was first activated.
 	pi.on("agent_start", async (_event, ctx) => {
+		lastStopReason = undefined;
 		if (selfHandoffPending(ctx)) return;
 		const active = activeItem();
 		if (active && !active.runStartedAt) {
@@ -334,7 +396,9 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("agent_end", async (_event, ctx) => {
+	pi.on("agent_end", async (event, ctx) => {
+		const last = [...(event.messages ?? [])].reverse().find((message) => message.role === "assistant");
+		lastStopReason = last && "stopReason" in last ? last.stopReason : undefined;
 		if (selfHandoffPending(ctx)) return;
 		let changed = false;
 		for (const item of state.items) {
@@ -349,6 +413,49 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 			save(pi);
 			setUi(ctx);
 		}
+	});
+
+	// Once Pi hands control back to the user, give the model one chance to close
+	// items it finished but forgot to mark done: at most once per user-started
+	// run, and never for a plan state the model was already shown.
+	pi.on("agent_settled", async (_event, ctx) => {
+		if (reconcileRunPending) {
+			// The reconcile run itself settled; its outcome is what the model last saw.
+			reconcileRunPending = false;
+			notifiedSignature = planSignature();
+			return;
+		}
+		if (lastStopReason !== "stop") return;
+		// Print/json runs exit after the prompt, and delegated children report through their parent.
+		if (!ctx.hasUI || Number(process.env.PI_SUBAGENT_DEPTH ?? 0) !== 0) return;
+		// Defer like goal and job-wake so other agent_settled handlers observe an idle session.
+		clearTimeout(reconcileTimer);
+		reconcileTimer = setTimeout(() => {
+			reconcileTimer = undefined;
+			if (!ctx.isIdle() || selfHandoffPending(ctx) || goalActive(ctx)) return;
+			const open = openItems();
+			const signature = planSignature();
+			if (!open.length || signature === notifiedSignature) return;
+			notifiedSignature = signature;
+			reconcileRunPending = true;
+			try {
+				pi.sendMessage(
+					{
+						customType: "work-plan-reconcile",
+						content: `Work plan check: the run ended with ${open.length} open item(s):\n${formatOpenItems(open)}\nIf any are finished, close them now with work_plan complete (ids); that ends this check. If work genuinely remains, leave them open and reply in one line without repeating your previous answer.`,
+						display: true,
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+			} catch {
+				// The session shut down between the guard and the send.
+				reconcileRunPending = false;
+			}
+		}, 0);
+	});
+
+	pi.on("session_shutdown", () => {
+		clearTimeout(reconcileTimer);
 	});
 
 	pi.registerCommand("plan", {
@@ -385,7 +492,7 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 			"For non-trivial implementation, refactor, debugging, or UI work, create a work_plan before substantial work.",
 			"Keep exactly one active task when possible and update it as work progresses.",
 			"Use blockedBy to show dependencies, e.g. item #7 blocked by #2 and #4.",
-			"Mark tasks done only after concrete verification for that task.",
+			"Mark tasks done only after concrete verification for that task, and close them before your final answer; complete accepts ids to close several at once.",
 			"Do not use work_plan for tiny one-shot answers or trivial edits.",
 		],
 		parameters: Type.Object({
@@ -401,7 +508,8 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 				Type.Literal("list"),
 			], { description: "Plan action" }),
 			items: Type.Optional(Type.Array(PlanItemInput, { description: "Items for action=set" })),
-			id: Type.Optional(Type.Number({ description: "Task id for update/activate/complete/block/unblock" })),
+			id: Type.Optional(Type.Number({ description: "Task id for update/activate/complete/block/unblock; complete defaults to the active item" })),
+			ids: Type.Optional(Type.Array(Type.Number(), { description: "Task ids for complete, to close several items in one call" })),
 			title: Type.Optional(Type.String({ description: "Task title for add/update" })),
 			status: Type.Optional(Type.Union([Type.Literal("todo"), Type.Literal("active"), Type.Literal("done"), Type.Literal("blocked")])),
 			blockedBy: Type.Optional(Type.Array(Type.Number(), { description: "Task ids this item is blocked by" })),
@@ -484,16 +592,31 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 					break;
 				}
 				case "complete": {
-					const item = findItem(params.id);
-					if (!item) return result(action, "valid id is required for complete");
-					flushRun(item);
-					item.status = "done";
-					item.completedAt = now();
-					item.updatedAt = now();
-					if (params.note !== undefined) item.note = params.note.trim() || undefined;
-					if (state.activeId === item.id) state.activeId = undefined;
-					const next = state.items.find((candidate) => candidate.status === "todo" && candidate.blockedBy.length === 0);
-					if (next) setActive(next.id, { agentStreaming: !ctx.isIdle() });
+					const ids = params.ids?.length ? params.ids : [params.id ?? state.activeId];
+					const items = ids.map(findItem);
+					if (items.some((item) => !item)) return result(action, "valid id, ids, or an active item is required for complete");
+					const timestamp = now();
+					const doneIds = new Set<number>();
+					for (const item of items as PlanItem[]) {
+						flushRun(item);
+						item.status = "done";
+						item.completedAt = timestamp;
+						item.updatedAt = timestamp;
+						if (params.note !== undefined) item.note = params.note.trim() || undefined;
+						if (state.activeId === item.id) state.activeId = undefined;
+						doneIds.add(item.id);
+					}
+					// Finished blockers release their dependents.
+					for (const item of state.items) {
+						if (!item.blockedBy.some((id) => doneIds.has(id))) continue;
+						item.blockedBy = item.blockedBy.filter((id) => !doneIds.has(id));
+						if (item.status === "blocked" && !item.blockedBy.length) item.status = "todo";
+						item.updatedAt = timestamp;
+					}
+					if (state.activeId === undefined) {
+						const next = state.items.find((candidate) => candidate.status === "todo" && candidate.blockedBy.length === 0);
+						if (next) setActive(next.id, { agentStreaming: !ctx.isIdle() });
+					}
 					break;
 				}
 				case "block": {
@@ -526,12 +649,16 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 
 			save(pi);
 			setUi(ctx);
-			return result(action);
+			// A plan-only reply to the reconcile check ends that run without another
+			// LLM call: runs started by sendMessage drop the before_agent_start system
+			// prompt after their first call, so a second call would miss the cache.
+			return { ...result(action), terminate: reconcileRunPending && reconcileIsLatestInput(ctx) };
 		},
 
 		renderCall(args, theme) {
 			const bits = [theme.fg("toolTitle", theme.bold("work_plan ")), theme.fg("muted", args.action ?? "")];
-			if (args.id !== undefined) bits.push(theme.fg("accent", ` #${args.id}`));
+			if (args.ids?.length) bits.push(theme.fg("accent", ` ${args.ids.map((id: number) => `#${id}`).join(", ")}`));
+			else if (args.id !== undefined) bits.push(theme.fg("accent", ` #${args.id}`));
 			if (args.title) bits.push(theme.fg("dim", ` ${args.title}`));
 			return new Text(bits.join(""), 0, 0);
 		},

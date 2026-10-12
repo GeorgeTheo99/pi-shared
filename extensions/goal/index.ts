@@ -256,7 +256,7 @@ Autopilot rules for this turn:
 - Do not call update_goal with status "blocked" unless you have already attempted at least one concrete fix this turn (read logs, edit code/config, retry, change approach) and the blocker is genuinely outside what you can resolve (missing credentials you cannot read, an external decision the user must make, an irreversible action they have not authorized).
 - Do not end the turn on a "status update" summary. End-of-turn output should be at most one or two lines unless you are calling update_goal complete/blocked or the budget is exhausted. The progress log and work_plan are the durable record.
 - Banned end-of-turn patterns: "Next step: I should ...", "What remains: ...", "Recommended next step: ...", "I'll now ..." without then doing it, "Let me know if you want me to ...". If you would write any of those, instead just take that action with a tool call right now and let the work_plan/update_goal log record it.
-- A turn whose only tool calls are work_plan, update_goal, or ask_user (i.e. bookkeeping with no real read/edit/bash/etc. action) does not count as forward progress and will be re-prompted as a stall.
+- A turn that uses work_plan, update_goal, or ask_user instead of real read/edit/bash/etc. action does not count as forward progress and will be re-prompted as a stall. Closing finished work_plan items is expected bookkeeping, not a stall by itself.
 - Treat the goal itself as standing authorization for routine, reversible steps in service of it: reading state, editing code, fixing imports/configs, re-running failed jobs, redeploying after a fix, restarting endpoints, retrying with new parameters, re-querying APIs, etc.
 - Still pause (update_goal blocked) for: destructive/irreversible actions not implied by the goal, sending external messages, purchases, pushing/merging code unless the goal is exactly that, or credentialed actions on systems the user has not approved.
 
@@ -267,7 +267,7 @@ Work loop for this turn:
 4. When the work_plan has genuinely independent investigation paths that can proceed without duplicating discovery, use subagent_parallel with focused tasks.
 5. Delegate only when an isolation, parallelism, or specialist-value gate clearly applies. Keep routine linear work in the parent; use a foreground single child only when its result is a prerequisite and its value outweighs cold context discovery. Default to one release-gate reviewer, and repeat review only after material findings or material changes.
 6. For long-running background delegation, continue substantive independent parent work first; call wait_for_jobs with jobs and timeout once only when the child result becomes a dependency, then fetch subagent_status once. Ask subagents for structured outputs with files inspected, key findings, recommended edit points, verification commands, and risks.
-7. Update work_plan if the structure of remaining work changed.
+7. Update work_plan: close items finished this turn, and restructure it if the remaining work changed.
 8. Call update_goal with status "active" and a one-line progress note (with evidence when meaningful) only if the turn produced a real state change worth logging. Do not log no-op turns.
 
 For non-trivial implementation, refactor, debugging, or multi-step UI work inside this goal, maintain a visible checklist with the work_plan tool:
