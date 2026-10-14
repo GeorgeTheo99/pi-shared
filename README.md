@@ -488,7 +488,8 @@ upgrade. Changes can restart selected services and are not rolled back as a unit
 
 `pi-shared status` checks selected components, including trusted extension imports
 and applicable local-service probes. It is not an inference or browser-execution
-test; an external gateway's client configuration is checked offline. Run `/reload`
+test; an external gateway's client configuration is checked offline, then one
+authenticated catalog read warns about a rejected key or stale catalog. Run `/reload`
 after resource-only changes; restart Pi after runtime/Node changes. Legacy shell
 launcher migrations may also require a new shell.
 

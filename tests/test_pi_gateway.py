@@ -396,3 +396,48 @@ def test_child_stderr_is_not_forwarded(monkeypatch):
     with pytest.raises(ValueError) as error:
         gateway.discover("https://gateway.example.com", "/safe/key", False)
     assert "private-test-token" not in str(error.value)
+
+
+def test_probe_reports_ok_drift_auth_and_unreachable_without_writes(machine, server):
+    assert invoke(machine, server).returncode == 0
+    before = (machine["cli"].read_bytes(), machine["models"].read_bytes())
+    result = invoke(machine, server, "probe")
+    assert result.returncode == 0, result.stderr
+    assert "local catalog matches 2 available models" in result.stdout
+
+    server["body"] = copy.deepcopy(CATALOG)
+    server["body"]["data"][1]["id"] = "org/new-model"
+    result = invoke(machine, server, "probe")
+    assert result.returncode == gateway.DRIFT
+    assert "1 new on gateway: org/new-model" in result.stdout
+    assert "1 no longer available: vision" in result.stdout
+
+    server.update(status=401, body=b"SECRET server detail")
+    result = invoke(machine, server, "probe")
+    assert result.returncode == gateway.AUTH_REJECTED
+    assert "rejected the client key" in result.stderr
+    assert "SECRET" not in result.stdout + result.stderr
+    assert "private-test-token" not in result.stdout + result.stderr
+
+    server["url"] = "http://127.0.0.1:9"  # nothing listens on discard
+    result = invoke(machine, server, "probe")
+    assert result.returncode == 1  # endpoint differs from the saved connection
+    assert (machine["cli"].read_bytes(), machine["models"].read_bytes()) == before
+
+
+def test_probe_unreachable_and_connect_auth_hint(machine, server, monkeypatch):
+    assert invoke(machine, server).returncode == 0
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a[0], gateway.UNREACHABLE))
+    with pytest.raises(gateway.GatewayError) as error:
+        gateway.discover(server["url"], str(machine["key"]), True)
+    assert error.value.code == gateway.UNREACHABLE
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a[0], gateway.AUTH_REJECTED))
+    with pytest.raises(gateway.GatewayError, match="pi-gateway connect") as error:
+        gateway.discover(server["url"], str(machine["key"]), True)
+    assert error.value.code == gateway.AUTH_REJECTED
+
+
+def test_probe_requires_saved_connection(machine, server):
+    result = invoke(machine, server, "probe")
+    assert result.returncode == 1
+    assert server["requests"] == []

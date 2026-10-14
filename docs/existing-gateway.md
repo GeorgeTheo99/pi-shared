@@ -103,10 +103,20 @@ does not require regenerating model files (coordinate server rotation separately
 ## Refresh, updates, and checks
 
 `pi-shared update` updates this Mac's installed components and preserves the
-remote connection. It does not update/restart the server or fetch a new catalog.
-`pi-shared status` checks local artifacts and credential-file safety **offline**;
-it does not prove server reachability, current authorization, or inference.
-Likewise, `pi --launcher-refresh` only regenerates from the saved local catalog.
+remote connection. It does not update/restart the server or rewrite the catalog.
+`pi-shared update` and `pi-shared status` check local artifacts and credential-file
+safety offline, then run `pi-gateway probe`: one authenticated catalog read with
+no writes and no inference. It reports one of:
+
+| Exit | Meaning | Fix |
+|---|---|---|
+| `0` | Key accepted; local catalog matches | — |
+| `3` | Key accepted; gateway models were added/removed | Rerun `pi-gateway connect` |
+| `4` | Gateway rejected the key (HTTP 401/403), e.g. rotated or retired | Write a new consumer key into the key file, then `pi-gateway connect` |
+| `5` | Gateway unreachable (TLS, Tailscale, endpoint) | Check connectivity |
+
+Status exits nonzero on `4`; update only warns. `pi --launcher-refresh` still
+regenerates from the saved local catalog only.
 
 For an explicit remote catalog refresh, rerun the existing-gateway setup with the
 same options, or use the installed client helper:
@@ -119,7 +129,8 @@ pi-gateway connect \
 ```
 
 Use the same `--allow-private-http` opt-in for private HTTP. Replace `connect`
-with `check` for an offline check against that exact endpoint/key-file reference.
+with `check` for an offline check against that exact endpoint/key-file reference,
+or with `probe` for the read-only authenticated check above.
 If you customized launcher output, use that path instead.
 
 The helper requires a managed JSON launcher prepared by setup. It preserves

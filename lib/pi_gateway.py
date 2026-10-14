@@ -27,6 +27,14 @@ PRIVATE_NETWORKS = tuple(ipaddress.ip_network(net) for net in (
     "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
     "100.64.0.0/10", "::1/128", "fc00::/7",
 ))
+# probe exit codes; argparse owns 2 for usage errors.
+DRIFT, AUTH_REJECTED, UNREACHABLE = 3, 4, 5
+
+
+class GatewayError(ValueError):
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code
 
 
 def gateway_url(value, allow_private_http=False):
@@ -113,9 +121,12 @@ def fetch_catalog(url, key_file):
             raw = response.read(LIMIT + 1)
     except urllib.error.HTTPError as exc:
         # Never print bodies, URLs or headers supplied by an untrusted endpoint.
+        if exc.code in (401, 403):
+            raise GatewayError(f"Gateway catalog HTTP {exc.code}", AUTH_REJECTED) from None
         raise ValueError(f"Gateway catalog HTTP {exc.code}; check client auth and /v1/models/canonical support") from None
     except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
-        raise ValueError("Gateway discovery failed; check TLS, Tailscale connectivity and endpoint") from None
+        raise GatewayError("Gateway discovery failed; check TLS, Tailscale connectivity and endpoint",
+                           UNREACHABLE) from None
     if len(raw) > LIMIT:
         raise ValueError("Gateway catalog exceeds 1 MiB")
     try:
@@ -134,7 +145,14 @@ def discover(url, key_file, allow_private_http):
     try:
         result = subprocess.run(args, capture_output=True, timeout=20, check=False)
     except subprocess.TimeoutExpired:
-        raise ValueError("Gateway discovery exceeded the 20-second deadline") from None
+        raise GatewayError("Gateway discovery exceeded the 20-second deadline", UNREACHABLE) from None
+    # Exit codes are chosen by our own child, so they are safe to interpret.
+    if result.returncode == AUTH_REJECTED:
+        raise GatewayError("Gateway rejected the client key (HTTP 401/403); it was likely rotated or retired. "
+                           "Write a new consumer key from the gateway operator into the mode-0600 key file, "
+                           "then rerun pi-gateway connect to refresh the catalog", AUTH_REJECTED)
+    if result.returncode == UNREACHABLE:
+        raise GatewayError("Gateway unreachable; check TLS, Tailscale connectivity and endpoint", UNREACHABLE)
     if result.returncode:
         # Never relay child stderr: unexpected HTTP/parser tracebacks can echo
         # attacker-controlled response bytes, including the request credential.
@@ -239,7 +257,7 @@ def connect(args):
     print(f"Configured {len(aliases)} remote model routes. Catalog/auth read succeeded; inference was not tested.")
 
 
-def check(args):
+def saved_connection(args):
     url = gateway_url(args.url, args.allow_private_http)
     read_key(args.key_file)
     cli, config, values = configuration(args.cli_out)
@@ -248,19 +266,44 @@ def check(args):
             or values.get("--aliases") != str(aliases_path)
             or not any(route["gateway"] for route in config["routes"].values())):
         raise ValueError("Saved gateway connection does not match the managed launcher")
+    return url, aliases_path
+
+
+def check(args):
+    saved_connection(args)
     print("Remote gateway configuration valid (offline); reachability/authentication/inference not tested.")
+
+
+def probe(args):
+    """One authenticated catalog read: no writes, no inference."""
+    url, aliases_path = saved_connection(args)
+    remote = {a["provider_model_id"] for a in
+              aliases_from_catalog(discover(url, args.key_file, args.allow_private_http)).values()}
+    saved = json.loads(read_owned(aliases_path, missing=True) or b"{}")
+    local = {a.get("provider_model_id") for a in saved.values() if isinstance(a, dict)}
+    added, removed = sorted(remote - local), sorted(local - remote)
+    if not (added or removed):
+        print(f"Remote gateway OK: client key accepted; local catalog matches {len(remote)} available models. "
+              "Inference not tested.")
+        return 0
+    for label, models in (("new on gateway", added), ("no longer available", removed)):
+        if models:
+            print(f"  {len(models)} {label}: " + ", ".join(models[:8]) + (", …" if len(models) > 8 else ""))
+    print("Remote gateway OK, but the local catalog is stale. Refresh it with pi-gateway connect "
+          "(same --url/--key-file/--cli-out).")
+    return DRIFT
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
-    for action in ("connect", "check", "_discover", "key"):
+    for action in ("connect", "check", "probe", "_discover", "key"):
         command = commands.add_parser(action)
         command.add_argument("--key-file", required=True)
         if action != "key":
             command.add_argument("--url", required=True)
             command.add_argument("--allow-private-http", action="store_true")
-        if action in {"connect", "check"}:
+        if action in {"connect", "check", "probe"}:
             command.add_argument("--cli-out", required=True)
     args = parser.parse_args(argv)
     try:
@@ -270,13 +313,15 @@ def main(argv=None):
             print(json.dumps(fetch_catalog(gateway_url(args.url, args.allow_private_http), args.key_file)))
         elif args.action == "connect":
             connect(args)
+        elif args.action == "probe":
+            return probe(args)
         else:
             check(args)
         return 0
     except (ValueError, OSError) as exc:
         # File/network error strings can contain paths but never credential bytes.
         print(f"pi-gateway: {exc}", file=sys.stderr)
-        return 1
+        return exc.code if isinstance(exc, GatewayError) else 1
 
 
 if __name__ == "__main__":
