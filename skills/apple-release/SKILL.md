@@ -137,6 +137,26 @@ pkgbuild --root staging --identifier com.example.tool --version X.Y.Z \
 For a zip instead, `ditto -c -k` the signed binary and run `scripts/notarize.sh`
 on the zip (Gatekeeper then checks the ticket online).
 
+### 3e. Projects with their own release scripts
+
+Some projects sign and notarize with their own scripts (for example a
+`release-*.sh` that takes `--keychain` and `--notary-profile`). Do not ask the
+user to unlock anything: run the script under the helper, passing the
+configured keychain by reference.
+
+```bash
+SCRIPTS=/path/to/skills/apple-release/scripts   # this skill's scripts dir
+"$SCRIPTS/with-signing-keychain.sh" -- /bin/bash -c 'source "$1/lib.sh"; load_config
+  shift; exec "$@" --keychain "$SIGNING_KEYCHAIN"' _ "$SCRIPTS" ./release.sh --version X.Y.Z
+```
+
+Add `--search-list` when the script calls `codesign` or `xcodebuild` without its
+own `--keychain`. A script that wants a `notarytool` keychain profile can use one
+stored in the signing keychain; list the profile names (never the values) with
+`security dump-keychain "$SIGNING_KEYCHAIN" | grep -o 'notary.tool.saved-creds.[A-Za-z0-9._-]*'`
+inside the helper. If the keychain holds none, use `notarize.sh` (API key)
+instead of the script's notarization step.
+
 ## Building blocks
 
 | Script | Purpose |
@@ -150,8 +170,10 @@ on the zip (Gatekeeper then checks the ticket online).
 - Background Pi sessions get `errSecInteractionNotAllowed` from the login
   keychain; that is why signing uses the dedicated keychain.
 - `security unlock-keychain KC < file` reads the TTY in Terminal, not stdin.
-- `notarytool store-credentials` needs a real TTY; these scripts avoid stored
-  profiles entirely by passing `--key/--key-id/--issuer`.
+- `notarytool store-credentials` needs a real TTY; this skill's scripts avoid
+  stored profiles by passing `--key/--key-id/--issuer`. A profile stored earlier
+  in the signing keychain still works for project scripts (3e) while it is
+  unlocked.
 - LibreSSL PKCS#12 files need `-keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES
   -macalg sha1` or the identity will not pair on import.
 - `codesign` and `security cms` refuse untrusted self-signed test identities, so
