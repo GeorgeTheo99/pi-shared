@@ -7,6 +7,7 @@
   | Need | Tool | Boundary |
   |---|---|---|
   | iOS/macOS native app tests | Xcode/XCUITest and simulator tooling | — |
+  | iOS-only behavior of a web UI, PWA, or WKWebView app shell (touch gestures, long-press menus, share sheet, clipboard, software keyboard, safe areas) | `app_test`/`app_inspect` for scripted checks, then a final pass in the iOS Simulator (Mobile Safari, the Home Screen web app, or the app's own web view) via Xcode and `xcrun simctl` | Needs full Xcode; Chromium/WebKit emulation doesn't reproduce these behaviors. Real-device feel (pinch, scroll smoothness) still needs a phone: report it as untested rather than verified |
   | Explore or debug a local/private app (UI or API) | `app_inspect` | Persistent authenticated app profile; configured base URL and allowed hosts only |
   | Reproducible local/private app test with assertions | `app_test` | Fresh context per run, explicit steps, stops at the first failure |
   | Signed-in site, bot check/CAPTCHA, blocked page, or operating a native macOS app | Peekaboo (the user's desktop browser or the app) | Explicitly authorized for the user's logged-in sessions and working past bot checks; hand control to the user only for fresh credential or MFA entry |
