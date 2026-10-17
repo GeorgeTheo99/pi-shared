@@ -6,14 +6,13 @@ For guided setup, the user can run `/setup peekaboo` (or select Peekaboo from `/
 
 ## Install and check compatibility
 
-Use the official [Peekaboo releases](https://github.com/openclaw/Peekaboo/releases) or its documented Homebrew distribution. Pin and test a compatible release; verify the published checksum and Developer ID signature before execution.
+Use the official [Peekaboo releases](https://github.com/openclaw/Peekaboo/releases) or its documented Homebrew distribution. Pin and test a compatible release; verify the published checksum and Developer ID signature before execution. `/setup peekaboo` does this for you: it downloads the pinned **4.9.5** CLI and Peekaboo.app, verifies their SHA-256 digests and Developer ID signatures (team `FWJYW4S8P8`), installs the app into `/Applications` and launches it.
 
-Known installation caveats:
+Release history that shaped the pin:
 
-- The 4.6.0 CLI failed before startup on macOS 26.2 with `Symbol not found: _swift_initBorrow`; [upstream #831](https://github.com/openclaw/Peekaboo/issues/831) reports the same problem and identifies 4.5.0 as unaffected. The signed 4.5.0 CLI was verified to start on that machine.
-- 4.5.0's explicit app-Bridge MCP startup fails with `unavailable` when the `browser` tool is enabled, even with all app permissions granted. This is not a general native-Bridge failure: disabling only `browser` allows initialization and advertises the remaining 25 tools. [Upstream #787](https://github.com/openclaw/Peekaboo/pull/787) fixes the CLI's browser transport capability check for GUI hosts; 4.6.0 includes it but has the separate launch defect above.
-- As checked on September 27, 2026, the Swift compatibility fix [#832](https://github.com/openclaw/Peekaboo/pull/832) is merged but the latest published release remains 4.6.0, with assets predating the fix. Recheck official release assets before upgrading; a merged fix is not a released binary.
-- 4.6.0 also contains input-safety fixes, including modifier cleanup. An older CLI starting successfully is not proof of equivalent safety or full desktop reliability. Re-evaluate a fixed published release before relying on complex keyboard/foreground workflows. Do not patch system Swift libraries to work around startup errors.
+- 4.6.0's CLI failed before startup on macOS 26.2 with `Symbol not found: _swift_initBorrow` ([upstream #831](https://github.com/openclaw/Peekaboo/issues/831)); 4.5.0 lacked later input-safety fixes and needed `browser` disabled for app-Bridge MCP startup. Setup previously pinned 4.5.0 with that exclusion.
+- On October 17, 2026, the signed 4.9.5 CLI started on macOS 26.3, and app-Bridge MCP initialized with all **27** tools (including `browser`) once Peekaboo.app held Screen Recording and Accessibility. Before those grants, Bridge MCP startup fails with a ScreenCaptureKit-owner error, so permissions come first.
+- Install the app in `/Applications`. A copy in `~/Applications` did not appear in the System Settings privacy lists.
 
 Check both CLI and app versions before configuring MCP. They are complementary components, not interchangeable permission identities. With an explicit app Bridge, the CLI is the MCP transport and the desktop app performs permission-bound operations. In direct mode (`--no-remote`), the CLI process owns its runtime. Check permissions using the exact binary and routing mode; for direct mode:
 
@@ -27,11 +26,11 @@ macOS attributes permissions to a responsible process/application identity. Gran
 
 Do not run a direct MCP capture host concurrently with an app-Bridge MCP host. A direct MCP process can reserve capture ownership even when its permissions are denied, preventing explicit Bridge startup with an owner-socket-unavailable error. Stop only the identified session-owned direct MCP process before switching; never kill unrelated sessions or daemons. Direct stdio is process-owned, not a shared app Bridge.
 
-## Desktop app Bridge (4.5.0 compatibility)
+## Desktop app Bridge (recommended)
 
-Prefer one permission-owning desktop app for this configuration. The user must approve the temporary omission of Peekaboo's browser tool; Pi's `browser_fetch`/`browser_inspect` and `app_inspect`/`app_test` tools remain unchanged. This is a narrow compatibility workaround, not a security boundary or permission bypass.
+Prefer one permission-owning desktop app for this configuration. This is the route `/setup peekaboo` recommends. It is not a security boundary or permission bypass.
 
-1. Start the trusted Peekaboo.app and have the user grant its required macOS permissions. Do not request new CLI permissions when the app Bridge is the selected owner.
+1. Install and start the trusted Peekaboo.app from `/Applications` (setup does both), then have the user allow it under **Accessibility** and **Screen & System Audio Recording** in System Settings › Privacy & Security. Do not request new CLI permissions when the app Bridge is the selected owner.
 2. Discover and verify the app's socket with `peekaboo bridge status --json` and `peekaboo permissions status --bridge-socket <absolute-socket-path> --json`. A bridge handshake alone does not establish MCP readiness.
 3. Configure `<agent-dir>/mcp.json` with the verified CLI and socket paths:
 
@@ -41,7 +40,6 @@ Prefer one permission-owning desktop app for this configuration. The user must a
     "peekaboo": {
       "command": "/absolute/path/to/pinned/peekaboo",
       "args": ["mcp", "--bridge-socket", "/absolute/path/to/Peekaboo/bridge.sock", "--allow-foreground"],
-      "env": { "PEEKABOO_DISABLE_TOOLS": "browser" },
       "timeout": 30,
       "exposure": "codemode"
     }
@@ -51,12 +49,11 @@ Prefer one permission-owning desktop app for this configuration. The user must a
 
 The usual app socket is `~/Library/Application Support/Peekaboo/bridge.sock`; expand it to an absolute path and verify it rather than assuming availability. Do not add `--no-remote` to this configuration. Keep the app running; an unavailable explicit host must be reported, not silently replaced by a permission-less local runtime.
 
-4. Reload/restart Pi and verify **through official MCP**: 25 advertised tools without `browser`, permission status, one scoped disposable native-window observation, and one reversible action followed by fresh state verification. Configuration and CLI initialization are not end-to-end proof.
-5. Remove `PEEKABOO_DISABLE_TOOLS` only after a published, signature/checksum-verified compatible release passes full 26-tool app-Bridge initialization and native smoke testing on the target Mac. Do not patch system Swift libraries or silently install an unsigned development build.
+4. Reload/restart Pi and verify **through official MCP**: 27 advertised tools including `browser`, permission status, one scoped disposable native-window observation, and one reversible action followed by fresh state verification. Configuration and CLI initialization are not end-to-end proof.
 
-The route-aware `/setup peekaboo` flow requires the owning backend's **Peekaboo schema v2** (Homebrew **0.1.23+**). Its first menu leads with **Set up Peekaboo (recommended)**, the desktop-app Bridge route above at Peekaboo.app's standard socket, installing the compatibility CLI only when none is found; explicit Bridge-socket, direct-CLI and executable selection stay under **Advanced…**. It previews the browser-only exclusion before approval and preserves recognized existing configurations when no route is selected. Older backends fail with an upgrade instruction; they are not silently used for Bridge setup. Selecting a different route for an existing entry reports a conflict rather than overwriting it. Backend checks use the selected socket and reject permission evidence from the wrong route; they still do not perform desktop actions.
+The route-aware `/setup peekaboo` flow requires the owning backend's **Peekaboo schema v2**; automatic app installation and the 4.9.5 pin need Homebrew **0.1.38+**. Its first menu leads with **Set up Peekaboo (recommended)**: the desktop-app Bridge route above at Peekaboo.app's standard socket. One approved plan downloads and installs Peekaboo.app when missing, launches it, installs the CLI when none was found, and writes the MCP entry. It is also offered for an existing conflicting entry: the backend replaces an entry for an older setup-managed CLI (such as 4.5.0 with the browser exclusion; custom settings in that entry are not kept, as the plan states) and refuses entries with custom commands. Explicit Bridge-socket, direct-CLI, executable and app-install choices stay under **Advanced…**. Older backends fail with an upgrade instruction; they are not silently used. Backend checks use the selected socket and reject permission evidence from the wrong route; they still do not perform desktop actions.
 
-Verified on September 27, 2026 with the signed 4.5.0 CLI and desktop app: the actual reloaded Pi adapter exposed 25 tools, reported all three permissions granted, inspected a disposable TextEdit window, changed a canary through `set_value`, and returned fresh AX and screenshot evidence of the change. This is scoped native-operation evidence, not certification of every tool. A locked desktop initially prevented AX reads and activation despite granted permissions; unlocking manually resolved that failure. A close-window request returned indeterminate evidence; a fresh observation followed by a normal quit of the test-only app completed cleanup. Never blindly retry ambiguous mutations.
+Earlier evidence (September 27, 2026, signed 4.5.0 CLI and desktop app with `browser` disabled): the actual reloaded Pi adapter exposed 25 tools, reported all three permissions granted, inspected a disposable TextEdit window, changed a canary through `set_value`, and returned fresh AX and screenshot evidence of the change. This is scoped native-operation evidence, not certification of every tool. A locked desktop initially prevented AX reads and activation despite granted permissions; unlocking manually resolved that failure. A close-window request returned indeterminate evidence; a fresh observation followed by a normal quit of the test-only app completed cleanup. Never blindly retry ambiguous mutations.
 
 ## Direct-mode alternative
 
@@ -77,7 +74,7 @@ Merge an entry into the existing `mcpServers` object in `<agent-dir>/mcp.json` (
 }
 ```
 
-This direct-mode configuration exposes the full advertised Peekaboo catalog through codemode, without adding every tool to the model's direct schema. The app-Bridge configuration above disables only `browser` upstream and advertises 25 tools. Discover exact `mcp__peekaboo__*` schemas with codemode or `tool_search`; validate the live catalog after installation. Existing adapter approval policies do not automatically transfer to native MCP; migration must preserve them through an explicitly equivalent policy or refuse. Sensitive/external actions still require user authorization under normal agent guidance; do not describe that guidance as an enforced semantic security boundary.
+This direct-mode configuration exposes the full advertised Peekaboo catalog through codemode, without adding every tool to the model's direct schema. The app-Bridge configuration above exposes the same catalog with the app as permission owner. Discover exact `mcp__peekaboo__*` schemas with codemode or `tool_search`; validate the live catalog after installation. Existing adapter approval policies do not automatically transfer to native MCP; migration must preserve them through an explicitly equivalent policy or refuse. Sensitive/external actions still require user authorization under normal agent guidance; do not describe that guidance as an enforced semantic security boundary.
 
 The optional agent/analysis tools may need separately configured model providers. Exposing a tool does not prove its credentials or other prerequisites exist. Do not copy Pi credentials into Peekaboo or configure a second model provider automatically.
 

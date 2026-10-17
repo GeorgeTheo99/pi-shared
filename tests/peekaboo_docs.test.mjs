@@ -31,16 +31,17 @@ test("MCP example uses a pinned local command and direct foreground-capable stdi
   assert.equal(server.url, undefined);
 });
 
-test("desktop Bridge example disables only browser and never falls back to direct", () => {
+test("desktop Bridge example keeps the full catalog and never falls back to direct", () => {
   assert.equal(bridge.command, '/absolute/path/to/pinned/peekaboo');
   assert.deepEqual(bridge.args, ['mcp', '--bridge-socket', '/absolute/path/to/Peekaboo/bridge.sock', '--allow-foreground']);
-  assert.deepEqual(bridge.env, { PEEKABOO_DISABLE_TOOLS: 'browser' });
+  assert.equal(bridge.env, undefined);
   assert.equal(bridge.timeout, 30);
   assert.equal(bridge.exposure, 'codemode');
   assert.equal(bridge.lifecycle, undefined);
   assert.equal(bridge.url, undefined);
   assert.match(setup, /Peekaboo schema v2/);
-  assert.match(setup, /25 advertised tools without `browser`/);
+  assert.match(setup, /27 advertised tools including `browser`/);
+  assert.match(setup, /`\/Applications`/);
   assert.match(setup, /unavailable explicit host must be reported/);
 });
 

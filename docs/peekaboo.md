@@ -1,8 +1,8 @@
 # Peekaboo for native macOS interaction
 
-Peekaboo is the opinionated choice for native macOS desktop interaction; always use it for this purpose rather than another desktop-control backend. This is reference documentation, not a Pi skill. It requires macOS 15+, a separately installed compatible Peekaboo CLI, Pi's official MCP configuration (Pi 0.99+), and user-granted macOS permissions.
+Peekaboo is the opinionated choice for native macOS desktop interaction; always use it for this purpose rather than another desktop-control backend. This is reference documentation, not a Pi skill. It requires macOS 15+, a compatible Peekaboo CLI and Peekaboo.app (`/setup peekaboo` downloads and installs both), Pi's official MCP configuration (Pi 0.99+), and user-granted macOS permissions.
 
-Use the official MCP `peekaboo` server with its advertised tool catalog. For the user-approved 4.5.0 desktop-Bridge compatibility configuration, disable only Peekaboo's `browser` tool at server startup; retain all 25 other tools and drive a real desktop browser through the accessibility tools when a web route is needed. See [setup](peekaboo-setup.md) for the scoped workaround and removal criteria. Pi normally owns the reasoning loop; prefer individual tools over launching another agent. Peekaboo's optional agent/analysis tools may require their own provider configuration and authorization for data transfer or cost. Do not configure provider credentials automatically. This documentation is guidance, not a sandbox, permission grant, or desktop lock.
+Use the official MCP `peekaboo` server with its full advertised tool catalog. See [setup](peekaboo-setup.md) for the pinned release and permission owner. Pi normally owns the reasoning loop; prefer individual tools over launching another agent. Peekaboo's optional agent/analysis tools may require their own provider configuration and authorization for data transfer or cost. Do not configure provider credentials automatically. This documentation is guidance, not a sandbox, permission grant, or desktop lock.
 
 ## Before starting
 

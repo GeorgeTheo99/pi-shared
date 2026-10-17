@@ -18,7 +18,7 @@ export function formatReport(report: SetupReport): string {
 	const e = report.evidence;
 	return [
 		clean(report.summary),
-		`Permission host: ${e.mode === "bridge" ? "desktop app Bridge (Peekaboo browser disabled)" : "direct CLI"}`,
+		`Permission host: ${e.mode === "bridge" ? "desktop app Bridge (app owns permissions)" : "direct CLI"}`,
 		...(e.mode === "bridge" ? [`Bridge socket: ${clean(e.bridgeSocketPath ?? "not selected")} (${e.bridgeSocketState}; presence is not readiness)`] : []),
 		`Executable: ${clean(e.binaryPath ?? "not selected")} (${e.binaryPresent ? "present" : "absent"}; runnable: ${e.runnable})`,
 		`MCP configuration: ${e.configuration}; connection: ${e.mcp}${e.toolCount === null ? "" : `; tools: ${e.toolCount}`}`,
@@ -45,7 +45,8 @@ export async function runWizard(ctx: WizardContext, run: Run, signal: AbortSigna
 	while (!signal.aborted) {
 		ctx.ui.notify(formatReport(plan), plan.ok ? "info" : "warning");
 		const choices: string[] = [];
-		const fresh = plan.evidence.configuration === "missing";
+		// A conflict may be an outdated setup-managed install, which the backend upgrades; it refuses custom commands.
+		const fresh = ["missing", "conflict"].includes(plan.evidence.configuration);
 		if (!advanced) {
 			if (fresh) choices.push(RECOMMENDED);
 			if (plan.evidence.binaryPresent) choices.push("Check CLI and permissions (no desktop actions)");
@@ -61,19 +62,16 @@ export async function runWizard(ctx: WizardContext, run: Run, signal: AbortSigna
 				ctx.ui.notify(formatReport(checked), checked.ok ? "info" : "warning");
 				return;
 			}
-			// Recommended: the desktop app owns permissions (Bridge), with the
-			// compatibility CLI installed only when none was found.
-			options = ["--mode", "bridge", "--bridge-socket", plan.evidence.bridgeSocketPath ?? APP_SOCKET, ...(plan.evidence.binaryPresent ? [] : ["--install"])];
+			// Recommended: the desktop app owns permissions (Bridge). The backend
+			// installs and launches the app when needed, and the CLI only when none was found.
+			options = ["--mode", "bridge", "--bridge-socket", plan.evidence.bridgeSocketPath ?? APP_SOCKET, "--install-app", ...(plan.evidence.binaryPresent ? [] : ["--install"])];
 			plan = await run("plan", options);
-			if (plan.evidence.bridgeSocketState !== "present") {
-				ctx.ui.notify(`${formatReport(plan)}\n\nOpen Peekaboo.app (install it from https://github.com/openclaw/Peekaboo/releases if needed), grant the permissions it asks for, keep it running, then run /setup peekaboo again.`, "warning");
-				return;
-			}
 		} else {
 			if (plan.evidence.binaryPresent) choices.push("Check CLI and permissions (no desktop actions)");
 			if (plan.ok && plan.planId && plan.evidence.binaryPresent && plan.evidence.configuration === "missing") choices.push("Configure Peekaboo MCP");
-			choices.push("Use desktop app Bridge (25 tools; no Peekaboo browser)", "Use direct CLI (full tool catalog)", "Choose an existing Peekaboo executable");
-			if (!plan.evidence.binaryPresent && !["conflict", "invalid"].includes(plan.evidence.configuration)) choices.push("Preview compatibility CLI install (4.5.0; known limitations)");
+			choices.push("Use desktop app Bridge (app owns permissions)", "Use direct CLI (full tool catalog)", "Choose an existing Peekaboo executable");
+			if (!plan.evidence.binaryPresent && !["conflict", "invalid"].includes(plan.evidence.configuration)) choices.push("Preview CLI install (4.9.5)");
+			if (plan.evidence.mode === "bridge" && plan.evidence.binaryPresent) choices.push("Install and launch Peekaboo.app");
 			choices.push("Done / cancel");
 			const choice = await ctx.ui.select("Peekaboo setup — choose the permission host", choices, { signal });
 			if (signal.aborted || !choice || !choices.includes(choice) || choice === "Done / cancel") return;
@@ -110,8 +108,12 @@ export async function runWizard(ctx: WizardContext, run: Run, signal: AbortSigna
 				ctx.ui.notify(formatReport(checked), checked.ok ? "info" : "warning");
 				return;
 			}
-			if (choice.startsWith("Preview compatibility")) {
+			if (choice.startsWith("Preview CLI install")) {
 				options = replaceOptions(options, ["--binary", "--install"], ["--install"]);
+				plan = await run("plan", options);
+			}
+			if (choice === "Install and launch Peekaboo.app") {
+				options = [...options, "--install-app"];
 				plan = await run("plan", options);
 			}
 		}
@@ -122,14 +124,16 @@ export async function runWizard(ctx: WizardContext, run: Run, signal: AbortSigna
 		const approved = await ctx.ui.confirm("Apply this Peekaboo setup plan?", [
 			formatReport(plan),
 			plan.evidence.mode === "bridge"
-				? "Uses the desktop app's permissions. Temporarily disables only Peekaboo's browser tool (25 other tools remain); Pi's browser tools are unchanged. The app must be running and the desktop unlocked."
+				? `Uses the desktop app's permissions with the full tool catalog.${options.includes("--install-app") ? " Installs the signed Peekaboo.app into /Applications if missing, then launches it." : ""} The app must be running and the desktop unlocked. OS permissions remain manual.`
 				: "Exposes the full tool catalog with direct CLI ownership, including foreground control. OS permissions remain manual.",
 			"Does not grant consent to sensitive/external actions or prove desktop readiness.",
 		].join("\n\n"), { signal });
 		if (signal.aborted || !approved) return;
 		const applied = await run("apply", [...options, "--yes", "--expected-plan", plan.planId]);
 		ctx.ui.notify(formatReport(applied), applied.ok ? "info" : "warning");
-		if (applied.ok) ctx.ui.notify("Restart Pi or run /reload to load MCP configuration, then /setup peekaboo to check. Verify permissions again through the actual Pi MCP process; setup-process grants can differ. No desktop action was tested.", "info");
+		if (applied.ok) ctx.ui.notify(applied.evidence.mode === "bridge"
+			? "In System Settings › Privacy & Security, allow Peekaboo under Accessibility and Screen & System Audio Recording (Peekaboo's MCP server cannot start until Screen Recording is granted) and keep Peekaboo.app running. Then restart Pi or run /reload, and /setup peekaboo to check. No desktop action was tested."
+			: "Restart Pi or run /reload to load MCP configuration, then /setup peekaboo to check. Verify permissions again through the actual Pi MCP process; setup-process grants can differ. No desktop action was tested.", "info");
 		return;
 	}
 }

@@ -65,7 +65,7 @@ test('apply uses exactly the approved plan ID and does not auto-probe', async ()
 });
 
 test('install is explicitly selected, separately planned, warned and confirmed', async () => {
-  const mock = ui(['Advanced…', 'Preview compatibility CLI install (4.5.0; known limitations)'], true); const calls: any[] = [];
+  const mock = ui(['Advanced…', 'Preview CLI install (4.9.5)'], true); const calls: any[] = [];
   await runWizard(mock.ctx, async (action, args) => {
     calls.push([action, args]); const value = report(action); value.evidence.binaryPresent = false;
     value.warnings = ['Compatibility release lacks later input safety fixes'];
@@ -99,7 +99,7 @@ test('CLI check is explicit and does not claim MCP or desktop success', async ()
 test('conflicts do not offer apply or install; session cancellation cannot apply', async () => {
   const mock = ui([undefined]);
   await runWizard(mock.ctx, async action => { const value = report(action); value.ok = false; value.evidence.configuration = 'conflict'; return value; });
-  assert.ok(mock.menus[0].every(s => !s.startsWith('Configure') && !s.startsWith('Preview compatibility')));
+  assert.ok(mock.menus[0].every(s => !s.startsWith('Configure') && !s.startsWith('Preview CLI install')));
   const controller = new AbortController(); let calls = 0;
   const ctx = ui(['Advanced…', 'Configure Peekaboo MCP'], true).ctx;
   ctx.ui.confirm = async () => { controller.abort(); return true; };
@@ -107,8 +107,8 @@ test('conflicts do not offer apply or install; session cancellation cannot apply
   assert.equal(calls, 1);
 });
 
-test('bridge selection is separately planned and explicitly approves browser-only exclusion', async () => {
-  const mock = ui(['Advanced…', 'Use desktop app Bridge (25 tools; no Peekaboo browser)', 'Configure Peekaboo MCP'], true, '/private/app support/bridge.sock');
+test('bridge selection is separately planned and explicitly approved', async () => {
+  const mock = ui(['Advanced…', 'Use desktop app Bridge (app owns permissions)', 'Configure Peekaboo MCP'], true, '/private/app support/bridge.sock');
   const calls: any[] = [];
   await runWizard(mock.ctx, async (action, args) => {
     calls.push([action, args]); const value = report(action);
@@ -120,7 +120,8 @@ test('bridge selection is separately planned and explicitly approves browser-onl
   });
   const route = ['--mode', 'bridge', '--bridge-socket', '/private/app support/bridge.sock'];
   assert.deepEqual(calls, [['plan', []], ['plan', route], ['apply', [...route, '--yes', '--expected-plan', 'b'.repeat(64)]]]);
-  assert.match(mock.confirmations[0], /25 other tools remain/);
+  assert.match(mock.confirmations[0], /desktop app's permissions with the full tool catalog/);
+  assert.ok(!mock.confirmations[0].includes('Installs the signed Peekaboo.app'));
   assert.match(mock.confirmations[0], /desktop unlocked/);
   assert.match(mock.confirmations[0], /presence is not readiness/);
   assert.ok(!mock.confirmations[0].includes('Exposes the full tool catalog'));
@@ -128,7 +129,7 @@ test('bridge selection is separately planned and explicitly approves browser-onl
 
 test('bridge socket cancel and invalid input never probe or apply', async () => {
   for (const input of [undefined, '', '~/bridge.sock', '/socket\nunsafe']) {
-    const mock = ui(['Advanced…', 'Use desktop app Bridge (25 tools; no Peekaboo browser)'], true, input);
+    const mock = ui(['Advanced…', 'Use desktop app Bridge (app owns permissions)'], true, input);
     const calls: string[] = [];
     await runWizard(mock.ctx, async action => { calls.push(action); return report(action); });
     assert.deepEqual(calls, ['plan']);
@@ -136,7 +137,7 @@ test('bridge socket cancel and invalid input never probe or apply', async () => 
 });
 
 test('route survives executable selection; switching to direct removes the socket', async () => {
-  const mock = ui(['Advanced…', 'Use desktop app Bridge (25 tools; no Peekaboo browser)', 'Choose an existing Peekaboo executable', 'Use direct CLI (full tool catalog)', undefined]);
+  const mock = ui(['Advanced…', 'Use desktop app Bridge (app owns permissions)', 'Choose an existing Peekaboo executable', 'Use direct CLI (full tool catalog)', undefined]);
   const inputs = ['/private/app/bridge.sock', '/trusted/other peekaboo'];
   mock.ctx.ui.input = async () => inputs.shift();
   const calls: any[] = [];
@@ -161,8 +162,8 @@ test('recognized existing bridge is preserved for checks without inventing direc
   assert.ok(!mock.menus[0].includes('Configure Peekaboo MCP'));
 });
 
-test('bridge-mode compatibility install retains the explicit route and consent', async () => {
-  const mock = ui(['Advanced…', 'Use desktop app Bridge (25 tools; no Peekaboo browser)', 'Preview compatibility CLI install (4.5.0; known limitations)'], true, '/private/app/bridge.sock');
+test('bridge-mode CLI install retains the explicit route and consent', async () => {
+  const mock = ui(['Advanced…', 'Use desktop app Bridge (app owns permissions)', 'Preview CLI install (4.9.5)'], true, '/private/app/bridge.sock');
   const calls: any[] = [];
   await runWizard(mock.ctx, async (action, args) => {
     calls.push([action, args]); const value = report(action); value.evidence.binaryPresent = false;
@@ -200,23 +201,55 @@ test('recommended setup plans Bridge at the app socket, installs only a missing 
       return value;
     });
     const socket = join(homedir(), 'Library/Application Support/Peekaboo/bridge.sock');
-    const route = ['--mode', 'bridge', '--bridge-socket', socket, ...(present ? [] : ['--install'])];
+    const route = ['--mode', 'bridge', '--bridge-socket', socket, '--install-app', ...(present ? [] : ['--install'])];
     assert.deepEqual(calls, [['plan', []], ['plan', route], ['apply', [...route, '--yes', '--expected-plan', 'b'.repeat(64)]]]);
     assert.equal(mock.confirmations.length, 1);
     assert.match(mock.confirmations[0], /desktop app's permissions/);
+    assert.match(mock.confirmations[0], /Installs the signed Peekaboo\.app into \/Applications if missing, then launches it/);
+    assert.match(mock.notices.at(-1)!, /Screen & System Audio Recording/);
   }
 });
 
-test('recommended setup stops with plain guidance when Peekaboo.app is not running', async () => {
+test('recommended setup proceeds without a running app because the backend installs and launches it', async () => {
   const mock = ui(['Set up Peekaboo (recommended)'], true); const calls: string[] = [];
   await runWizard(mock.ctx, async (action, args) => {
     calls.push(action); const value = report(action);
-    if (args.includes('bridge')) Object.assign(value.evidence, { mode: 'bridge', bridgeSocketPath: args[3], bridgeSocketState: 'missing' });
+    if (args.includes('bridge')) Object.assign(value.evidence, { mode: 'bridge', bridgeSocketPath: args[3], bridgeSocketState: action === 'apply' ? 'present' : 'missing' });
     return value;
   });
-  assert.deepEqual(calls, ['plan', 'plan']);
+  assert.deepEqual(calls, ['plan', 'plan', 'apply']);
+  assert.equal(mock.confirmations.length, 1);
+});
+
+test('a conflicting entry still offers the recommended route; the backend decides whether it may upgrade', async () => {
+  const mock = ui(['Set up Peekaboo (recommended)'], true); const calls: any[] = [];
+  await runWizard(mock.ctx, async (action, args) => {
+    calls.push([action, args]); const value = report(action);
+    if (args.length === 0) Object.assign(value, { ok: false, planId: undefined });
+    if (args.length === 0) Object.assign(value.evidence, { configuration: 'conflict', binaryPath: null, binaryPresent: false });
+    else { Object.assign(value, { ok: false, planId: undefined, errors: ['Existing Peekaboo entry conflicts'] }); Object.assign(value.evidence, { mode: 'bridge', bridgeSocketPath: args[3], bridgeSocketState: 'present', configuration: 'conflict' }); }
+    return value;
+  });
+  assert.deepEqual(calls.map(call => call[0]), ['plan', 'plan']);
+  assert.ok(calls[1][1].includes('--install') && calls[1][1].includes('--install-app'));
   assert.equal(mock.confirmations.length, 0);
-  assert.match(mock.notices.at(-1)!, /Open Peekaboo\.app/);
+});
+
+test('advanced app install is offered only for Bridge and is planned, then confirmed', async () => {
+  for (const configuration of ['missing', 'matching'] as const) {
+    const mock = ui(['Advanced…', 'Use desktop app Bridge (app owns permissions)', 'Install and launch Peekaboo.app'], true, '/private/app/bridge.sock');
+    const calls: any[] = [];
+    await runWizard(mock.ctx, async (action, args) => {
+      calls.push([action, args]); const value = report(action); value.evidence.configuration = configuration;
+      if (args.includes('bridge')) Object.assign(value.evidence, { mode: 'bridge', bridgeSocketPath: '/private/app/bridge.sock', bridgeSocketState: 'present' });
+      return value;
+    });
+    assert.ok(!mock.menus[1].includes('Install and launch Peekaboo.app'));
+    assert.ok(mock.menus[2].includes('Install and launch Peekaboo.app'));
+    const route = ['--mode', 'bridge', '--bridge-socket', '/private/app/bridge.sock', '--install-app'];
+    assert.deepEqual(calls.slice(2), [['plan', route], ['apply', [...route, '--yes', '--expected-plan', 'a'.repeat(64)]]]);
+    assert.match(mock.confirmations[0], /Installs the signed Peekaboo\.app/);
+  }
 });
 
 test('slash entry refuses headless, busy and unsupported targets before backend discovery', async () => {

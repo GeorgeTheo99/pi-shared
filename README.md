@@ -224,18 +224,18 @@ or a TestFlight uploader. [Apple app commands](extensions/apple-app-test/README.
 ### Native Mac computer use (opt-in)
 
 [Peekaboo](docs/peekaboo.md) is the opinionated choice for native macOS desktop
-interaction. Use its separately installed server through Pi's official MCP
-support (or the retained adapter during migration); no separate computer-use skill is needed. [`/setup peekaboo`](extensions/setup/README.md) previews installation
-or configuration, asks before applying it, and offers a separate CLI and
-permission check. Select direct CLI ownership or an explicit desktop-app Bridge;
-recognized existing routes are preserved. This flow requires Peekaboo backend
-schema v2, provided by Homebrew **0.1.23+** (0.1.22 has schema v1).
+interaction. Use its server through Pi's official MCP support (or the retained
+adapter during migration); no separate computer-use skill is needed. [`/setup peekaboo`](extensions/setup/README.md)
+previews a plan, asks once, then downloads, verifies and installs Peekaboo.app
+(and the pinned CLI when none is found), launches the app and configures MCP. It also offers
+a separate CLI and permission check. Direct CLI ownership and custom routes stay
+under Advanced; recognized existing routes are preserved. Download-and-install
+needs Homebrew **0.1.38+** (route-aware setup alone needs 0.1.23+).
 MCP connection and desktop interaction remain separate checks. The wizard does not run
 desktop actions or automatically grant macOS permissions. `/setup` opens the
 full optional-capability menu; `/setup peekaboo` selects this flow directly.
 [Setup](docs/peekaboo-setup.md) covers compatible pinned
-releases, macOS permissions, the full direct-mode catalog and the 25-tool desktop-Bridge
-compatibility mode (only Peekaboo's browser tool disabled), foreground-capable operation,
+releases, macOS permissions, the full tool catalog in direct and desktop-Bridge modes, foreground-capable operation,
 and read-only verification. Tool availability is not blanket action authorization;
 the integration is not a sandbox or cross-session desktop lock. Screenshots and UI text
 returned to cloud models may also remain in Pi transcripts.
