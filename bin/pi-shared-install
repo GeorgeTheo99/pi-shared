@@ -274,6 +274,9 @@ if not any(choice in default_tools for choice in ("codemode", "+codemode", "-cod
         version = None
     if version and tuple(map(int, version.groups()[:2])) >= (0, 99):
         settings["defaultTools"] = [*default_tools, "+codemode"]
+# Pi 1.0 defaults to fullscreen, which pins widgets and dialogs below a
+# scrolling transcript. Keep normal scrollback unless a mode was chosen.
+settings.setdefault("tuiMode", "regular")
 
 def package_source(entry):
     if isinstance(entry, str):
@@ -342,7 +345,7 @@ finally:
         tmp.unlink(missing_ok=True)
 print(settings_path)
 PY
-  ok "Wired $repo into $target/settings.json packages; codemode default enabled on detected Pi 0.99+ unless explicitly selected or disabled"
+  ok "Wired $repo into $target/settings.json packages; codemode default enabled on detected Pi 0.99+ unless explicitly selected or disabled; regular TUI scrollback unless tuiMode is set"
 }
 
 codex_context_policy() {

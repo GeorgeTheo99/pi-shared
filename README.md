@@ -28,7 +28,9 @@ pi
 Homebrew installs the CLI and a pinned stock Pi runtime. Setup installs selected
 shared resources/services; it never downloads LLM weights or tests inference.
 Fresh defaults are direct providers and browser-worker/Chromium, with search
-skipped. Add `--without-browser` to omit browser installation.
+skipped. Add `--without-browser` to omit browser installation. Profiles default to
+`"tuiMode": "regular"` so the plan, questions and editor scroll with the
+transcript; an explicit `tuiMode` such as `"fullscreen"` is preserved.
 
 The setup examples below target **Homebrew package 0.1.22 and updated shared
 modules**. On older installations, run `pi-shared update` and check

@@ -76,6 +76,9 @@ settings["enableSkillCommands"] = True
 # Pi clamps this preference to each model's supported levels. Explicit choices
 # remain untouched; override per-session with /thinking when supported.
 settings.setdefault("defaultThinkingLevel", "high")
+# Pi 1.0 defaults to fullscreen, which pins widgets and dialogs below a
+# scrolling transcript. Keep normal scrollback unless a mode was chosen.
+settings.setdefault("tuiMode", "regular")
 default_tools = settings.get("defaultTools", [])
 if not isinstance(default_tools, list):
     raise SystemExit(f"Expected defaultTools array in {path}")

@@ -1325,6 +1325,15 @@ def test_wire_settings_preserves_permissions_and_does_not_clobber_a_fixed_temp_f
     assert not list(target.parent.glob(".settings-*.tmp"))
 
 
+@pytest.mark.parametrize("settings,expected", [
+    (None, "regular"), ({}, "regular"), ({"tuiMode": "fullscreen"}, "fullscreen"), ({"tuiMode": "regular"}, "regular"),
+])
+def test_wire_settings_defaults_to_regular_tui_and_keeps_explicit_mode(tmp_path, settings, expected):
+    result, target = _install_settings_fixture(tmp_path, settings)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(target.read_text())["tuiMode"] == expected
+
+
 def test_wire_settings_new_profile_is_private(tmp_path):
     result, target = _install_settings_fixture(tmp_path, None)
     assert result.returncode == 0, result.stderr

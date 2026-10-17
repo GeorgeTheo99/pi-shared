@@ -50,6 +50,7 @@ def test_profile_wiring_without_runtime_is_idempotent(tmp_path):
     assert [(agent / p).resolve() for p in settings["packages"]] == [SHARED_ROOT]
     assert settings["enableSkillCommands"] is True
     assert settings["defaultThinkingLevel"] == "high"
+    assert settings["tuiMode"] == "regular"
     assert (agent / "AGENTS.md").resolve() == SHARED_ROOT / "AGENTS.md"
     second = run_repair(tmp_path)
     assert second.returncode == 0, second.stderr
@@ -61,6 +62,7 @@ def test_preserves_explicit_preferences_and_package_filters(tmp_path):
     package = {"source": str(SHARED_ROOT), "skills": []}
     original = {"packages": ["npm:other-package", package], "defaultProvider": "example",
                 "defaultModel": "chosen", "defaultThinkingLevel": "off", "theme": "dark",
+                "tuiMode": "fullscreen",
                 "extensions": ["./custom.ts"]}
     result = run_repair(tmp_path, settings=original)
     assert result.returncode == 0, result.stderr
