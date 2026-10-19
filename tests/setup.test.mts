@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync, realpathSync, existsSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, realpathSync, existsSync, readFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -44,8 +44,10 @@ test('report presentation separates inventory from desktop readiness and strips 
   const value = report(); value.summary = '\x1b[31mConnected\x1b[0m'; value.evidence.mcp = 'connected'; value.evidence.toolCount = 26;
   const text = formatReport(value);
   assert.ok(!text.includes('\x1b'));
-  assert.match(text, /tools: 26/);
-  assert.match(text, /Desktop interaction: not tested/);
+  assert.match(text, /26 tools/);
+  assert.ok(!/Permissions/.test(text), 'unknown permissions are omitted');
+  value.evidence.permissions.screenRecording = 'granted';
+  assert.match(formatReport(value), /Permissions \(unverified source\): screen granted/);
 });
 
 test('canceled selection or confirmation never applies or probes', async () => {
@@ -61,7 +63,7 @@ test('apply uses exactly the approved plan ID and does not auto-probe', async ()
   await runWizard(mock.ctx, async (action, args) => { calls.push([action, args]); return report(action); });
   assert.deepEqual(calls, [['plan', []], ['apply', ['--yes', '--expected-plan', 'a'.repeat(64)]]]);
   assert.match(mock.confirmations[0], /full tool catalog/);
-  assert.ok(mock.notices.some(s => s.includes('Restart Pi or run /reload')));
+  assert.ok(mock.notices.some(s => s.includes('restart Pi or run /reload')));
 });
 
 test('install is explicitly selected, separately planned, warned and confirmed', async () => {
@@ -93,7 +95,7 @@ test('CLI check is explicit and does not claim MCP or desktop success', async ()
   await runWizard(mock.ctx, async action => { calls.push(action); return report(action); });
   assert.deepEqual(calls, ['plan', 'check']);
   assert.equal(mock.confirmations.length, 0);
-  assert.match(mock.notices.at(-1)!, /not tested/);
+  assert.ok(!/connected|desktop (ready|ok)/i.test(mock.notices.at(-1)!));
 });
 
 test('conflicts do not offer apply or install; session cancellation cannot apply', async () => {
@@ -120,10 +122,10 @@ test('bridge selection is separately planned and explicitly approved', async () 
   });
   const route = ['--mode', 'bridge', '--bridge-socket', '/private/app support/bridge.sock'];
   assert.deepEqual(calls, [['plan', []], ['plan', route], ['apply', [...route, '--yes', '--expected-plan', 'b'.repeat(64)]]]);
-  assert.match(mock.confirmations[0], /desktop app's permissions with the full tool catalog/);
-  assert.ok(!mock.confirmations[0].includes('Installs the signed Peekaboo.app'));
+  assert.match(mock.confirmations[0], /Peekaboo\.app's permissions with the full tool catalog/);
+  assert.ok(!mock.confirmations[0].includes('Installs the signed app'));
   assert.match(mock.confirmations[0], /desktop unlocked/);
-  assert.match(mock.confirmations[0], /presence is not readiness/);
+  assert.match(mock.confirmations[0], /socket present: \/private\/app support\/bridge\.sock/);
   assert.ok(!mock.confirmations[0].includes('Exposes the full tool catalog'));
 });
 
@@ -172,7 +174,7 @@ test('bridge-mode CLI install retains the explicit route and consent', async () 
   });
   const route = ['--mode', 'bridge', '--bridge-socket', '/private/app/bridge.sock'];
   assert.deepEqual(calls, [['plan', []], ['plan', route], ['plan', [...route, '--install']], ['apply', [...route, '--install', '--yes', '--expected-plan', 'a'.repeat(64)]]]);
-  assert.match(mock.confirmations[0], /desktop app's permissions/);
+  assert.match(mock.confirmations[0], /Peekaboo\.app's permissions/);
 });
 
 test('a fresh setup leads with one recommended Bridge route; the rest is under Advanced', async () => {
@@ -204,8 +206,8 @@ test('recommended setup plans Bridge at the app socket, installs only a missing 
     const route = ['--mode', 'bridge', '--bridge-socket', socket, '--install-app', ...(present ? [] : ['--install'])];
     assert.deepEqual(calls, [['plan', []], ['plan', route], ['apply', [...route, '--yes', '--expected-plan', 'b'.repeat(64)]]]);
     assert.equal(mock.confirmations.length, 1);
-    assert.match(mock.confirmations[0], /desktop app's permissions/);
-    assert.match(mock.confirmations[0], /Installs the signed Peekaboo\.app into \/Applications if missing, then launches it/);
+    assert.match(mock.confirmations[0], /Peekaboo\.app's permissions/);
+    assert.match(mock.confirmations[0], /Installs the signed app into \/Applications if missing, then launches it/);
     assert.match(mock.notices.at(-1)!, /Screen & System Audio Recording/);
   }
 });
@@ -248,7 +250,7 @@ test('advanced app install is offered only for Bridge and is planned, then confi
     assert.ok(mock.menus[2].includes('Install and launch Peekaboo.app'));
     const route = ['--mode', 'bridge', '--bridge-socket', '/private/app/bridge.sock', '--install-app'];
     assert.deepEqual(calls.slice(2), [['plan', route], ['apply', [...route, '--yes', '--expected-plan', 'a'.repeat(64)]]]);
-    assert.match(mock.confirmations[0], /Installs the signed Peekaboo\.app/);
+    assert.match(mock.confirmations[0], /Installs the signed app/);
   }
 });
 
@@ -297,17 +299,22 @@ test('session shutdown awaits cleanup even when the setup backend ignores TERM',
   }
 });
 
-test('Homebrew admin-writable ancestor exception is narrowly package-bound', () => {
+test('Homebrew admin/staff-writable ancestor exception is narrowly package-bound', () => {
   const executable = '/opt/homebrew/Cellar/pi-shared/0.1.21/bin/pi-shared';
-  const allowed = (exe = executable, ancestor = '/opt/homebrew/Cellar', gid = 80, mode = 0o775, platform = 'darwin', groups = [20, 80]) =>
-    homebrewAdminAncestor(exe, ancestor, gid, mode, platform, groups);
+  const allowed = (exe = executable, ancestor = '/opt/homebrew/Cellar', gid = 80, mode = 0o775, platform = 'darwin', groups = [20, 80], owner = 501) =>
+    homebrewAdminAncestor(exe, ancestor, gid, mode, platform, groups, owner, 501);
   assert.equal(allowed(), true);
   assert.equal(allowed(executable, '/opt/homebrew'), true);
   assert.equal(allowed('/usr/local/Cellar/pi-shared/0.1.21/bin/pi-shared', '/usr/local/Cellar'), true);
   assert.equal(allowed('/tmp/source/bin/pi-shared'), false);
   assert.equal(allowed('/opt/homebrew/Cellar/other/1/bin/pi-shared'), false);
   assert.equal(allowed(executable, '/opt/homebrew/Cellar/pi-shared/0.1.21'), false);
-  assert.equal(allowed(executable, '/opt/homebrew/Cellar', 20), false);
+  assert.equal(allowed(executable, '/opt/homebrew/Cellar', 20), true);
+  assert.equal(allowed(executable, '/opt/homebrew/Cellar', 20, 0o775, 'darwin', [20, 80], 0), false, 'staff prefix owned by someone else');
+  assert.equal(allowed(executable, '/opt/homebrew/Cellar', 80, 0o775, 'darwin', [20, 80], 0), true, 'admin prefix may be root-owned');
+  assert.equal(allowed(executable, '/opt/homebrew/Cellar', 20, 0o775, 'darwin', [80]), false);
+  assert.equal(allowed(executable, '/opt/homebrew/Cellar', 21), false);
+  assert.equal(allowed(executable, '/opt/homebrew/Cellar', 20, 0o777), false);
   assert.equal(allowed(executable, '/opt/homebrew/Cellar', 80, 0o777), false);
   assert.equal(allowed(executable, '/opt/homebrew/Cellar', 80, 0o775, 'linux'), false);
   assert.equal(allowed(executable, '/opt/homebrew/Cellar', 80, 0o775, 'darwin', [20]), false);
@@ -340,5 +347,47 @@ test('real runner preserves argv, validates process status, bounds output and ca
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 100);
     try { await assert.rejects(runBackend(file, 'apply', [], controller.signal), /aborted/); }
     finally { clearTimeout(timer); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('first menu stays quiet for a clean plan but surfaces warnings, next steps and a missing configured CLI', async () => {
+  const quiet = ui([undefined]);
+  await runWizard(quiet.ctx, async action => report(action));
+  assert.equal(quiet.notices.length, 0);
+  for (const tweak of [(v: SetupReport) => { v.warnings = ['Legacy adapter preserved']; },
+    (v: SetupReport) => { v.nextSteps = ['Select an existing signed CLI']; },
+    (v: SetupReport) => { v.evidence.configuration = 'matching'; v.evidence.binaryPresent = false; }]) {
+    const mock = ui([undefined]);
+    await runWizard(mock.ctx, async action => { const value = report(action); tweak(value); return value; });
+    assert.equal(mock.notices.length, 1);
+  }
+});
+
+test('successful apply keeps specific backend warnings and next steps, dropping only restated generic ones', async () => {
+  const mock = ui(['Advanced…', 'Configure Peekaboo MCP'], true);
+  await runWizard(mock.ctx, async action => {
+    const value = report(action);
+    if (action === 'apply') {
+      value.warnings = ['Managed version directory created'];
+      value.nextSteps = ['Peekaboo.app launched, but its Bridge socket did not appear within 20 seconds.', 'Run pi-shared peekaboo check --json for probes.', 'Restart Pi or /reload, then discover Peekaboo.'];
+    }
+    return value;
+  });
+  const done = mock.notices.at(-1)!;
+  assert.match(done, /Bridge socket did not appear/);
+  assert.match(done, /Warning: Managed version directory created/);
+  assert.ok(!done.includes('Run pi-shared peekaboo check'));
+  assert.equal(done.match(/reload/g)!.length, 1);
+});
+
+test('unsafe ancestor errors name the cause and quote the path', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'setup-ancestor-'));
+  try {
+    const parent = join(dir, 'shared dir');
+    mkdirSync(parent);
+    const file = join(parent, 'pi-shared'); writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    chmodSync(parent, 0o777);
+    assert.throws(() => resolveSetupExecutable({ PI_SHARED_SETUP_BIN: file }),
+      (e: Error) => e.message.includes(`"${realpathSync(parent)}" is writable by other users`) && e.message.includes(`chmod go-w "${realpathSync(parent)}"`));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

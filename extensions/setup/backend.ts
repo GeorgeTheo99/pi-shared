@@ -61,14 +61,19 @@ export function parseReport(text: string, action: SetupAction): SetupReport {
 	return value;
 }
 
-// Homebrew commonly makes its prefix/Cellar admin-group writable on macOS.
-// Accept only those two directories for this exact package layout, never an
-// arbitrary group-writable source checkout, package subdirectory or executable.
+// Homebrew commonly makes its prefix/Cellar group-writable on macOS: group
+// admin (80) by default, or staff (20) on user-owned/migrated prefixes. Accept
+// only those two directories for this exact package layout and a caller in that
+// group, never an arbitrary group-writable source checkout, package subdirectory
+// or executable. Homebrew already trusts these groups with its shared tree.
 export function homebrewAdminAncestor(executable: string, ancestor: string, gid: number, mode: number,
-	platform: string = process.platform, groups: number[] = process.getgroups?.() ?? []): boolean {
+	platform: string = process.platform, groups: number[] = process.getgroups?.() ?? [],
+	owner: number = process.getuid?.() ?? -1, uid: number = process.getuid?.() ?? -2): boolean {
 	const cellar = executable.match(/^(\/opt\/homebrew|\/usr\/local)\/Cellar\/pi-shared\/[^/]+\/bin\/pi-shared$/)?.[1];
 	return platform === "darwin" && cellar !== undefined &&
-		(ancestor === cellar || ancestor === `${cellar}/Cellar`) && gid === 80 && groups.includes(80) &&
+		(ancestor === cellar || ancestor === `${cellar}/Cellar`) && groups.includes(gid) &&
+		// Every local user is in staff, so a staff prefix must also be the caller's own.
+		(gid === 80 || gid === 20 && owner === uid) &&
 		!(mode & 0o002);
 }
 
@@ -86,8 +91,9 @@ export function resolveSetupExecutable(env: NodeJS.ProcessEnv = process.env): st
 			for (let parent = dirname(resolved); parent !== dirname(parent); parent = dirname(parent)) {
 				const info = statSync(parent);
 				// A sticky temporary root is permitted for explicitly selected development fixtures.
-				if ((info.uid !== 0 && info.uid !== uid) || ((info.mode & 0o022) && !(info.mode & 0o1000) &&
-					!homebrewAdminAncestor(resolved, parent, info.gid, info.mode))) throw new Error("Unsafe setup executable ancestor.");
+				if (info.uid !== 0 && info.uid !== uid) throw new Error(`Unsafe setup executable ancestor: "${parent}" is owned by another user.`);
+				if ((info.mode & 0o022) && !(info.mode & 0o1000) && !homebrewAdminAncestor(resolved, parent, info.gid, info.mode, process.platform, process.getgroups?.() ?? [], info.uid))
+					throw new Error(`Unsafe setup executable ancestor: "${parent}" is writable by other users. Fix with: chmod go-w "${parent}"`);
 			}
 			accessSync(resolved, constants.X_OK);
 			return resolved;

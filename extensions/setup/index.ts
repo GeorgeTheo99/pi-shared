@@ -16,20 +16,24 @@ type WizardContext = Pick<ExtensionCommandContext, "ui">;
 
 export function formatReport(report: SetupReport): string {
 	const e = report.evidence;
+	const perms = e.permissionSource === null && Object.values(e.permissions).every(v => v === "unknown") ? [] :
+		[`Permissions (${e.permissionSource ?? "unverified source"}): screen ${e.permissions.screenRecording}, accessibility ${e.permissions.accessibility}, input ${e.permissions.eventSynthesizing}`];
+	// Compact: only facts that were established or will change. Desktop use is never tested here.
 	return [
 		clean(report.summary),
-		`Permission host: ${e.mode === "bridge" ? "desktop app Bridge (app owns permissions)" : "direct CLI"}`,
-		...(e.mode === "bridge" ? [`Bridge socket: ${clean(e.bridgeSocketPath ?? "not selected")} (${e.bridgeSocketState}; presence is not readiness)`] : []),
-		`Executable: ${clean(e.binaryPath ?? "not selected")} (${e.binaryPresent ? "present" : "absent"}; runnable: ${e.runnable})`,
-		`MCP configuration: ${e.configuration}; connection: ${e.mcp}${e.toolCount === null ? "" : `; tools: ${e.toolCount}`}`,
-		`Permissions (${e.permissionSource ?? "source unverified"}): screen ${e.permissions.screenRecording}, accessibility ${e.permissions.accessibility}, input ${e.permissions.eventSynthesizing}`,
-		"Desktop interaction: not tested. A connection or permission report is not proof of successful computer use.",
-		...report.actions.map(s => `Action: ${clean(s)}`),
+		`Host: ${e.mode === "bridge" ? `Peekaboo.app Bridge (socket ${e.bridgeSocketState}${e.bridgeSocketPath && e.bridgeSocketPath !== APP_SOCKET ? `: ${clean(e.bridgeSocketPath)}` : ""})` : "direct CLI"}`,
+		`CLI: ${clean(e.binaryPath ?? "not selected")}${e.binaryPresent ? "" : " (not installed)"}${e.runnable === "not-tested" ? "" : `; runs: ${e.runnable}`}`,
+		`MCP: ${e.configuration}${e.mcp === "not-tested" ? "" : `; ${e.mcp}`}${e.toolCount === null ? "" : `; ${e.toolCount} tools`}`,
+		...perms,
+		...report.actions.map(s => `• ${clean(s)}`),
 		...report.warnings.map(s => `Warning: ${clean(s)}`),
 		...report.errors.map(s => `Error: ${clean(s)}`),
 		...report.nextSteps.map(s => `Next: ${clean(s)}`),
 	].join("\n");
 }
+
+// A conflict may be an outdated setup-managed install, which the backend upgrades; it refuses custom commands.
+const isFresh = (plan: SetupReport) => ["missing", "conflict"].includes(plan.evidence.configuration);
 
 function replaceOptions(options: string[], remove: string[], add: string[]): string[] {
 	return [...options.filter((value, index) => !remove.includes(value) &&
@@ -43,10 +47,11 @@ export async function runWizard(ctx: WizardContext, run: Run, signal: AbortSigna
 	// stays one step away under Advanced.
 	let advanced = false;
 	while (!signal.aborted) {
-		ctx.ui.notify(formatReport(plan), plan.ok ? "info" : "warning");
+		// Inventory only matters when it blocks progress or the user is choosing routes.
+		if (!plan.ok || advanced || plan.warnings.length || plan.nextSteps.length || !plan.evidence.binaryPresent && !isFresh(plan))
+			ctx.ui.notify(formatReport(plan), plan.ok ? "info" : "warning");
 		const choices: string[] = [];
-		// A conflict may be an outdated setup-managed install, which the backend upgrades; it refuses custom commands.
-		const fresh = ["missing", "conflict"].includes(plan.evidence.configuration);
+		const fresh = isFresh(plan);
 		if (!advanced) {
 			if (fresh) choices.push(RECOMMENDED);
 			if (plan.evidence.binaryPresent) choices.push("Check CLI and permissions (no desktop actions)");
@@ -124,16 +129,21 @@ export async function runWizard(ctx: WizardContext, run: Run, signal: AbortSigna
 		const approved = await ctx.ui.confirm("Apply this Peekaboo setup plan?", [
 			formatReport(plan),
 			plan.evidence.mode === "bridge"
-				? `Uses the desktop app's permissions with the full tool catalog.${options.includes("--install-app") ? " Installs the signed Peekaboo.app into /Applications if missing, then launches it." : ""} The app must be running and the desktop unlocked. OS permissions remain manual.`
-				: "Exposes the full tool catalog with direct CLI ownership, including foreground control. OS permissions remain manual.",
-			"Does not grant consent to sensitive/external actions or prove desktop readiness.",
+				? `Uses Peekaboo.app's permissions with the full tool catalog.${options.includes("--install-app") ? " Installs the signed app into /Applications if missing, then launches it." : ""} Needs the app running and the desktop unlocked; OS permissions are granted by you.`
+				: "Exposes the full tool catalog with direct CLI ownership, including foreground control. OS permissions are granted by you.",
 		].join("\n\n"), { signal });
 		if (signal.aborted || !approved) return;
 		const applied = await run("apply", [...options, "--yes", "--expected-plan", plan.planId]);
-		ctx.ui.notify(formatReport(applied), applied.ok ? "info" : "warning");
-		if (applied.ok) ctx.ui.notify(applied.evidence.mode === "bridge"
-			? "In System Settings › Privacy & Security, allow Peekaboo under Accessibility and Screen & System Audio Recording (Peekaboo's MCP server cannot start until Screen Recording is granted) and keep Peekaboo.app running. Then restart Pi or run /reload, and /setup peekaboo to check. No desktop action was tested."
-			: "Restart Pi or run /reload to load MCP configuration, then /setup peekaboo to check. Verify permissions again through the actual Pi MCP process; setup-process grants can differ. No desktop action was tested.", "info");
+		// One concise success message; drop only the backend's generic steps that it restates.
+		const generic = /^(In System Settings|Run pi-shared peekaboo check|Restart Pi or \/reload)/;
+		ctx.ui.notify(applied.ok ? [clean(applied.summary),
+			...applied.warnings.map(s => `Warning: ${clean(s)}`),
+			...applied.nextSteps.filter(s => !generic.test(s)).map(s => `Next: ${clean(s)}`),
+			applied.evidence.mode === "bridge"
+				? "Next: in System Settings › Privacy & Security, allow Peekaboo under Accessibility and Screen & System Audio Recording (its MCP server cannot start without Screen Recording) and keep Peekaboo.app running."
+				: "Next: grant the Pi host Accessibility and Screen & System Audio Recording when macOS asks.",
+			"Then restart Pi or run /reload, and /setup peekaboo to check."].join("\n")
+			: formatReport(applied), applied.ok ? "info" : "warning");
 		return;
 	}
 }
@@ -187,7 +197,6 @@ export default function setupExtension(pi: ExtensionAPI) {
 					return outcome.report;
 				}
 				if (target === "peekaboo") {
-					ctx.ui.notify("Peekaboo uses Pi's official MCP support. /setup mcp checks configuration and previews legacy-adapter migration; no adapter installation is required.", "info");
 					await runWizard(ctx, (action, extra) => progress(action, signal => runBackend(command, action, ["--agent-dir", getAgentDir(), ...extra], signal)), controller.signal);
 				} else if (isCapability(target)) {
 					const id = target;
