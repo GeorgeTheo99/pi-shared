@@ -176,7 +176,7 @@ Current generated `pi-*` shell launchers call this automatically before writing 
 
 It reads the alias file and emits:
 
-- `models.json` — a Pi provider/models config with capability-aware reasoning controls, protocol/tool/replay compatibility, api_type selection, vision heuristics, and anthropic baseUrl overrides.
+- `models.json` — a Pi provider/models config with capability-aware reasoning controls, protocol/tool/replay compatibility, api_type selection, vision heuristics, and anthropic baseUrl overrides. pi-catalog owns only the providers that point at its gateway endpoint and merges them into an existing file: other providers, other top-level keys, and the owner's `modelOverrides` inside the generated provider are preserved. Customize gateway models in the gateway, or with `modelOverrides`; other edits inside the generated provider are replaced on the next render. An unparseable file is refused, not replaced.
 - `pi-launchers.zsh` — `pi-<alias>()` + `pi-list` + `pi-restart` (+ optional `pi-default`/`pi-openai`/`pi-anthropic` via `--direct-launchers`). `pi-list` groups catalog launchers into local and cloud sections from the catalog's canonical `cloud:` key namespace, with direct Pi and management commands shown separately. No `claude-*`/`codex-*` — standardize on `pi`.
 
 The model id in the launcher always matches the id in `models.json` (local = alias key / omlx_id, cloud = provider_model_id), so the two can never drift.
@@ -220,8 +220,8 @@ Contract:
 - Management interfaces need no `PI_UPSTREAM_BIN` and run offline with no provider
   or service effects: `--launcher-check` (drift check; used by tooling directly),
   `pi models` (grouped human output; `--local|--cloud|--direct`, `--verbose`, `--json`),
-  `--launcher-list` (legacy tab-separated aliases/routes), `--launcher-refresh` (explicit offline regen with manual
-  `models.json` edit protection), `--launcher-help`, and one-time
+  `--launcher-list` (legacy tab-separated aliases/routes), `--launcher-refresh` (explicit offline regen; merges
+  into `models.json` without touching owner providers or `modelOverrides`), `--launcher-help`, and one-time
   `--launcher-migrate <legacy pi-launchers.zsh>` which reconstructs the config
   from the legacy launcher's recognized JSON metadata (source, provider, profile,
   endpoint, direct opt-out) without evaluating any shell and never clobbering an

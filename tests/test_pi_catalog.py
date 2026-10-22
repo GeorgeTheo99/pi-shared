@@ -1206,6 +1206,38 @@ def test_symlink_safe_write(tmp_path):
     assert "ls99-models" in json.loads(target.read_text())["providers"]
 
 
+def test_models_out_replaces_only_the_generated_provider(tmp_path):
+    aliases = {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}}
+    p = _load_aliases(tmp_path, aliases)
+    mp = tmp_path / "m.json"
+    owner = {"models": [{"id": "gpt-6-astra"}], "modelOverrides": {"gpt-6-astra": {"contextWindow": 872000}}}
+    mp.write_text(json.dumps({"owner-setting": True, "providers": {
+        "openai-codex": owner,
+        "ls99-models": {"apiKey": "stale", "models": [], "modelOverrides": {"x": {"contextWindow": 1000}}},
+    }}))
+    r = _run("--aliases", str(p), "--models-out", str(mp))
+    assert r.returncode == 0, r.stderr
+    data = json.loads(mp.read_text())
+    assert data["owner-setting"] is True
+    assert data["providers"]["openai-codex"] == owner
+    generated = data["providers"]["ls99-models"]
+    assert generated["apiKey"] == "cloud"
+    assert [m["id"] for m in generated["models"]] == ["x"]
+    assert generated["modelOverrides"] == {"x": {"contextWindow": 1000}}
+    r = _run("--aliases", str(p), "--models-out", str(mp), "--check")
+    assert r.returncode == 0, r.stderr
+
+
+def test_unparseable_models_out_is_not_replaced(tmp_path):
+    p = _load_aliases(tmp_path, {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}})
+    mp = tmp_path / "m.json"
+    mp.write_text("{not json")
+    r = _run("--aliases", str(p), "--models-out", str(mp))
+    assert r.returncode != 0
+    assert "cannot merge" in r.stderr
+    assert mp.read_text() == "{not json"
+
+
 def test_empty_catalog_refused(tmp_path):
     p = _load_aliases(tmp_path, {})
     r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"))

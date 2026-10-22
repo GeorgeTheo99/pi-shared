@@ -1104,6 +1104,32 @@ def _dump(data: dict) -> str:
     return json.dumps(data, indent=2) + "\n"
 
 
+def merge_models(existing: bytes | str, rendered: dict, provider_name: str) -> str:
+    """Replace only this generator's providers in a Pi models.json.
+
+    The generator owns every provider pointing at its gateway endpoint (so a
+    renamed provider is replaced, not duplicated). Everything else belongs to
+    the owner: other providers, other top-level keys, and Pi's per-provider
+    ``modelOverrides`` inside the generated provider.
+    """
+    text = existing.decode("utf-8") if isinstance(existing, bytes) else existing
+    if not text.strip():
+        return _dump(rendered)
+    config = json.loads(text)
+    providers = config.get("providers", {}) if isinstance(config, dict) else None
+    if not isinstance(providers, dict):
+        raise ValueError("existing models.json must be an object with a providers object")
+    generated = dict(rendered["providers"][provider_name])
+    owned = [name for name, value in providers.items()
+             if name == provider_name or (isinstance(value, dict) and value.get("baseUrl") == generated["baseUrl"])]
+    overrides = next((providers[name]["modelOverrides"] for name in [provider_name, *owned]
+                      if isinstance(providers.get(name), dict) and "modelOverrides" in providers[name]), None)
+    if overrides is not None:
+        generated["modelOverrides"] = overrides
+    kept = {name: value for name, value in providers.items() if name not in owned}
+    return _dump({**config, "providers": {**kept, provider_name: generated}})
+
+
 def _check_one(path: Path, rendered: str, label: str) -> bool:
     target = _resolve_write_target(path)
     current = target.read_text() if target.exists() else ""
@@ -1328,7 +1354,11 @@ def main(argv: list[str] | None = None) -> int:
             gateway_api_key=args.gateway_api_key,
             omlx_status=omlx_status,
         )
-        content = _dump(models)
+        target = _resolve_write_target(args.models_out)
+        try:
+            content = merge_models(target.read_bytes() if target.exists() else b"", models, provider_name)
+        except (OSError, UnicodeError, ValueError) as exc:
+            parser.error(f"cannot merge into {args.models_out}: {exc}")
         models_digest = hashlib.sha256(content.encode()).hexdigest()
         renders.append((args.models_out, content, "pi models.json"))
     if args.launchers_out:

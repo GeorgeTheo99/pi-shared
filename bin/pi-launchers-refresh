@@ -19,10 +19,6 @@ VALUES = {"--aliases", "--models-out", "--launchers-out", "--provider-name", "--
 FLAGS = {"--direct-launchers", "--no-direct-launchers", "--allow-empty-catalog"}
 
 
-class EditedModels(ValueError):
-    pass
-
-
 def read_owned(path, limit, missing=False):
     if missing and not path.exists() and not path.is_symlink():
         return b""
@@ -97,11 +93,11 @@ def arguments(raw, launcher):
     model_rows = [line[len("# pi-catalog-models-sha256: "):] for line in text.splitlines() if line.startswith("# pi-catalog-models-sha256: ")]
     if len(model_rows) > 1:
         raise ValueError("Duplicate models ownership metadata")
-    expected = model_rows[0] if model_rows else "unmanaged"
-    if expected != "unmanaged" and (len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected)):
+    recorded = model_rows[0] if model_rows else "unmanaged"
+    if recorded != "unmanaged" and (len(recorded) != 64 or any(c not in "0123456789abcdef" for c in recorded)):
         raise ValueError("Invalid models ownership metadata")
     return (args, [Path(values[key]) for key in ("--aliases", "--omlx-status") if values.get(key)], cache,
-            Path(values["--models-out"]) if values.get("--models-out") else None, expected)
+            Path(values["--models-out"]) if values.get("--models-out") else None)
 
 
 def refresh(launcher, poll=None):
@@ -113,17 +109,12 @@ def refresh(launcher, poll=None):
         stamp = hashlib.sha256(repr((str(launcher), info.st_ino, info.st_mtime_ns, info.st_size, info.st_mode)).encode()).hexdigest()
         raw = read_owned(launcher, 2 * 1024 * 1024)
         stamp = hashlib.sha256(raw).hexdigest()
-        args, inputs, cache, models, expected = arguments(raw, launcher)
+        args, inputs, cache, models = arguments(raw, launcher)
         contents = [read_owned(p, 8 * 1024 * 1024, missing=True) for p in inputs]
         model_raw = read_owned(models, 8 * 1024 * 1024, missing=True) if models else b""
         stamp = hashlib.sha256(raw + b"\0" + b"\0".join(contents) + b"\0" + model_raw).hexdigest()
         if poll == stamp:
             return 0
-        if models and models.exists():
-            writes_models = bool(json.loads(contents[0])) if contents[0] else False
-            if ((expected == "unmanaged" and writes_models)
-                    or (expected != "unmanaged" and hashlib.sha256(model_raw).hexdigest() != expected)):
-                raise EditedModels("Generated models were edited or are not managed. Automatic refresh paused; inspect model configuration before using pi-regen.")
         with tempfile.TemporaryDirectory(prefix="pi-launcher-status-") as directory:
             status_file = Path(directory) / "status.json"
             status_file.write_text(json.dumps({"models": [{"id": k, **v} for k, v in cache.items()]}))
@@ -147,8 +138,7 @@ def refresh(launcher, poll=None):
             return 0
         if poll is not None:
             print(stamp)
-        message = str(exc) if isinstance(exc, EditedModels) else "Pi shortcut refresh failed; saved outputs were not sourced. Run pi-regen or setup to inspect configuration."
-        print(message, file=sys.stderr)
+        print("Pi shortcut refresh failed; saved outputs were not sourced. Run pi-regen or setup to inspect configuration.", file=sys.stderr)
         return 1
 
 

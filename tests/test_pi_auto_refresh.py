@@ -50,19 +50,23 @@ def test_malformed_catalog_is_reported_once_without_sourcing_or_replacing_output
     assert second.returncode == 0 and not second.stderr and not second.stdout
 
 
-def test_manual_model_edits_are_preserved_and_warn_once(machine):
+def test_owner_model_edits_survive_refresh(machine):
     assert render(machine).returncode == 0
     models = paths(machine)[1]
     data = json.loads(models.read_text())
-    data["providers"]["model-gateway"]["apiKey"] = "private-model-preference"
+    data["providers"]["owner-provider"] = {"models": [{"id": "private-model-preference"}]}
+    data["providers"]["model-gateway"]["modelOverrides"] = {"m": {"contextWindow": 4096}}
+    data["providers"]["model-gateway"]["apiKey"] = "stale"
     models.write_text(json.dumps(data))
-    before_models, before_launcher = models.read_bytes(), paths(machine)[2].read_bytes()
-    first = invoke(machine, "--poll", "")
-    assert first.returncode == 1 and "paused" in first.stderr
-    assert "private-model-preference" not in first.stdout + first.stderr
-    assert models.read_bytes() == before_models and paths(machine)[2].read_bytes() == before_launcher
-    again = invoke(machine, "--poll", first.stdout.strip())
-    assert again.returncode == 0 and not again.stderr
+    machine[1].write_text(json.dumps({"cloud:new": {"alias": "new", "name": "new", "provider_model_id": "new"}}))
+    result = invoke(machine, "--poll", "")
+    assert result.returncode == 0, result.stderr
+    assert "private-model-preference" not in result.stdout + result.stderr
+    refreshed = json.loads(models.read_text())["providers"]
+    assert refreshed["owner-provider"] == data["providers"]["owner-provider"]
+    assert refreshed["model-gateway"]["modelOverrides"] == {"m": {"contextWindow": 4096}}
+    assert refreshed["model-gateway"]["apiKey"] != "stale"
+    assert "new" in [m["id"] for m in refreshed["model-gateway"]["models"]]
 
 
 def test_untrusted_shell_body_is_not_evaluated(machine):

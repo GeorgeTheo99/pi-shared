@@ -248,8 +248,8 @@ def initialize_direct(path, preference=None, check=False):
 
 
 def refresh(path, config, check=False, *, write=True):
-    """Re-render both outputs in memory, protecting manual models edits before writes."""
-    from pi_catalog import render_models, _dump, _load_omlx_status
+    """Re-render both outputs in memory; models.json changes only in the generated provider."""
+    from pi_catalog import merge_models, render_models, _load_omlx_status
     gen = config["generation"]
     values = generation_values(gen["args"])
     if "--direct-only" in values:
@@ -275,12 +275,10 @@ def refresh(path, config, check=False, *, write=True):
     expected = gen["modelsSha256"]
     if models:
         old = read_owned(models, missing=True)
-        if old and (expected == "unmanaged" or digest(old) != expected):
-            raise ValueError("Generated models were edited or unmanaged; inspect models.json before regenerating with pi-catalog")
         if aliases:
-            content = _dump(render_models(aliases, provider_name=values["--provider-name"],
-                            gateway_url=values["--gateway-url"], gateway_api_key=values["--gateway-api-key"],
-                            omlx_status=status))
+            content = merge_models(old, render_models(aliases, provider_name=values["--provider-name"],
+                                   gateway_url=values["--gateway-url"], gateway_api_key=values["--gateway-api-key"],
+                                   omlx_status=status), values["--provider-name"])
             expected = digest(content.encode())
     updated = make_config(aliases, gen["args"], status, expected, digest(raw), config.get("defaultProfile"))
     changed = updated != config or (content is not None and content.encode() != old)

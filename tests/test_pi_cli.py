@@ -612,13 +612,19 @@ def test_status_hints_are_captured_and_reused(machine):
     assert status["qwen"] == {"max_context_window": 4242, "thinking_default": True}
 
 
-def test_manual_models_edit_pauses_refresh(machine):
+def test_refresh_keeps_owner_models_outside_generated_provider(machine):
     assert render(machine).returncode == 0
     models = machine["home"] / ".pi-omlx/agent/models.json"
-    models.write_text(json.dumps({"providers": {"model-gateway": {"apiKey": "hand-edited"}}}))
+    data = json.loads(models.read_text())
+    data["providers"]["openai-codex"] = {"modelOverrides": {"gpt-6-astra": {"contextWindow": 872000}}}
+    data["providers"]["model-gateway"]["apiKey"] = "hand-edited"
+    models.write_text(json.dumps(data))
     result = launch(machine, "--launcher-refresh", upstream=False)
-    assert result.returncode == 1 and "edited" in result.stderr
-    assert "hand-edited" in models.read_text()
+    assert result.returncode == 0, result.stderr
+    refreshed = json.loads(models.read_text())["providers"]
+    assert refreshed["openai-codex"] == data["providers"]["openai-codex"]
+    assert refreshed["model-gateway"]["apiKey"] != "hand-edited"
+    assert launch(machine, "--launcher-check", upstream=False).returncode == 0
 
 
 # --- migration -------------------------------------------------------------
