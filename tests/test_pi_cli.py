@@ -100,7 +100,7 @@ def test_cli_out_generates_expected_schema(machine):
 def test_direct_launchers_add_native_subscription_routes(machine):
     assert render(machine, "--direct-launchers").returncode == 0
     routes = json.loads(machine["config"].read_text())["routes"]
-    assert routes["openai"] == {"provider": "openai-codex", "model": "gpt-6-astra",
+    assert routes["openai"] == {"provider": "openai", "model": "gpt-6-astra",
                                 "profile": None, "gateway": False}
     assert routes["anthropic"] == {"provider": "anthropic", "model": "claude-sonnet-4-6",
                                    "profile": None, "gateway": False}
@@ -198,34 +198,95 @@ def test_openai_preset_unsets_api_key_env(machine):
     assert render(machine, "--direct-launchers").returncode == 0
     inv = invocation(launch(machine, "openai", env_extra={
         "OPENAI_API_KEY": "secret", "OPENAI_BASE_URL": "https://invalid.example"}))
-    assert inv["argv"] == ["--provider", "openai-codex", "--model", "gpt-6-astra"]
+    assert inv["argv"] == ["--provider", "openai", "--model", "gpt-6-astra"]
     assert inv["env"]["OPENAI_API_KEY"] is None and inv["env"]["OPENAI_BASE_URL"] is None
 
 
-@pytest.mark.parametrize("provider,model,expected", [
-    ("openai-codex", "gpt-6-sol", "gpt-6-sol"),
-    ("openai-codex", "gpt-6-luna", "gpt-6-luna"),
-    ("anthropic", "claude-sonnet", "gpt-6-astra"),
+@pytest.mark.parametrize("auth,provider", [
+    ({}, "openai"),
+    ({"openai": {"type": "oauth"}, "openai-codex": {"type": "oauth"}}, "openai"),
+    ({"openai-codex": {"type": "oauth"}}, "openai-codex"),
+    ({"openai": {"type": "api_key", "key": "stored"}, "openai-codex": {"type": "oauth"}}, "openai-codex"),
 ])
-def test_openai_preset_uses_native_saved_codex_default(machine, provider, model, expected):
+def test_openai_preset_uses_the_subscription_login(machine, auth, provider):
+    assert render(machine, "--direct-launchers").returncode == 0
+    profile = machine["home"] / ".pi/agent"
+    profile.mkdir()
+    (profile / "auth.json").write_text(json.dumps(auth))
+    inv = invocation(launch(machine, "openai", env_extra={"OPENAI_API_KEY": "secret"}))
+    assert inv["argv"] == ["--provider", provider, "--model", "gpt-6-astra"]
+    assert inv["env"]["OPENAI_API_KEY"] is None
+
+
+@pytest.mark.parametrize("auth,saved", [
+    ({"openai": {"type": "oauth"}}, "openai"),
+    ({"openai-codex": {"type": "oauth"}}, "openai-codex"),
+    ({}, None),
+    ({"openai": {"type": "api_key", "key": "stored"}}, None),
+])
+def test_openai_default_is_saved_only_with_a_plan_login(machine, auth, saved):
+    assert render(machine, "--direct-launchers").returncode == 0
+    profile = machine["home"] / ".pi/agent"
+    profile.mkdir()
+    (profile / "auth.json").write_text(json.dumps(auth))
+    result = launch(machine, "openai", "--default")
+    settings = profile / "settings.json"
+    if saved:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(settings.read_text())["defaultProvider"] == saved
+    else:
+        assert result.returncode != 0 and "/login openai" in result.stderr
+        assert not settings.exists()
+
+
+def test_openai_model_override_stays_on_the_plan(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    profile = machine["home"] / ".pi/agent"
+    profile.mkdir()
+    (profile / "auth.json").write_text(json.dumps({"openai-codex": {"type": "oauth"}}))
+    inv = invocation(launch(machine, "openai", "--model", "gpt-6-sol", env_extra={"OPENAI_API_KEY": "secret"}))
+    assert inv["argv"] == ["--provider", "openai-codex", "--model", "gpt-6-sol"]
+    assert inv["env"]["OPENAI_API_KEY"] is None
+    # An explicit provider still wins, as a stock selection.
+    inv = invocation(launch(machine, "openai", "--provider", "other", "--model", "custom"))
+    assert inv["argv"] == ["--provider", "other", "--model", "custom"]
+
+
+def test_openai_preset_refuses_a_stored_api_key(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    profile = machine["home"] / ".pi/agent"
+    profile.mkdir()
+    (profile / "auth.json").write_text(json.dumps({"openai": {"type": "api_key", "key": "stored"}}))
+    result = launch(machine, "openai")
+    assert result.returncode != 0 and "/login openai" in result.stderr
+    assert not result.stdout
+
+
+@pytest.mark.parametrize("provider,model,expected,is_default", [
+    ("openai", "gpt-6-sol", "gpt-6-sol", True),
+    # A legacy openai-codex default carries its model over; bare `pi` still uses openai-codex.
+    ("openai-codex", "gpt-6-luna", "gpt-6-luna", False),
+    ("anthropic", "claude-sonnet", "gpt-6-astra", False),
+])
+def test_openai_preset_uses_native_saved_default(machine, provider, model, expected, is_default):
     assert render(machine, "--direct-launchers").returncode == 0
     profile = machine["home"] / ".pi/agent"
     profile.mkdir()
     (profile / "settings.json").write_text(json.dumps({"defaultProvider": provider, "defaultModel": model}))
     inv = invocation(launch(machine, "openai"))
-    assert inv["argv"] == ["--provider", "openai-codex", "--model", expected]
+    assert inv["argv"] == ["--provider", "openai", "--model", expected]
     listing = json.loads(launch(machine, "models", "--json", upstream=False).stdout)
     route = next(row for row in listing["models"] if row["alias"] == "openai")
     assert route["model"] == expected
-    assert route["default"] is (provider == "openai-codex")
+    assert route["default"] is is_default
     legacy_listing = launch(machine, "--launcher-list", upstream=False)
-    assert f"openai\topenai-codex/{expected}" in legacy_listing.stdout
-    # An explicit stock selection still wins over the shortcut and saved default.
+    assert f"openai\topenai/{expected}" in legacy_listing.stdout
+    # An explicit model wins over the shortcut's saved default but stays on the plan.
     inv = invocation(launch(machine, "openai", "--model", "gpt-6-astra"))
-    assert inv["argv"] == ["--model", "gpt-6-astra"]
+    assert inv["argv"] == ["--provider", "openai", "--model", "gpt-6-astra"]
 
 
-def test_openai_context_choice_persists_all_codex_models_without_launching(machine):
+def test_openai_context_choice_persists_all_subscription_models_without_launching(machine):
     assert render(machine, "--direct-launchers").returncode == 0
     profile = machine["home"] / ".pi/agent"
     profile.mkdir()
@@ -241,7 +302,8 @@ def test_openai_context_choice_persists_all_codex_models_without_launching(machi
     assert result.returncode == 0 and not result.stdout, result.stderr
     assert "standard (272K) for 6 models" in result.stderr
     data = json.loads(model_file.read_text())["providers"]
-    assert data["openai"]["modelOverrides"]["gpt-6-sol"]["contextWindow"] == 1050000
+    openai = data["openai"]["modelOverrides"]
+    assert len(openai) == 6 and {value["contextWindow"] for value in openai.values()} == {272000}
     overrides = data["openai-codex"]["modelOverrides"]
     assert overrides["other"] == {"contextWindow": 40000}
     assert overrides["gpt-6-sol"] == {"contextWindow": 272000, "name": "My Sol"}
@@ -250,10 +312,12 @@ def test_openai_context_choice_persists_all_codex_models_without_launching(machi
     assert json.loads((profile / "settings.json").read_text())["defaultModel"] == "gpt-6-sol"
     assert "(0 changed)" in launch(machine, "openai", "--set-context=standard", upstream=False).stderr
     assert launch(machine, "openai", "--set-context=max", upstream=False).returncode == 0
-    overrides = json.loads(model_file.read_text())["providers"]["openai-codex"]["modelOverrides"]
-    assert {value["contextWindow"] for key, value in overrides.items() if key != "other"} == {872000}
+    data = json.loads(model_file.read_text())["providers"]
+    for provider in ("openai", "openai-codex"):
+        overrides = data[provider]["modelOverrides"]
+        assert {value["contextWindow"] for key, value in overrides.items() if key != "other"} == {872000}
     assert invocation(launch(machine, "openai"))["argv"] == [
-        "--provider", "openai-codex", "--model", "gpt-6-sol"]
+        "--provider", "openai", "--model", "gpt-6-sol"]
 
 
 def test_openai_context_choice_uses_explicit_native_profile(machine):
@@ -324,10 +388,10 @@ def test_openai_preset_respects_explicit_profile_default(machine):
     profile = machine["home"] / "other-profile"
     profile.mkdir()
     (profile / "settings.json").write_text(json.dumps({
-        "defaultProvider": "openai-codex", "defaultModel": "gpt-6-sol"}))
+        "defaultProvider": "openai", "defaultModel": "gpt-6-sol"}))
     env = {"PI_CODING_AGENT_DIR": str(profile)}
     inv = invocation(launch(machine, "openai", env_extra=env))
-    assert inv["argv"] == ["--provider", "openai-codex", "--model", "gpt-6-sol"]
+    assert inv["argv"] == ["--provider", "openai", "--model", "gpt-6-sol"]
     listing = json.loads(launch(machine, "models", "--json", upstream=False, env_extra=env).stdout)
     assert next(row for row in listing["models"] if row["alias"] == "openai")["default"] is True
 
@@ -476,6 +540,7 @@ def test_models_default_synonym_and_explicit_profile(mixed_models):
     profile = mixed_models["home"] / "custom"
     profile.mkdir()
     env = {"PI_CODING_AGENT_DIR": str(profile)}
+    (profile / "auth.json").write_text(json.dumps({"openai": {"type": "oauth"}}))
     assert launch(mixed_models, "openai", "--default", env_extra=env).returncode == 0
     data = json.loads(launch(mixed_models, "models", "--json", env_extra=env, upstream=False).stdout)
     assert [row["alias"] for row in data["models"] if row["default"]] == ["openai"]

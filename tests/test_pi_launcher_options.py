@@ -77,33 +77,54 @@ def test_canonical_and_legacy_flags_render_canonical_regen(machine, flag):
     assert result.returncode == 0, result.stderr
     text = assert_state(machine, True, "ls99-models")
     assert '-u PI_CODING_AGENT_DIR -u OPENAI_API_KEY -u OPENAI_BASE_URL' in text
-    assert '--provider openai-codex --model gpt-6-astra --models "openai-codex/*"' in text
+    assert 'pi --provider "$provider" --model gpt-6-astra --models "$provider/*"' in text
     assert '--provider anthropic --model claude-sonnet-4-6 --models "anthropic/*"' in text
     assert render(machine, "--check").returncode == 0
 
 
-@pytest.mark.skipif(not shutil.which("zsh"), reason="zsh is required")
-@pytest.mark.parametrize("override", [[], ["--model", "gpt-5.5"]])
-def test_openai_launcher_defaults_to_astra_and_preserves_explicit_override(machine, override):
-    assert render(machine, "--direct-launchers").returncode == 0
+def run_pi_openai(machine, override, auth=None):
     home, _, env = machine
     bin_dir = home / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(exist_ok=True)
     stub = bin_dir / "pi"
     stub.write_text(f"#!{sys.executable}\n" + "import json, os, sys\n"
                     "print(json.dumps({'args': sys.argv[1:], 'env': {k: os.environ.get(k) "
                     "for k in ('PI_CODING_AGENT_DIR', 'OPENAI_API_KEY', 'OPENAI_BASE_URL')}}))\n")
     stub.chmod(0o755)
-    result = run("zsh", "-f", "-c",
-                 f"source {shlex.quote(str(paths(machine)[2]))}; pi-openai {shlex.join(override)}",
-                 env={**env, "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
-                      "PI_CODING_AGENT_DIR": "/unused-profile", "OPENAI_API_KEY": "test-only",
-                      "OPENAI_BASE_URL": "https://invalid.example"})
+    if auth is not None:
+        (home / ".pi/agent").mkdir(parents=True, exist_ok=True)
+        (home / ".pi/agent/auth.json").write_text(json.dumps(auth))
+    return run("zsh", "-f", "-c",
+               f"source {shlex.quote(str(paths(machine)[2]))}; pi-openai {shlex.join(override)}",
+               env={**env, "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
+                    "PI_CODING_AGENT_DIR": "/unused-profile", "OPENAI_API_KEY": "test-only",
+                    "OPENAI_BASE_URL": "https://invalid.example"})
+
+
+@pytest.mark.skipif(not shutil.which("zsh") or not shutil.which("plutil"), reason="zsh and plutil are required")
+@pytest.mark.parametrize("override", [[], ["--model", "gpt-5.5"]])
+@pytest.mark.parametrize("auth,provider", [
+    (None, "openai"),
+    ({"openai": {"type": "oauth"}, "openai-codex": {"type": "oauth"}}, "openai"),
+    ({"openai-codex": {"type": "oauth"}}, "openai-codex"),
+    ({"openai": {"type": "api_key", "key": "stored"}, "openai-codex": {"type": "oauth"}}, "openai-codex"),
+])
+def test_openai_launcher_uses_the_subscription_and_preserves_explicit_override(machine, override, auth, provider):
+    assert render(machine, "--direct-launchers").returncode == 0
+    result = run_pi_openai(machine, override, auth)
     assert result.returncode == 0, result.stderr
     invocation = json.loads(result.stdout.splitlines()[-1])
-    assert invocation["args"] == ["--provider", "openai-codex", "--model", "gpt-6-astra",
-                                  "--models", "openai-codex/*", *override]
+    assert invocation["args"] == ["--provider", provider, "--model", "gpt-6-astra",
+                                  "--models", f"{provider}/*", *override]
     assert all(value is None for value in invocation["env"].values())
+
+
+@pytest.mark.skipif(not shutil.which("zsh") or not shutil.which("plutil"), reason="zsh and plutil are required")
+def test_openai_launcher_refuses_a_stored_api_key(machine):
+    assert render(machine, "--direct-launchers").returncode == 0
+    result = run_pi_openai(machine, [], {"openai": {"type": "api_key", "key": "stored"}})
+    assert result.returncode == 1
+    assert not result.stdout and "/login openai" in result.stderr
 
 
 @pytest.mark.skipif(not shutil.which("zsh"), reason="zsh is required")

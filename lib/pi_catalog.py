@@ -1067,19 +1067,30 @@ def _render_pi_anthropic() -> str:
 
 
 def _render_pi_openai() -> str:
-    # pi-openai uses Pi's OWN default profile + the openai-codex subscription
-    # provider (ChatGPT Plus/Pro /login OAuth), with any API-key env unset so
-    # the subscription auth path is used. The model is pinned because Pi only
-    # applies --provider when resolving --model; without a pinned model Pi
-    # falls through to its built-in default (google/gemini). --models scopes
-    # the Ctrl+P + /model picker to codex routes only (the default profile's
-    # models.json is the gateway catalog symlink). Last flag wins, so
-    # user-supplied --model/--models still override both.
+    # pi-openai uses Pi's OWN default profile + the openai provider signed in
+    # with Sign in with ChatGPT (/login openai: ChatGPT Plus/Pro plan usage on
+    # api.openai.com), with any API-key env unset so the subscription auth path
+    # is used. A profile with only the legacy openai-codex login keeps it, and a
+    # stored OpenAI API key is refused rather than billed (plutil reads only the
+    # credential types). The model is pinned because Pi only applies --provider when
+    # resolving --model; without a pinned model Pi falls through to its
+    # built-in default (google/gemini). --models scopes the Ctrl+P + /model
+    # picker to OpenAI routes only (the default profile's models.json is the
+    # gateway catalog symlink). Last flag wins, so user-supplied
+    # --model/--models still override both.
     return (
         "pi-openai() {\n"
-        '  echo "Pi → OpenAI subscription (ChatGPT Plus/Pro via /login OAuth)"\n'
+        '  local auth="$HOME/.pi/agent/auth.json" provider=openai openai_type\n'
+        '  openai_type="$(plutil -extract openai.type raw -o - "$auth" 2>/dev/null)"\n'
+        '  if [[ "$openai_type" != oauth && "$(plutil -extract openai-codex.type raw -o - "$auth" 2>/dev/null)" == oauth ]]; then\n'
+        "    provider=openai-codex\n"
+        '  elif [[ -n "$openai_type" && "$openai_type" != oauth ]]; then\n'
+        '    echo "pi-openai: ~/.pi/agent stores an OpenAI API key; sign in with /login openai (Sign in with ChatGPT)" >&2\n'
+        "    return 1\n"
+        "  fi\n"
+        '  echo "Pi → OpenAI subscription (ChatGPT Plus/Pro via Sign in with ChatGPT)"\n'
         "  env -u PI_CODING_AGENT_DIR -u OPENAI_API_KEY -u OPENAI_BASE_URL \\\n"
-        '    pi --provider openai-codex --model gpt-6-astra --models "openai-codex/*" "$@"\n'
+        '    pi --provider "$provider" --model gpt-6-astra --models "$provider/*" "$@"\n'
         "}"
     )
 

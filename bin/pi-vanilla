@@ -32,11 +32,25 @@ if [[ ! -e "$VANILLA_AGENT_DIR/auth.json" && ! -L "$VANILLA_AGENT_DIR/auth.json"
   ln -s "$SOURCE_AGENT_DIR/auth.json" "$VANILLA_AGENT_DIR/auth.json"
 fi
 
-PROVIDER="${PI_VANILLA_PROVIDER:-openai-codex}"
-MODEL="${PI_VANILLA_MODEL:-gpt-5.5}"
+# Default to the ChatGPT plan: Sign in with ChatGPT on openai, else the legacy
+# openai-codex login, never an OpenAI API key (stored or in the environment).
+PROVIDER="${PI_VANILLA_PROVIDER:-}"
+CLEAR_OPENAI_ENV=""
+if [[ -z "$PROVIDER" ]]; then
+  OPENAI_TYPE="$(plutil -extract openai.type raw -o - "$VANILLA_AGENT_DIR/auth.json" 2>/dev/null || true)"
+  CODEX_TYPE="$(plutil -extract openai-codex.type raw -o - "$VANILLA_AGENT_DIR/auth.json" 2>/dev/null || true)"
+  if [[ "$OPENAI_TYPE" == oauth || ( -z "$OPENAI_TYPE" && "$CODEX_TYPE" != oauth ) ]]; then
+    PROVIDER=openai
+  else
+    PROVIDER=openai-codex
+  fi
+  CLEAR_OPENAI_ENV=1
+fi
+MODEL="${PI_VANILLA_MODEL:-gpt-6-astra}"
 THINKING="${PI_VANILLA_THINKING:-high}"
 
-exec env \
+# shellcheck disable=SC2086 # Intentionally empty or two literal options.
+exec env ${CLEAR_OPENAI_ENV:+-u OPENAI_API_KEY -u OPENAI_BASE_URL} \
   PI_CODING_AGENT_DIR="$VANILLA_AGENT_DIR" \
   PI_CODING_AGENT_SESSION_DIR="$VANILLA_SESSION_DIR" \
   PI_SKIP_VERSION_CHECK="${PI_SKIP_VERSION_CHECK:-1}" \

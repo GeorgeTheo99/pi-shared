@@ -173,3 +173,39 @@ test("panel model lists disclose vision capability", () => {
   assert.match(formatted, /cloud\/text-model \(glm ctx:100K thinking text-only\)/);
   assert.match(formatted, /cloud\/vision-model \(gemini ctx:90K thinking vision\)/);
 });
+
+function gptModel(provider: string, id: string, agentDir: string) {
+  return {
+    provider, id, key: `${provider}/${id}`, family: "gpt", contextWindow: 272_000, maxTokens: 128_000,
+    reasoning: true, images: true, agentDir, source: "profile" as const,
+  };
+}
+
+async function signedInProfile(auth: Record<string, unknown>): Promise<string> {
+  const agentDir = await profileDir();
+  await writeFile(path.join(agentDir, "auth.json"), JSON.stringify(auth));
+  return agentDir;
+}
+
+test("GPT panel choices prefer Sign in with ChatGPT and treat an OpenAI API key as API-routed", async () => {
+  const subscription = await signedInProfile({ openai: { type: "oauth" }, "openai-codex": { type: "oauth" } });
+  const apiKey = await signedInProfile({ openai: { type: "api_key", key: "test-only" } });
+  const glm = { ...selectionModels[0], family: "glm" };
+  const pick = (models: ReturnType<typeof gptModel>[]) =>
+    selectModels([glm, ...models], {}, { current: glm.key }).selected.map((model) => model.key);
+
+  assert.deepEqual(pick([gptModel("openai-codex", "gpt-6-sol", subscription), gptModel("openai", "gpt-6-sol", subscription)]),
+    ["openai/gpt-6-sol"]);
+  assert.deepEqual(pick([gptModel("openai", "gpt-6-astra", apiKey), gptModel("openai-codex", "gpt-6-sol", subscription)]),
+    ["openai-codex/gpt-6-sol"]);
+});
+
+test("compare mode counts openai/X and openai-codex/X as one subscription model", async () => {
+  const subscription = await signedInProfile({ openai: { type: "oauth" }, "openai-codex": { type: "oauth" } });
+  const models = [gptModel("openai", "gpt-6-sol", subscription), gptModel("openai-codex", "gpt-6-sol", subscription),
+    gptModel("openai", "gpt-6-luna", subscription)];
+  const keys = selectModels(models, {}, { mode: "compare", count: 3 }).selected.map((model) => model.key);
+  assert.equal(keys.length, 2);
+  assert.ok(keys.includes("openai/gpt-6-luna"));
+  assert.equal(keys.filter((key) => key.endsWith("/gpt-6-sol")).length, 1);
+});

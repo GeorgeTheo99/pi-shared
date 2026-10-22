@@ -74,7 +74,7 @@ function parseResourceLimits(env: Env, errors: string[]): Record<string, number>
 	try {
 		value = JSON.parse(raw);
 	} catch {
-		errors.push("PI_SUBAGENT_RESOURCE_LIMITS must be a JSON object such as {\"openai-codex\":4}.");
+		errors.push("PI_SUBAGENT_RESOURCE_LIMITS must be a JSON object such as {\"openai\":4}.");
 		return {};
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) {

@@ -139,7 +139,7 @@ Requirements and behavior:
 - `pi` must be installed separately and available on `PATH`, or set `PI_VANILLA_PI_BIN=/path/to/pi`.
 - It uses `~/.pi/vanilla-agent` and `~/.pi/vanilla-sessions` by default.
 - If `~/.pi/vanilla-agent/auth.json` does not exist, it symlinks `~/.pi/agent/auth.json` so existing Pi login/auth can be reused without copying secrets.
-- Defaults are `PI_VANILLA_PROVIDER=openai-codex`, `PI_VANILLA_MODEL=gpt-5.5`, and `PI_VANILLA_THINKING=high`; override those environment variables per machine if needed.
+- Defaults are `PI_VANILLA_MODEL=gpt-6-astra` and `PI_VANILLA_THINKING=high`. Without `PI_VANILLA_PROVIDER` it uses the ChatGPT plan: `openai` signed in with Sign in with ChatGPT, else the legacy `openai-codex` login, never an OpenAI API key (it clears `OPENAI_API_KEY`/`OPENAI_BASE_URL`); override those environment variables per machine if needed.
 - Existing shell aliases/functions for `pi` do not affect `pi-vanilla`; if a machine already has a `pi-vanilla` alias/function, remove it or point it at this script.
 
 ## oMLX/cloud profile repair
@@ -199,10 +199,15 @@ Contract:
   profile) before the user's args; an explicit `--provider`/`--model` wins and
   suppresses the implicit profile switch. `pi <alias> --default` saves
   `defaultProvider`/`defaultModel` into the profile's `settings.json` and exits.
-  `pi openai` is the ChatGPT-subscription preset (when direct routes are enabled),
-  follows the native profile's saved Codex model default (otherwise GPT-6 Astra),
-  and clears `OPENAI_API_KEY`/`OPENAI_BASE_URL`. `pi openai --set-context=standard|max`
-  saves 272K or 872K for all six reviewed Codex models in that native profile
+  `pi openai` is the ChatGPT-subscription preset (when direct routes are enabled):
+  the `openai` provider signed in with Sign in with ChatGPT. It follows the native
+  profile's saved OpenAI model default (a legacy `openai-codex` default carries
+  over; otherwise GPT-6 Astra) and clears `OPENAI_API_KEY`/`OPENAI_BASE_URL`. A
+  profile with only the legacy `openai-codex` login keeps it, and a stored OpenAI
+  API key is refused rather than billed (`pi-openai` and `pi-vanilla` apply the
+  same rule; `pi-vanilla` falls back to `openai-codex` instead of refusing).
+  `pi openai --set-context=standard|max` saves 272K or 872K for all six reviewed
+  subscription models (`openai` and legacy `openai-codex`) in that native profile
   and exits without launching Pi; it changes existing override values only when
   explicitly invoked and refuses the configured gateway-generated model output.
   `pi anthropic` selects native Anthropic and its saved model default (otherwise
@@ -283,7 +288,7 @@ pi-catalog --aliases ~/.pi/model-aliases.json \
 `--direct-launchers` adds `pi-default`, `pi-openai`, and `pi-anthropic`
 independently of the machine name or gateway catalog. `pi-openai` uses the
 **current machine's** default Pi profile and ChatGPT subscription login
-(`/login` → OpenAI Codex), not the gateway or an OpenAI API key. `pi-anthropic`
+(`/login openai` → Sign in with ChatGPT), not the gateway or an OpenAI API key. `pi-anthropic`
 uses native Anthropic with `claude-sonnet-4-6` as its fallback model; sign in
 with `/login anthropic` for OAuth (extra usage billing) or configure an API key.
 Neither helper signs in or copies credentials.

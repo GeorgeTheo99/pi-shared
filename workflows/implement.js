@@ -11,8 +11,8 @@
  *                on REVISE the worker retries with the redirect, up to
  *                `maxRounds`. Accepted (or max-round) build is returned.
  *
- * The worker defaults to the OpenAI Codex subscription model
- * `openai-codex/gpt-5.6-sol`, auto-routed through the `~/.pi/agent` profile
+ * The worker defaults to the ChatGPT subscription model
+ * `openai/gpt-5.6-sol` (ChatGPT subscription), auto-routed through the `~/.pi/agent` profile
  * by the shared subagent runner's GPT-family subscription routing. Override per call via
  * `args.workerModel`. Reviewer/planner/scout inherit the parent session model
  * — on a resident local model that keeps spawn cost at ~0 swap, which is the
@@ -27,7 +27,7 @@
  *     scoutModel:   "ls99-models/qwen3.6-27b-mlx",  // optional, default = inherit parent
  *     plannerModel: "ls99-models/glm-5.2-mxfp4",    // optional, default = inherit parent
  *     reviewerModel:"ls99-models/qwen3.6-27b-mlx",  // optional, default = inherit parent
- *     workerModel:  "openai-codex/gpt-5.6-sol",      // optional, default = Codex 5.6 Sol
+ *     workerModel:  "openai/gpt-5.6-sol",            // optional, default = GPT-5.6 Sol
  *   } })
  *
  * Returns { phases, rounds, accepted, plan, finalOutput, recon, history }.
@@ -58,7 +58,7 @@ const modelFor = (stage) => {
 const scoutModel = modelFor("scout");
 const plannerModel = modelFor("planner");
 const reviewerModel = modelFor("reviewer");
-const workerModel = modelFor("worker") ?? "openai-codex/gpt-5.6-sol";
+const workerModel = modelFor("worker") ?? "openai/gpt-5.6-sol";
 
 const reviewerAgent = "reviewer";
 const plannerAgent = "planner";

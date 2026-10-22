@@ -37,7 +37,8 @@ def test_direct_install_ignores_catalog_and_preserves_native_models(machine):
     policy = models.read_bytes()
     updated = json.loads(policy)
     assert updated["providers"]["custom"] == json.loads(before)["providers"]["custom"]
-    assert {v["contextWindow"] for v in updated["providers"]["openai-codex"]["modelOverrides"].values()} == {872000}
+    for provider in ("openai", "openai-codex"):
+        assert {v["contextWindow"] for v in updated["providers"][provider]["modelOverrides"].values()} == {872000}
     assert json.loads(settings.read_text())["defaultProvider"] == "zai"
     assert not (home / ".zshrc").exists()
     config = json.loads(machine["config"].read_text())
@@ -50,7 +51,7 @@ def test_direct_install_ignores_catalog_and_preserves_native_models(machine):
     inv = invocation(launch(machine, "--provider", "zai", "--model", "native-model"))
     assert inv["argv"] == ["--provider", "zai", "--model", "native-model"]
     assert inv["env"]["PI_CODING_AGENT_DIR"] is None
-    assert invocation(launch(machine, "openai"))["argv"][0:2] == ["--provider", "openai-codex"]
+    assert invocation(launch(machine, "openai"))["argv"][0:2] == ["--provider", "openai"]
     assert not (home / ".pi-omlx").exists()
     assert install_direct(machine).returncode == 0
     assert models.read_bytes() == policy
@@ -115,6 +116,7 @@ def test_legacy_gateway_model_output_is_never_modified(machine):
 
 def test_direct_defaults_and_opt_out_survive_reinitialization(machine):
     assert install_direct(machine).returncode == 0
+    (machine["home"] / ".pi/agent/auth.json").write_text('{"openai":{"type":"oauth"}}')
     assert launch(machine, "openai", "--default").returncode == 0
     settings = machine["home"] / ".pi/agent/settings.json"
     before = settings.read_bytes()
@@ -177,7 +179,7 @@ def test_mixed_launcher_direct_preset_works_without_gateway_service(machine):
     assert render(machine, "--direct-launchers").returncode == 0
     result = launch(machine, "openai")
     assert result.returncode == 0, result.stderr
-    assert invocation(result)["argv"][0:2] == ["--provider", "openai-codex"]
+    assert invocation(result)["argv"][0:2] == ["--provider", "openai"]
 
 
 @pytest.mark.parametrize("mutation", ["generation", "route", "default"])
@@ -205,6 +207,18 @@ def install_combined(machine, *args, **env):
     )
 
 
+def test_pre_upgrade_openai_codex_route_still_checks_and_adds_a_gateway(machine):
+    assert install_direct(machine).returncode == 0
+    config = json.loads(machine["config"].read_text())
+    config["routes"]["openai"]["provider"] = "openai-codex"  # As written before Sign in with ChatGPT.
+    machine["config"].write_text(json.dumps(config))
+    check = launch(machine, "--launcher-check", upstream=False)
+    assert check.returncode == 0, check.stderr
+    result = install_combined(machine)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(machine["config"].read_text())["routes"]["openai"]["provider"] == "openai"
+
+
 @pytest.mark.parametrize("shortcut", [True, False])
 def test_add_gateway_preserves_native_configuration_and_is_idempotent(machine, shortcut):
     assert install_direct(machine, *([] if shortcut else ["--no-direct-launchers"])).returncode == 0
@@ -230,7 +244,8 @@ def test_add_gateway_preserves_native_configuration_and_is_idempotent(machine, s
             assert json.loads(path.read_bytes()) == json.loads(body)
     native_models = json.loads((native / "models.json").read_bytes())["providers"]
     assert native_models["custom"] == {"apiKey": "$USER_KEY"}
-    assert {v["contextWindow"] for v in native_models["openai-codex"]["modelOverrides"].values()} == {872000}
+    for provider in ("openai", "openai-codex"):
+        assert {v["contextWindow"] for v in native_models[provider]["modelOverrides"].values()} == {872000}
     gateway = machine["home"] / ".pi-omlx/agent"
     assert set(json.loads((gateway / "models.json").read_text())["providers"]) == {"model-gateway"}
     before = {path: path.read_bytes() for path in (machine["config"], gateway / "models.json", gateway / "settings.json")}

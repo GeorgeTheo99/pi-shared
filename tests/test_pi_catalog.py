@@ -756,7 +756,7 @@ def test_ls99_extras_adds_pi_default_and_pi_openai(tmp_path):
     assert "pi-openai()" in launchers
     assert "pi-anthropic()" in launchers
     assert "-u PI_CODING_AGENT_DIR" in launchers  # both use default profile
-    assert "openai-codex" in launchers
+    assert 'pi --provider "$provider" --model gpt-6-astra --models "$provider/*"' in launchers
     pi_list = launchers.split("pi-list() {", 1)[1].split("\n}", 1)[0]
     assert pi_list.index("Cloud models") < pi_list.index("Direct Pi:") < pi_list.index("Management:")
     assert "pi-default" in pi_list

@@ -38,7 +38,7 @@ Example:
 }
 ```
 
-Config values are model patterns, not hardcoded shared defaults. They are resolved against the active machine's runtime model registries. `modelProfileDirs` defaults to `["~/.pi-omlx/agent", "~/.pi/agent"]` when omitted and is honored only from `~/.pi/panel-config.json`, not project `.pi/panel-config.json`, because profile directories are a trust boundary. GPT-family panel choices prefer `openai-codex` subscription models over API-routed GPT entries.
+Config values are model patterns, not hardcoded shared defaults. They are resolved against the active machine's runtime model registries. `modelProfileDirs` defaults to `["~/.pi-omlx/agent", "~/.pi/agent"]` when omitted and is honored only from `~/.pi/panel-config.json`, not project `.pi/panel-config.json`, because profile directories are a trust boundary. GPT-family panel choices prefer ChatGPT subscription models (`openai` signed in with Sign in with ChatGPT, then legacy `openai-codex`) over API-routed GPT entries, including `openai` with an API key, and compare mode counts `openai/X` and `openai-codex/X` as one model.
 
 ## Notes
 

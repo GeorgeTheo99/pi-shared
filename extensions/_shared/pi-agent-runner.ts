@@ -28,8 +28,12 @@ import {
 	utf8Bytes,
 } from "./interactive-protocol.ts";
 
-const OPENAI_CODEX_PROVIDER = "openai-codex";
-const OPENAI_CODEX_AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
+// GPT-family subagents use a ChatGPT subscription: Sign in with ChatGPT on the
+// openai provider, else the legacy openai-codex login. With neither, they go to
+// openai-codex and fail rather than silently bill an OpenAI API key.
+const GPT_SUBSCRIPTION_PROVIDERS = ["openai", "openai-codex"];
+const LEGACY_GPT_SUBSCRIPTION_PROVIDER = "openai-codex";
+const GPT_SUBSCRIPTION_AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 export const SUBAGENT_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type SubagentThinkingLevel = (typeof SUBAGENT_THINKING_LEVELS)[number];
 export const DEFAULT_SUBAGENT_THINKING_LEVEL: SubagentThinkingLevel = "high";
@@ -424,25 +428,27 @@ function authFileForAgentDir(agentDir?: string): string {
 	return path.join(agentDir ? canonicalAgentDir(agentDir) : defaultAgentDir(), "auth.json");
 }
 
-function hasOpenAICodexSubscriptionAuth(agentDir?: string): boolean {
+function gptSubscriptionProvider(agentDir?: string): string | undefined {
 	try {
 		const raw = fs.readFileSync(authFileForAgentDir(agentDir), "utf8");
 		const auth = JSON.parse(raw) as Record<string, unknown>;
-		const entry = auth[OPENAI_CODEX_PROVIDER];
-		return Boolean(entry && typeof entry === "object" && (entry as { type?: unknown }).type === "oauth");
+		return GPT_SUBSCRIPTION_PROVIDERS.find((provider) => {
+			const entry = auth[provider];
+			return Boolean(entry && typeof entry === "object" && (entry as { type?: unknown }).type === "oauth");
+		});
 	} catch {
-		return false;
+		return undefined;
 	}
 }
 
-function openAICodexSubscriptionAgentDir(preferredAgentDir?: string): string | undefined {
-	const candidates = [preferredAgentDir, defaultAgentDir(), OPENAI_CODEX_AGENT_DIR].filter((item): item is string => Boolean(item));
+function gptSubscriptionAgentDir(preferredAgentDir?: string): string | undefined {
+	const candidates = [preferredAgentDir, defaultAgentDir(), GPT_SUBSCRIPTION_AGENT_DIR].filter((item): item is string => Boolean(item));
 	const seen = new Set<string>();
 	for (const candidate of candidates) {
 		const canonical = canonicalAgentDir(candidate);
 		if (seen.has(canonical)) continue;
 		seen.add(canonical);
-		if (hasOpenAICodexSubscriptionAuth(canonical)) return canonical;
+		if (gptSubscriptionProvider(canonical)) return canonical;
 	}
 	return undefined;
 }
@@ -477,31 +483,54 @@ function parseProviderModel(model: string): { provider?: string; modelId: string
 	return { provider: slash > 0 ? base.slice(0, slash) : undefined, modelId: slash > 0 ? base.slice(slash + 1) : base, suffix };
 }
 
-function schedulerResourceKey(model: string | undefined): string {
-	return model ? parseProviderModel(model).provider ?? "default" : "default";
+export function schedulerResourceKey(model: string | undefined, resourceLimits: Record<string, number>): string {
+	const provider = model ? parseProviderModel(model).provider ?? "default" : "default";
+	if (!GPT_SUBSCRIPTION_PROVIDERS.includes(provider)) return provider;
+	// Both draw on one ChatGPT plan, so they share one limit under whichever name it was configured.
+	return GPT_SUBSCRIPTION_PROVIDERS.find((name) => name in resourceLimits) ?? "openai";
+}
+
+/** A GPT subscription child never sees an OpenAI API key, so a lost login can't fall back to API billing. */
+export function subagentEnv(env: NodeJS.ProcessEnv, model: string | undefined): NodeJS.ProcessEnv {
+	const provider = model ? parseProviderModel(model).provider : undefined;
+	if (provider && GPT_SUBSCRIPTION_PROVIDERS.includes(provider)) {
+		delete env.OPENAI_API_KEY;
+		delete env.OPENAI_BASE_URL;
+	}
+	return env;
 }
 
 function isGptFamilyModel(model: string | undefined): boolean {
 	if (!model) return false;
 	const { provider, modelId } = parseProviderModel(model);
-	return provider === OPENAI_CODEX_PROVIDER || isGptModelId(modelId);
+	return provider === LEGACY_GPT_SUBSCRIPTION_PROVIDER || isGptModelId(modelId);
 }
 
 function subagentProfileForModel(model: string | undefined, requestedAgentDir?: string): string | undefined {
 	const explicitAgentDir = requestedAgentDir ? canonicalAgentDir(requestedAgentDir) : undefined;
 	if (!isGptFamilyModel(model)) return explicitAgentDir;
-	return openAICodexSubscriptionAgentDir(explicitAgentDir) ?? explicitAgentDir;
+	return gptSubscriptionAgentDir(explicitAgentDir) ?? explicitAgentDir;
 }
 
-function preferOpenAICodexSubscription(model: string | undefined): string | undefined {
+function preferGptSubscription(model: string | undefined, agentDir: string | undefined): string | undefined {
 	if (!model) return model;
 	const { provider, modelId, suffix } = parseProviderModel(model);
-	if (!modelId || provider === OPENAI_CODEX_PROVIDER || !isGptModelId(modelId)) return model;
-	return `${OPENAI_CODEX_PROVIDER}/${modelId}${suffix}`;
+	if (!modelId || !isGptModelId(modelId)) return model;
+	const subscription = gptSubscriptionProvider(agentDir) ?? LEGACY_GPT_SUBSCRIPTION_PROVIDER;
+	return provider === subscription ? model : `${subscription}/${modelId}${suffix}`;
+}
+
+/** The profile and model a subagent runs with: GPT-family models go to a ChatGPT subscription. */
+export function resolveSubagentModel(
+	requestedModel: string | undefined,
+	requestedAgentDir?: string,
+): { agentDir: string | undefined; model: string | undefined } {
+	const agentDir = subagentProfileForModel(requestedModel, requestedAgentDir);
+	return { agentDir, model: preferGptSubscription(requestedModel, agentDir) };
 }
 
 function allowedAgentDirs(): Set<string> {
-	const dirs = [path.join(os.homedir(), ".pi-omlx", "agent"), OPENAI_CODEX_AGENT_DIR];
+	const dirs = [path.join(os.homedir(), ".pi-omlx", "agent"), GPT_SUBSCRIPTION_AGENT_DIR];
 	if (process.env.PI_CODING_AGENT_DIR) dirs.push(process.env.PI_CODING_AGENT_DIR);
 	dirs.push(...(process.env.PI_SPAWN_SUBAGENT_ALLOWED_AGENT_DIRS ?? "").split(",").map((item) => item.trim()).filter(Boolean));
 	return new Set(dirs.map(canonicalAgentDir));
@@ -588,8 +617,7 @@ export async function createInteractivePiAgent(
 	}
 
 	const requestedModel = options.model ?? agent.model ?? options.parentModel;
-	const agentDir = subagentProfileForModel(requestedModel, options.agentDir);
-	const model = preferOpenAICodexSubscription(requestedModel);
+	const { agentDir, model } = resolveSubagentModel(requestedModel, options.agentDir);
 	const result: PiAgentResult = {
 		agent: options.agentName,
 		agentSource: agent.source,
@@ -641,12 +669,12 @@ export async function createInteractivePiAgent(
 
 	const invocation = options.invocation ?? getPiInvocation(args);
 	const cwd = resolveCwd(options.defaultCwd, options.cwd);
-	const env: NodeJS.ProcessEnv = {
+	const env = subagentEnv({
 		...process.env,
 		...(agentDir ? { PI_CODING_AGENT_DIR: agentDir } : {}),
 		...ledger?.env(),
 		PI_SUBAGENT_DEPTH: String(options.config.depth + 1),
-	};
+	}, model);
 	const promptId = `prompt_${crypto.randomUUID()}`;
 	let handle: ManagedProcessHandle | undefined;
 	const settlement = createSettlementWatch(settledExitGraceMs(options.config), () => handle);
@@ -900,7 +928,7 @@ export async function createInteractivePiAgent(
 		return group.run(
 			{
 				label: `${agent.name} interactive: ${options.task.slice(0, 80)}`,
-				resourceKey: schedulerResourceKey(model),
+				resourceKey: schedulerResourceKey(model, options.config.resourceLimits),
 				onState: (state, queueWaitMs) => {
 					updateProgress(result, {
 						status: state === "running" ? "starting" : "queued",
@@ -1070,8 +1098,7 @@ export async function runPiAgent(options: RunPiAgentOptions): Promise<PiAgentRes
 	}
 
 	const requestedModel = options.model ?? agent.model ?? options.parentModel;
-	const agentDir = subagentProfileForModel(requestedModel, options.agentDir);
-	const model = preferOpenAICodexSubscription(requestedModel);
+	const { agentDir, model } = resolveSubagentModel(requestedModel, options.agentDir);
 	result.model = model;
 	const args = ["--mode", "json", "-p", "--no-session"];
 	if (options.config.depth + 1 >= options.config.maxDepth) {
@@ -1099,18 +1126,18 @@ export async function runPiAgent(options: RunPiAgentOptions): Promise<PiAgentRes
 		args.push(`Task: ${options.task}`);
 		const invocation = options.invocation ?? getPiInvocation(args);
 		const cwd = resolveCwd(options.defaultCwd, options.cwd);
-		const env: NodeJS.ProcessEnv = {
+		const env = subagentEnv({
 			...process.env,
 			...(agentDir ? { PI_CODING_AGENT_DIR: agentDir } : {}),
 			...ledger?.env(),
 			PI_SUBAGENT_DEPTH: String(options.config.depth + 1),
-		};
+		}, model);
 		const ownedLedger = ledger;
 
 		const managed = await options.group.run(
 			{
 				label: `${agent.name}: ${options.task.slice(0, 80)}`,
-				resourceKey: schedulerResourceKey(model),
+				resourceKey: schedulerResourceKey(model, options.config.resourceLimits),
 				onState: (state, queueWaitMs) => {
 					updateProgress(result, {
 						status: state === "running" ? "starting" : "queued",

@@ -175,11 +175,29 @@ function uniqueModels(models: PanelModel[]): PanelModel[] {
   });
 }
 
+// Sign in with ChatGPT stores an OAuth credential for the openai provider; an
+// API key stored or in the environment bills the API instead.
+function hasOpenAISubscriptionAuth(agentDir: string | undefined): boolean {
+  const dir = expandTilde(agentDir || process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent"));
+  try {
+    const auth = JSON.parse(fs.readFileSync(path.join(dir, "auth.json"), "utf8")) as Record<string, { type?: unknown } | undefined>;
+    return auth.openai?.type === "oauth";
+  } catch {
+    return false;
+  }
+}
+
+function isSubscriptionGpt(model: PanelModel): boolean {
+  return model.provider === "openai-codex" || (model.provider === "openai" && hasOpenAISubscriptionAuth(model.agentDir));
+}
+
 function modelScore(model: PanelModel, currentFamily?: string, preferredRank = 999): number {
   const preference = preferredRank < 999 ? 100_000 - preferredRank * 1_000 : 0;
   const differentFamily = currentFamily && model.family !== currentFamily ? 10_000 : 0;
-  const subscriptionGpt = model.provider === "openai-codex" ? 20_000 : 0;
-  const apiRoutedGptPenalty = model.family === "gpt" && model.provider !== "openai-codex" ? -20_000 : 0;
+  const subscription = isSubscriptionGpt(model);
+  // Prefer Sign in with ChatGPT over the legacy openai-codex route to the same plan.
+  const subscriptionGpt = subscription ? (model.provider === "openai" ? 21_000 : 20_000) : 0;
+  const apiRoutedGptPenalty = model.family === "gpt" && !subscription ? -20_000 : 0;
   const reasoning = model.reasoning ? 500 : 0;
   return preference + differentFamily + subscriptionGpt + apiRoutedGptPenalty + reasoning + Math.floor(model.contextWindow / 10_000) + Math.floor(model.maxTokens / 10_000);
 }
@@ -193,11 +211,12 @@ function orderedCandidates(models: PanelModel[], config: PanelConfig, current?: 
   const candidates = models.filter((model) => !modelIsExcluded(model, config));
   const preferred = mode === "compare" ? config.compareModels ?? config.preferredModels ?? [] : config.preferredModels ?? [];
 
-  return [...candidates].sort((a, b) => {
-    const aRank = preferred.findIndex((pattern) => matchesPattern(a, pattern));
-    const bRank = preferred.findIndex((pattern) => matchesPattern(b, pattern));
-    return modelScore(b, current?.family, bRank < 0 ? 999 : bRank) - modelScore(a, current?.family, aRank < 0 ? 999 : aRank);
-  });
+  // Score each model once: scoring reads the profile's auth.json.
+  const scores = new Map(candidates.map((model) => {
+    const rank = preferred.findIndex((pattern) => matchesPattern(model, pattern));
+    return [model, modelScore(model, current?.family, rank < 0 ? 999 : rank)] as const;
+  }));
+  return [...candidates].sort((a, b) => scores.get(b)! - scores.get(a)!);
 }
 
 export function selectModels(
@@ -249,9 +268,12 @@ export function selectModels(
       families.add(model.family);
     }
   }
+  // openai/X and openai-codex/X both run as the same subscription model, so count them once.
+  const sameModel = (a: PanelModel, b: PanelModel) =>
+    a.key === b.key || (a.id === b.id && isSubscriptionGpt(a) && isSubscriptionGpt(b));
   for (const model of ordered) {
     if (selected.length >= count) break;
-    if (!selected.some((item) => item.key === model.key)) selected.push(model);
+    if (!selected.some((item) => sameModel(item, model))) selected.push(model);
   }
   return { selected, current, mode, unresolved: [] };
 }

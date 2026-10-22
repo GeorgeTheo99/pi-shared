@@ -18,10 +18,14 @@ Direct mode installs shared resources and any separately selected browser/search
 components, **not model-gateway or oMLX**. Pi owns provider authentication and model
 selection. Use `/login` and `/model` inside Pi, or its native `--provider` and
 `--model` options. Provider/API credentials are not collected by this setup.
-pi-shared fills missing native `openai-codex` context overrides with Codex's
-published 872K opt-in ceiling for GPT-5.6 Luna/Sol/Terra and GPT-6 Astra/Luna/Sol.
-It preserves existing overrides and all `openai` API settings; unknown models
-keep Pi's defaults. This changes compaction planning, not provider entitlements.
+pi-shared fills missing native context overrides for `openai` (Sign in with
+ChatGPT, used by `pi openai`) and legacy `openai-codex` with the 872K opt-in
+ceiling that Codex's catalog and the Sign in with ChatGPT model list report for
+GPT-5.6 Luna/Sol/Terra and GPT-6 Astra/Luna/Sol. `openai` inherits a 272K or 872K
+choice already saved for `openai-codex`. It preserves existing overrides; unknown
+models keep Pi's defaults. Overrides apply to the whole `openai` provider, so an
+OpenAI API key used on the same profile shares them. This changes compaction
+planning, not provider entitlements.
 To persist a deliberate choice across future sessions, run one of:
 
 ```sh
@@ -30,9 +34,9 @@ pi openai --set-context=max       # 872K
 ```
 
 This offline command saves and exits without starting Pi. It replaces the
-`contextWindow` values for all six reviewed `openai-codex` models in the selected
-profile's `models.json`, including any earlier per-model context choices, while
-preserving other override fields and direct `openai` API configuration. A later
+`contextWindow` values for all six reviewed models under `openai` and
+`openai-codex` in the selected profile's `models.json`, including any earlier
+per-model context choices, while preserving other override fields and models. A later
 setup/update fills only missing overrides, so it does not undo a saved choice.
 Gateway-generated and symlinked model files are refused. Existing Pi sessions
 must restart to read the change; a larger configured window does not itself

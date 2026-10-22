@@ -148,7 +148,7 @@ Each `agent(...)` call spawns an isolated `pi --mode json -p --no-session` subpr
 - **Shared agents only** in v1 (`scout`, `planner`, `reviewer`, `worker`, `panelist`). No `agentScope` / project-agent selection inside workflows.
 - **Model precedence**: `opts.model` → agent frontmatter `model` → parent session model. Inheriting the parent model avoids children falling back to a default provider with no credentials.
 - **Thinking precedence**: `opts.thinking` → workflow-level `thinking` → a legacy `:<thinking>` model suffix → `high`. Pi clamps the selected level to model capabilities.
-- **Profile/model routing**: no per-call `agentDir` override. The shared runner preserves parent/profile inheritance and routes GPT-family models through the trusted OpenAI Codex subscription profile when available, matching `subagent_run`.
+- **Profile/model routing**: no per-call `agentDir` override. The shared runner preserves parent/profile inheritance and routes GPT-family models through the trusted ChatGPT subscription profile (Sign in with ChatGPT, or the legacy `openai-codex` login) when available, matching `subagent_run`.
 - **Scheduling**: every `agent()` call—including calls made through direct `Promise.all`, not only `parallel()`—acquires the host-wide lease. Default request limit is 16 and host concurrency is 8.
 - **Aborts/timeouts**: workflow abort/failure/session shutdown cancels queued work and terminates running process trees (SIGTERM, then SIGKILL after the configured grace). Queue/run deadlines and output bounds match the subagent tools.
 - **Nesting**: child sessions cannot delegate again by default (`PI_SUBAGENT_MAX_DEPTH=1`).

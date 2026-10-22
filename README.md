@@ -66,18 +66,24 @@ browser, or desktop actions run as checks. [Flows and boundaries](extensions/set
 
 `pi-shared setup --with direct` uses Pi's own provider authentication and model
 selection, without requiring a gateway or oMLX. Use `/login` and `/model` inside Pi.
-The optional `pi openai` preset selects the ChatGPT/Codex subscription provider,
-not OpenAI API-key billing; it follows that profile's `/model`-saved Codex default
-(or GPT-6 Astra when none is saved). The optional `pi anthropic` and
+The optional `pi openai` preset selects the `openai` provider signed in with
+Sign in with ChatGPT (`/login openai`), OpenAI's supported way to use a ChatGPT
+Plus/Pro plan in Pi, not OpenAI API-key billing; it follows that profile's
+`/model`-saved OpenAI default (a legacy `openai-codex` default carries over; or
+GPT-6 Astra when none is saved). A profile with only the legacy `openai-codex`
+login keeps it, and `pi openai` refuses a stored OpenAI API key rather than bill it. The optional `pi anthropic` and
 `pi-anthropic` presets use Pi's native Anthropic provider: sign in with
 `/login anthropic` to use OAuth, or use an Anthropic API key. Unlike Codex,
 Pi's Claude Pro/Max OAuth usage is billed as **extra usage per token**, not
 against plan limits. On setup/update, pi-shared adds missing
-Codex subscription context overrides for verified long-context models (up to
-872K); existing overrides and pay-as-you-go OpenAI API models are untouched.
+ChatGPT subscription context overrides for verified long-context models (up to
+872K, the ceiling the Sign in with ChatGPT model list reports) to `openai` and
+legacy `openai-codex`; `openai` inherits an existing `openai-codex` choice, and
+existing overrides are untouched. These overrides apply to the whole `openai`
+provider, so an OpenAI API key used on the same profile shares them.
 `pi openai --set-context=standard|max` explicitly saves 272K or 872K for all six
-reviewed Codex models in the selected profile, for future sessions only; it
-replaces those six existing context values but leaves direct API models alone.
+reviewed models in the selected profile, for future sessions only; it replaces
+those existing context values but leaves other models alone.
 The preset label is shown before authentication, but Claude appears in `/model`
 only after Anthropic credentials are available. The [Anthropic tool-schema
 compatibility hook](extensions/anthropic-schema/index.ts) removes unsupported
@@ -299,8 +305,8 @@ sandboxed. [Workflow contract](extensions/workflow/README.md).
 - [research-fanout](workflows/research-fanout.js): parallel scouts, then planner synthesis.
 - [supervisor](workflows/supervisor.js): a bounded worker/reviewer revision loop.
 - [implement](workflows/implement.js): optional reconnaissance, planning, implementation,
-  and review. Its worker defaults to a Codex subscription model; provide that
-  authentication or override `workerModel`. Reaching the round limit is not acceptance.
+  and review. Its worker defaults to a ChatGPT subscription model; sign in with
+  `/login openai` or override `workerModel`. Reaching the round limit is not acceptance.
 
 ### Peer-session coordination
 
@@ -508,7 +514,7 @@ package removal is a separate operation.
 
 `pi-vanilla` launches stock Pi without shared packages, extensions, skills,
 prompts, themes, or context files to help diagnose customization failures.
-It defaults to `openai-codex/gpt-5.5` and needs subscription authentication;
+It defaults to `openai/gpt-6-astra` and needs Sign in with ChatGPT (`/login openai`);
 `PI_VANILLA_PROVIDER` and `PI_VANILLA_MODEL` select another available provider/model.
 It is not a credential reset or environment repair tool.
 [Recovery launcher](bin/pi-vanilla).

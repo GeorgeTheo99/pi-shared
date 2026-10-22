@@ -168,7 +168,7 @@ def routes_for(aliases, provider, profile, direct):
     if direct:
         if "anthropic" in routes:
             raise ValueError("gateway alias 'anthropic' conflicts with the direct Anthropic shortcut; rename the gateway alias before enabling direct launchers")
-        routes["openai"] = {"provider": "openai-codex", "model": "gpt-6-astra",
+        routes["openai"] = {"provider": "openai", "model": "gpt-6-astra",
                             "profile": None, "gateway": False}
         routes["anthropic"] = {"provider": "anthropic", "model": "claude-sonnet-4-6",
                                "profile": None, "gateway": False}
@@ -226,6 +226,10 @@ def load_config(path):
             raise ValueError("Invalid route profile")
     if "--direct-only" in values and (profile is not None or any(r["gateway"] or r["profile"] for r in routes.values())):
         raise ValueError("Direct-only launchers cannot select gateway routes/profiles")
+    openai = routes.get("openai")
+    if openai and not openai["gateway"] and openai["provider"] == "openai-codex":
+        # Written before the shortcut moved to Sign in with ChatGPT; same route otherwise.
+        routes["openai"] = {**openai, "provider": "openai"}
     return config
 
 
@@ -443,10 +447,36 @@ def saved_model_default(config, profile=None):
     return None
 
 
+def subscription_provider(profile, *, require_login=False):
+    """The provider `pi openai` uses: a ChatGPT plan login, never a stored OpenAI API key.
+
+    Without a login it is openai, whose launches clear OPENAI_API_KEY; a saved
+    default launches without that, so require_login refuses it.
+    """
+    try:
+        auth = json.loads((Path(profile).expanduser() / "auth.json").read_text())
+    except (OSError, ValueError):
+        auth = {}
+    kinds = {name: entry.get("type") if isinstance(entry, dict) else entry
+             for name, entry in (auth.items() if isinstance(auth, dict) else ())}
+    if kinds.get("openai") == "oauth":
+        return "openai"
+    if kinds.get("openai-codex") == "oauth":
+        return "openai-codex"
+    if kinds.get("openai") is not None:
+        raise ValueError("The openai shortcut uses a ChatGPT plan, but this profile stores an OpenAI API key; "
+                         "sign in with /login openai (Sign in with ChatGPT), or select --provider openai explicitly")
+    if require_login:
+        raise ValueError("Sign in with /login openai (Sign in with ChatGPT) before saving the openai shortcut as the default")
+    return "openai"
+
+
 def native_default_route(route, config, profile):
     """Use the native profile's selected model for this provider, if it has one."""
     default = saved_model_default(config, profile)
-    if default and default["provider"] == route["provider"]:
+    # A model saved on the legacy openai-codex route carries over to Sign in with ChatGPT.
+    if default and (default["provider"] == route["provider"]
+                    or (route["provider"], default["provider"]) == ("openai", "openai-codex")):
         return {**route, "model": default["model"]}
     return route
 
@@ -463,7 +493,7 @@ def model_listing(config):
         aliases = json.loads(raw) if raw else {}
     routes, rows, covered = config["routes"].copy(), [], set()
     native_profile = os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi/agent"
-    for alias, provider in (("openai", "openai-codex"), ("anthropic", "anthropic")):
+    for alias, provider in (("openai", "openai"), ("anthropic", "anthropic")):
         if alias in routes and routes[alias]["provider"] == provider and not routes[alias]["gateway"]:
             routes[alias] = native_default_route(routes[alias], config, native_profile)
     default = saved_model_default(config)
@@ -625,8 +655,8 @@ def main(argv=None):
                 raise ValueError("Pi launcher CLI mode not configured; run pi-shared setup")
             config = refresh(path, load_config(path))
             route = config["routes"].get("openai")
-            if not route or route["provider"] != "openai-codex" or route["gateway"]:
-                raise ValueError("The openai Codex subscription shortcut is not configured")
+            if not route or route["provider"] != "openai" or route["gateway"]:
+                raise ValueError("The openai ChatGPT subscription shortcut is not configured")
             from pi_codex_context import CODEX_MAX_CONTEXT, CODEX_STANDARD_CONTEXT, configure
             profile = Path(os.environ.get("PI_CODING_AGENT_DIR") or route["profile"]
                            or Path.home() / ".pi/agent").expanduser()
@@ -647,7 +677,7 @@ def main(argv=None):
             mode = argv[1].split("=", 1)[1]
             changed = configure(model_file, mode=mode)
             size = CODEX_STANDARD_CONTEXT if mode == "standard" else next(iter(CODEX_MAX_CONTEXT.values()))
-            print(f"Saved Codex context: {mode} ({size // 1000}K) for {len(CODEX_MAX_CONTEXT)} models "
+            print(f"Saved ChatGPT subscription context: {mode} ({size // 1000}K) for {len(CODEX_MAX_CONTEXT)} models "
                   f"in {model_file} ({changed} changed); future sessions only.", file=sys.stderr)
             return 0
         executable = upstream()
@@ -676,11 +706,20 @@ def main(argv=None):
                 if (alias == "anthropic" and route["provider"] == "anthropic"
                         and not route["gateway"] and "--model" in opts and "--provider" not in opts):
                     argv = ["--provider", "anthropic", *argv]
+                # A GPT model override stays on the ChatGPT plan, never an OpenAI API key.
+                if (alias == "openai" and route["provider"] == "openai"
+                        and not route["gateway"] and "--model" in opts and "--provider" not in opts):
+                    profile = env.get("PI_CODING_AGENT_DIR", route["profile"] or str(Path.home() / ".pi/agent"))
+                    argv = ["--provider", subscription_provider(profile), *argv]
+                    for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
+                        env.pop(key, None)
                 route = None  # Explicit stock selection wins, with no implicit profile switch.
         if route:
             profile = env.get("PI_CODING_AGENT_DIR", route["profile"] or str(Path.home() / ".pi/agent"))
             if "PI_CODING_AGENT_DIR" not in env and route["profile"]:
                 env["PI_CODING_AGENT_DIR"] = profile
+            if alias == "openai" and route["provider"] == "openai" and not route["gateway"]:
+                route = {**route, "provider": subscription_provider(profile, require_login=save)}
             if alias in ("openai", "anthropic") and not route["gateway"]:
                 route = native_default_route(route, config, profile)
             if save:
