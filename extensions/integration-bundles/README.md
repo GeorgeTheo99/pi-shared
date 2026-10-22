@@ -112,9 +112,11 @@ registered tools are shown. Service-side/MCP catalogs are not queried.
 ## Conservative preset (opt-in)
 
 [`presets/conservative.yaml`](presets/conservative.yaml) hides optional app-testing,
-documents, knowledge, coordination, advanced delegation, panel, and diagnostic
-schemas until their bundle is loaded. It keeps core tools, research, jobs/waits,
-ordinary subagent runs/status/cancellation, memory and planning selected. There
+documents, knowledge, advanced delegation, panel, and diagnostic schemas until
+their bundle is loaded. It keeps core tools, research, jobs/waits, ordinary
+subagent runs/status/cancellation, memory and planning selected, and pins
+`coordination`: peer response requests arrive without a load, so `peer_send`
+must already be active to answer them. There
 are no regex triggers, hard tool caps, or MCP patterns. Native MCP exposure is
 managed separately by Pi. This is schema selection, not an authorization boundary;
 codemode access is governed by Pi's tool contract.

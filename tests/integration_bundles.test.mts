@@ -54,9 +54,12 @@ test('conservative preset keeps essential tools and explicitly loads optional ca
   const core = ['read', 'bash', 'edit', 'write', 'command_start', 'command_status', 'command_cancel',
     'wait_for_jobs', 'wait_for_ready', 'wait_for_condition', 'ask_user', 'subagent_run', 'subagent_status',
     'subagent_cancel', 'subagent_list', 'memory_read', 'work_plan', 'web_search', 'codemode'];
-  const optional = Object.values(preset.bundles).flatMap((b: any) => b.tools.map((n: string) => n.replace('*', 'fixture')));
-  const h = await harness(t, preset.bundles, preset.defaults, [...core, ...optional]);
-  assert(core.every(n => h.active().includes(n)));
+  const tools = (names: string[]) => names.flatMap(name => preset.bundles[name].tools.map((n: string) => n.replace('*', 'fixture')));
+  assert.deepEqual(preset.defaults.always_load, ['coordination'], 'peer requests arrive unsolicited, so reply tools stay active');
+  const pinned = tools(preset.defaults.always_load);
+  const optional = tools(Object.keys(preset.bundles).filter(name => !preset.defaults.always_load.includes(name)));
+  const h = await harness(t, preset.bundles, preset.defaults, [...core, ...pinned, ...optional]);
+  assert([...core, ...pinned].every(n => h.active().includes(n)));
   assert(optional.every(n => !h.active().includes(n)));
   for (const name of Object.keys(preset.bundles)) await h.load(name);
   assert(optional.every(n => h.active().includes(n)));

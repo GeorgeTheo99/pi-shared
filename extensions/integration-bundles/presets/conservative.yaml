@@ -1,10 +1,11 @@
 # Opt-in, per-profile schema selection. No service changes or permission grants.
 # Core file tools, research, command jobs, waits, memory, goals, work plans,
 # ordinary subagent runs/status/cancellation and discovery stay selected.
+# Coordination is pinned: peer requests arrive unsolicited and must be answerable.
 # No automatic triggers, tool cap, or MCP patterns: load only when needed.
 version: 1
 defaults:
-  always_load: []
+  always_load: [coordination]
 bundles:
   app-testing:
     description: Local/private app browser testing, tabs, screenshots, API requests and isolated app tests.
