@@ -8,6 +8,8 @@ import { pathToFileURL } from "node:url";
 function sdkRoot() {
 	const explicit = process.env.PI_TEST_SDK_DIR || process.env.PI_INSTALL_DIR;
 	const candidates = explicit ? [explicit] : [
+		// Locked by the type-check toolchain, so the SDK's own dependencies can't drift.
+		new URL("../../tools/typecheck/node_modules/@earendil-works/pi-coding-agent", import.meta.url).pathname,
 		"/opt/homebrew/opt/pi-shared/libexec/runtime/node_modules/@earendil-works/pi-coding-agent",
 	];
 	if (!explicit) {

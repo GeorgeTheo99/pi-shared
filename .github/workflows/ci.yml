@@ -47,13 +47,6 @@ jobs:
             fi
           done
 
-      # Real-SDK suites resolve Pi from the global npm root / PATH. Keep the
-      # version pinned to the type-check toolchain's SDK pin.
-      - name: Install pinned Pi SDK
-        run: |
-          version=$(node -p "require('./tools/typecheck/package.json').devDependencies['@earendil-works/pi-coding-agent']")
-          npm install -g --ignore-scripts --no-audit --no-fund "@earendil-works/pi-coding-agent@${version}"
-
       # Tests launch headless only; playwright and patchright share one build.
       - name: Install headless Chromium
         timeout-minutes: 10
