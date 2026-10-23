@@ -47,6 +47,12 @@ jobs:
             fi
           done
 
+      # Checks that need `pi` on PATH (pi-doctor) use the type-check toolchain's
+      # lock-installed Pi, whose @earendil-works dependencies can't drift the way
+      # a global install's do. The SDK test loaders resolve the same package.
+      - name: Put locked Pi on PATH
+        run: echo "$GITHUB_WORKSPACE/tools/typecheck/node_modules/.bin" >> "$GITHUB_PATH"
+
       # Tests launch headless only; playwright and patchright share one build.
       - name: Install headless Chromium
         timeout-minutes: 10
