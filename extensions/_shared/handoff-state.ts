@@ -920,7 +920,7 @@ ${peerWarning ? "- Include the peer-request warning above in the handoff summary
 - Then stop and wait. Do not continue autonomously until a new explicit user message arrives after this response.
 
 After that new user message:
-- Treat "Proceed" as approval to begin from the proposed next step; otherwise incorporate the user's adjustments before beginning.
+- Treat "Proceed" as approval of every proposed next step, and carry them through to completion without stopping between steps; otherwise incorporate the user's adjustments before beginning.
 - Re-ground with the smallest useful checks before changing files or external state.
 - Preserve existing constraints and finish the stated task without asking the user to restate it.
 - If an active goal was transferred, continue its existing identity and remaining turn budget; do not create a duplicate goal.`;

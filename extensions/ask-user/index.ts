@@ -49,7 +49,7 @@ const askUserTool = defineTool({
 	promptSnippet: "ask_user to ask the user a structured question with selectable options",
 	promptGuidelines: [
 		"Use ask_user when you genuinely need a user decision to proceed and the choices can be made explicit.",
-		"Use ask_user for opinionated topics, product/design decisions, irreversible tradeoffs, or when you are genuinely unsure.",
+		"Use ask_user for irreversible tradeoffs, or for product/design decisions where you have no defensible recommendation. For a reversible choice with a clear recommendation, take it and keep working instead of asking.",
 		"Do not use ask_user for routine status updates, rhetorical questions, or information you can safely discover with available tools.",
 		"Provide concise, mutually exclusive options. Include a safe/cancel/no-op option when relevant.",
 		"If the user dismisses or times out an ask_user prompt, the agent loop is aborted automatically. Do not assume a default answer, do not pick an option on the user's behalf, and do not continue the prior task. Wait for the user's next message before doing anything.",
