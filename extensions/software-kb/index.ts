@@ -476,15 +476,15 @@ export default function softwareKnowledgeBase(pi: ExtensionAPI) {
 				ctx.ui.notify("Usage: /kb-search <query>", "info");
 				return;
 			}
-			pi.sendUserMessage(`Search the software engineering classics KB for: ${query}\n\nUse kb_search first. Cite source ids, access status, and URLs/paths. If a source is metadata-only, say so.`);
+			pi.sendUserMessage(`Search the software engineering classics KB for: ${query}\n\nUse kb_search first. Cite source ids, access status, and URLs/paths. If a source is metadata-only, say so.`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 		},
 	});
 
 	pi.registerCommand("kb-sources", {
 		description: "Ask pi to list the software engineering classics KB source catalog",
-		handler: async (args) => {
+		handler: async (args, ctx) => {
 			const filter = args.trim();
-			pi.sendUserMessage(`List the software engineering classics KB sources${filter ? ` filtered by ${filter}` : ""}. Use kb_sources and include access/ingest status.`);
+			pi.sendUserMessage(`List the software engineering classics KB sources${filter ? ` filtered by ${filter}` : ""}. Use kb_sources and include access/ingest status.`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 		},
 	});
 }

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
+import * as piSdk from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
 import type { SubagentConfig } from "./subagent-config.ts";
@@ -594,6 +595,27 @@ function cloneQuestion(question: InteractiveQuestion | undefined): InteractiveQu
 // Keep the legacy name excluded as well for children using older profiles.
 export const CHILD_DELEGATION_EXCLUSIONS = "spawn_subagent,subagent_run,subagent_parallel,subagent_chain,subagent_interactive,subagent_worktree,workflow";
 
+/** True when a Pi version is at least 1.0.4, which added `--no-mcp`. */
+export function supportsNoMcpFlag(version: string | undefined): boolean {
+	const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version ?? "");
+	if (!match) return false;
+	const [major, minor, patch] = match.slice(1).map(Number);
+	return major > 1 || (major === 1 && (minor > 0 || patch >= 4));
+}
+
+/**
+ * Pi 1.0.4+ keeps every MCP tool under `--tools` unless an entry starts with `mcp__`.
+ * An agent allowlist is a capability boundary, so without explicit `mcp__` entries the
+ * child runs with `--no-mcp` (no MCP tools and no server connections), as before 1.0.4.
+ * Children reuse this process's Pi runtime (getPiInvocation), so its VERSION applies;
+ * older runtimes reject `--no-mcp` and already drop MCP tools under `--tools`.
+ */
+export function toolAllowlistArgs(tools: string[], piVersion: string | undefined = (piSdk as { VERSION?: string }).VERSION): string[] {
+	const args = ["--tools", tools.join(",")];
+	if (supportsNoMcpFlag(piVersion) && !tools.some(tool => tool.startsWith("mcp__"))) args.push("--no-mcp");
+	return args;
+}
+
 function terminalBoundary(result: PiAgentResult): InteractivePiAgentBoundary {
 	const status = result.status === "canceled" ? "canceled" : result.status === "completed" ? "completed" : "failed";
 	return { status, result: cloneProgress(result) };
@@ -646,7 +668,7 @@ export async function createInteractivePiAgent(
 	if (model) args.push("--model", model);
 	args.push(...getSubagentThinkingArgs(model, options.thinking));
 	if (agent.tools && agent.tools.length > 0) {
-		args.push("--tools", Array.from(new Set([...agent.tools, "ask_parent"])).join(","));
+		args.push(...toolAllowlistArgs(Array.from(new Set([...agent.tools, "ask_parent"]))));
 	}
 
 	const interactiveGuidance = [
@@ -1106,7 +1128,7 @@ export async function runPiAgent(options: RunPiAgentOptions): Promise<PiAgentRes
 	}
 	if (model) args.push("--model", model);
 	args.push(...getSubagentThinkingArgs(model, options.thinking));
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	if (agent.tools && agent.tools.length > 0) args.push(...toolAllowlistArgs(agent.tools));
 
 	let tmpPromptDir: string | undefined;
 	let tmpPromptPath: string | undefined;

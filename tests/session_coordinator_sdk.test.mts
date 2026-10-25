@@ -271,14 +271,22 @@ for (const hook of ["input", "before_agent_start"] as const) {
 			recipient.agent.streamFunction = (selected: any) => { calls++; return completion(selected, [{ type: "text", text: "User task completed." }]); };
 			const userTurn = recipient.prompt("User preflight");
 			await entered;
+			// Pi 1.2+ counts a starting run as busy during before_agent_start, so a peer
+			// request then waits for that run instead of waking ahead of it.
+			assert.equal(recipient.isIdle, hook === "input");
 			try {
-				assert.equal(recipient.isIdle, true);
 				await request(sender, recipient);
-				await waitUntil(() => status(sender)?.effectiveStatus === "surfaced");
-				await waitUntil(() => calls === 1 && recipient.isIdle);
-				assert.equal(calls, 1, "automatic scheduling is not gated on atomic user-input admission");
+				if (hook === "before_agent_start") {
+					await waitUntil(() => status(sender)?.effectiveStatus === "delivered");
+					assert.equal(calls, 0, "a starting run is not preempted by a peer wake");
+				} else {
+					await waitUntil(() => status(sender)?.effectiveStatus === "surfaced");
+					await waitUntil(() => calls === 1 && recipient.isIdle);
+					assert.equal(calls, 1, "automatic scheduling is not gated on atomic user-input admission");
+				}
 			} finally { release(); }
 			await userTurn;
+			await waitUntil(() => status(sender)?.effectiveStatus === "surfaced" && calls === 2 && recipient.isIdle);
 			assert.equal(calls, 2);
 			assert.equal(status(sender).responseStatus, "pending", "a wake without a reply is not an answer");
 		});

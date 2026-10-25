@@ -94,7 +94,7 @@ export default function deepResearchExtension(pi: ExtensionAPI) {
             : "No sources found. Try a broader question or different mode.");
           return;
         }
-        if (options.synthesize) pi.sendUserMessage(buildSynthesisPrompt(bundle, dir));
+        if (options.synthesize) pi.sendUserMessage(buildSynthesisPrompt(bundle, dir), ctx.isIdle() ? undefined : { deliverAs: "followUp" });
       } catch (error) {
         throwIfCallerAborted(ctx.signal);
         send(pi, `Research failed: ${error instanceof Error ? error.message : String(error)}`);

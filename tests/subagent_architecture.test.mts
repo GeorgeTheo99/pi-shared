@@ -42,6 +42,12 @@ test("nested delegation is blocked in child CLI arguments as defense in depth", 
 	assert.equal((runner.match(/args\.push\("--exclude-tools", CHILD_DELEGATION_EXCLUSIONS\)/g) ?? []).length, 2);
 });
 
+test("agent tool allowlists route every child through toolAllowlistArgs", () => {
+	const runner = read("extensions/_shared/pi-agent-runner.ts");
+	assert.equal((runner.match(/args\.push\(\.\.\.toolAllowlistArgs\(/g) ?? []).length, 2);
+	assert.doesNotMatch(runner, /args\.push\("--tools"/);
+});
+
 test("subagent model overrides recognize Pi's max thinking suffix", () => {
 	const runner = read("extensions/_shared/pi-agent-runner.ts");
 	assert.match(runner, /SUBAGENT_THINKING_LEVELS[^\n]+"xhigh", "max"/);

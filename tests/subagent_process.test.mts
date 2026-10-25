@@ -210,7 +210,8 @@ test("timeout escalates to SIGKILL for a stubborn process tree", { skip: process
 		...baseOptions,
 		command: process.execPath,
 		args: [fixture],
-		runTimeoutMs: 150,
+		// Long enough for the fixture's Node startup to report its child under load.
+		runTimeoutMs: 1000,
 		termGraceMs: 100,
 		onStdoutLine: (line) => {
 			const parsed = JSON.parse(line);

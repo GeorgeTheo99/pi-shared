@@ -57,7 +57,7 @@ test("installed SDK + loopback broker: native errors, success, schema, command, 
   assert.deepEqual(loaded.errors, []);
   const tool = loaded.extensions.flatMap(e => [...e.tools.values()]).find(t => t.definition.name === "deep_research")!.definition;
   assert.ok(tool);
-  const ctx: any = { cwd: root };
+  const ctx: any = { cwd: root, isIdle: () => true };
   const model: any = { id: "fixture", name: "fixture", provider: "test", api: "openai-responses", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1024 };
   async function finalize(args: any) {
     const streamFn: any = () => {

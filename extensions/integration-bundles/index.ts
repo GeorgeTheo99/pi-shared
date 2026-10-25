@@ -582,8 +582,10 @@ export default function integrationBundlesExtension(pi: ExtensionAPI) {
 		refreshPolicy(pi, state);
 		if (modelChanged) applyDefaultLoadout(state);
 		applyActiveSet(pi, state);
-		const triggered = autoLoadByTriggers(pi, state, event.prompt ?? "");
-		const skillTriggered = autoLoadBySkillMention(pi, state, event.prompt ?? "");
+		// Custom-message runs (Pi 1.2+) carry no user prompt; only user prompts trigger auto-loads.
+		const prompt = event.messageType === "custom" ? "" : event.prompt ?? "";
+		const triggered = autoLoadByTriggers(pi, state, prompt);
+		const skillTriggered = autoLoadBySkillMention(pi, state, prompt);
 		const stillLoaded = (names: string[]) => names.filter(n => state.bundles.get(n)?.loaded);
 
 		const block = formatBundlesBlock(state);

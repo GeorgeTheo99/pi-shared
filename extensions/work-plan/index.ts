@@ -650,8 +650,7 @@ export default function workPlanExtension(pi: ExtensionAPI) {
 			save(pi);
 			setUi(ctx);
 			// A plan-only reply to the reconcile check ends that run without another
-			// LLM call: runs started by sendMessage drop the before_agent_start system
-			// prompt after their first call, so a second call would miss the cache.
+			// LLM call: the bookkeeping turn needs no follow-up model response.
 			return { ...result(action), terminate: reconcileRunPending && reconcileIsLatestInput(ctx) };
 		},
 
