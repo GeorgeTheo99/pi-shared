@@ -91,9 +91,9 @@ Available canonical models become stable aliases of the form
 requests. Unavailable models are omitted; an empty catalog never erases working
 routes. Explicit context/output limits, thinking levels, and native vision
 capabilities are required. Unknown metadata is not guessed. The client uses
-Responses API; the gateway owns provider-specific translation. Assisted vision,
-consumer profiles, and imported federation catalogs are not advertised by this
-canonical discovery contract.
+Responses API; the gateway owns provider-specific translation. Consumer profiles
+and imported federation catalogs are not advertised by this canonical discovery
+contract.
 
 Generated files contain only a **credential-file command reference**, never the
 token. Pi reads the private file at request time via `pi-gateway`; its permissions

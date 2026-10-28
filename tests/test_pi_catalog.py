@@ -130,7 +130,8 @@ def test_cloud_vision_capability_is_explicit_and_fails_closed_when_absent(tmp_pa
     assert by_id["cloud-vision"]["input"] == ["text", "image"]
 
 
-def test_explicit_gateway_assisted_image_input_is_preserved_and_labeled(tmp_path):
+def test_legacy_image_input_hints_are_ignored(tmp_path):
+    # Older gateways exported pi.image_input for their removed image helpers.
     aliases = {
         "text-local": {
             "name": "text-local", "alias": "textlocal", "provider": "local",
@@ -140,12 +141,12 @@ def test_explicit_gateway_assisted_image_input_is_preserved_and_labeled(tmp_path
         "cloud:text": {
             "name": "cloud-text", "alias": "cloudtext", "provider": "fireworks",
             "provider_model_id": "cloud-text", "vision": False,
-            "pi": {"image_input": "gateway-assisted"},
+            "pi": {"image_input": "unknown"},
         },
-        "disabled-local": {
-            "name": "disabled-local", "alias": "disabledlocal", "provider": "local",
-            "omlx_id": "disabled-local", "vision": False,
-            "pi": {"image_input": "disabled"},
+        "vision-local": {
+            "name": "vision-local", "alias": "visionlocal", "provider": "local",
+            "omlx_id": "vision-local", "vision": True,
+            "pi": {"image_input": "gateway-assisted"},
         },
     }
     p = _load_aliases(tmp_path, aliases)
@@ -157,35 +158,13 @@ def test_explicit_gateway_assisted_image_input_is_preserved_and_labeled(tmp_path
     assert r.returncode == 0, r.stderr
     models = json.loads((tmp_path / "models.json").read_text())["providers"]["ls99-models"]["models"]
     by_id = {model["id"]: model for model in models}
-    assert by_id["text-local"]["input"] == ["text", "image"]
-    assert by_id["cloud-text"]["input"] == ["text", "image"]
-    assert by_id["disabled-local"]["input"] == ["text"]
-    assert by_id["text-local"]["name"].endswith("· assisted vision")
-    assert by_id["cloud-text"]["name"].endswith("· assisted vision")
-    assert not by_id["disabled-local"]["name"].endswith("· assisted vision")
+    assert by_id["text-local"]["input"] == ["text"]
+    assert by_id["cloud-text"]["input"] == ["text"]
+    assert by_id["vision-local"]["input"] == ["text", "image"]
+    assert not any("assisted vision" in model["name"] for model in models)
     launchers = (tmp_path / "launchers.zsh").read_text()
-    assert "[assisted vision]" in launchers
-    assert "disabled-local (disabled-local) [text-only]" in launchers
-
-
-@pytest.mark.parametrize(
-    "entry",
-    [
-        {"vision": False, "pi": {"image_input": "implicit"}},
-        {"vision": True, "pi": {"image_input": "gateway-assisted"}},
-    ],
-)
-def test_invalid_assisted_image_contract_fails_closed(tmp_path, entry):
-    aliases = {
-        "model": {
-            "name": "model", "alias": "model", "provider": "local",
-            "omlx_id": "model", **entry,
-        },
-    }
-    p = _load_aliases(tmp_path, aliases)
-    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "models.json"))
-    assert r.returncode != 0
-    assert "image" in r.stderr.lower()
+    assert "assisted vision" not in launchers
+    assert "text-local (text-local) [text-only]" in launchers
 
 
 def test_local_glm_gets_graded_reasoning(tmp_path):

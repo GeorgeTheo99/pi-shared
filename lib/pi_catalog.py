@@ -144,7 +144,7 @@ def _pi_hints(meta: dict) -> dict:
     """Optional Pi-specific passthrough hints from the gateway catalog.
 
     The gateway carries an opaque ``pi:`` block per model (id/name/reasoning/
-    thinkingLevelMap/compat/image_input) so machine-local config can shape the
+    thinkingLevelMap/compat) so machine-local config can shape the
     rendered Pi artifacts without this module needing provider-specific knowledge.
     """
     hints = meta.get("pi")
@@ -485,30 +485,14 @@ def _model_id_for(key: str, meta: dict) -> str:
 
 
 def _image_capability(key: str, meta: dict) -> str:
-    """Return ``native``, ``gateway-assisted``, or ``none`` for Pi image input.
+    """Return ``native`` or ``none`` for Pi image input.
 
-    ``vision`` remains the authoritative native-model capability. A text-only
-    route may opt into Pi image transport only through the explicit
-    ``pi.image_input=gateway-assisted`` contract, which means model-gateway will
-    extract bounded observations before the selected text model answers.
+    ``vision`` is the authoritative capability. Pi replaces images with a note
+    for a text-only model, as model-gateway does for other clients.
     """
-    assisted = _pi_hints(meta).get("image_input")
-    if assisted not in {None, "gateway-assisted", "disabled"}:
-        raise ValueError(
-            f"Pi image_input for {meta.get('alias') or key!r} must be "
-            "'gateway-assisted' or 'disabled'"
-        )
     vision = meta.get("vision")
     if vision is True:
-        if assisted is not None:
-            raise ValueError(
-                f"native vision model {meta.get('alias') or key!r} cannot also declare assisted image input"
-            )
         return "native"
-    if assisted == "gateway-assisted":
-        return "gateway-assisted"
-    if assisted == "disabled":
-        return "none"
     if vision is not None or _is_cloud_key(key):
         return "none"
     haystack = " ".join(
@@ -559,8 +543,6 @@ def render_models(
         hints = _pi_hints(meta)
         desc = hints.get("name") or meta.get("desc") or key
         image_capability = _image_capability(key, meta)
-        if image_capability == "gateway-assisted":
-            desc = f"{desc} · assisted vision"
         model: dict = {
             "id": _model_id_for(key, meta),
             "name": desc,
@@ -732,11 +714,7 @@ def render_launchers(
             f"  print -r -- {shlex.quote(f'{title} (via {provider_name} → {gw_host}):')}",
         ]
         for alias, model_id, name, _is_cloud, image_capability in section_rows:
-            capability = {
-                "native": "vision",
-                "gateway-assisted": "assisted vision",
-                "none": "text-only",
-            }[image_capability]
+            capability = "vision" if image_capability == "native" else "text-only"
             lines.append(
                 f'  printf "  %-{width}s %s\\n" {shlex.quote(f"pi-{alias}")} '
                 f'{shlex.quote(name + " (" + model_id + ") [" + capability + "]")}'
