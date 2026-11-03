@@ -1267,8 +1267,42 @@ def test_installer_replaces_existing_registration_for_same_package(tmp_path):
     packages = json.loads(settings.read_text())["packages"]
     assert len(packages) == 2
     assert packages[0]["enabled"] is True
-    assert (agent / packages[0]["source"]).resolve() == SHARED_ROOT.resolve()
+    assert packages[0]["source"] == str(SHARED_ROOT.resolve())
     assert (agent / packages[1]).resolve() == unrelated.resolve()
+
+
+def test_installer_registers_absolute_source_that_survives_profile_copy(tmp_path):
+    # Omnigent copies ~/.pi/agent/settings.json into a per-session agent dir;
+    # a relative package source would then resolve against the wrong directory.
+    home = tmp_path / "home"
+    agent = home / ".pi" / "agent"
+    agent.mkdir(parents=True)
+    settings = agent / "settings.json"
+    settings.write_text(json.dumps({"packages": [os.path.relpath(SHARED_ROOT, agent)]}))
+    session = home / ".omnigent" / "pi-native" / "abc123" / "pi-agent"
+    env = {**os.environ, "HOME": str(home), "PI_SHARED_BIN_DIR": str(home / ".local" / "bin"),
+           "PI_SHARED_AGENT_DIR": str(agent), "PI_CODING_AGENT_DIR": str(session)}
+    result = subprocess.run([str(SHARED_ROOT / "bin" / "pi-shared-install"), "--no-deps", "--no-catalog"],
+                            capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(settings.read_text())["packages"] == [str(SHARED_ROOT.resolve())]
+    assert "Omnigent per-session profile" in result.stderr
+    assert "Start a new Omnigent Pi session" in result.stderr
+
+
+@pytest.mark.parametrize("active,warned", [("other", True), ("agent", False), (None, False)])
+def test_installer_warns_when_active_profile_is_not_configured(tmp_path, active, warned):
+    home = tmp_path / "home"
+    agent = home / ".pi" / "agent"
+    agent.mkdir(parents=True)
+    env = {k: v for k, v in os.environ.items() if k != "PI_CODING_AGENT_DIR"}
+    env.update({"HOME": str(home), "PI_SHARED_BIN_DIR": str(home / ".local" / "bin"), "PI_SHARED_AGENT_DIR": str(agent)})
+    if active:
+        env["PI_CODING_AGENT_DIR"] = str(agent if active == "agent" else tmp_path / "other")
+    result = subprocess.run([str(SHARED_ROOT / "bin" / "pi-shared-install"), "--no-deps", "--no-catalog"],
+                            capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    assert ("is not the profile being configured" in result.stderr) is warned
 
 
 def _install_settings_fixture(tmp_path, settings, version="0.99.1"):

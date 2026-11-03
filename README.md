@@ -60,6 +60,15 @@ Requires the `pi-setup` capability backend in **Homebrew 0.1.22+**; an older CLI
 instruction, not an automatic update. Configured is not tested/ready, and no model,
 browser, or desktop actions run as checks. [Flows and boundaries](extensions/setup/README.md).
 
+### Linux and Omnigent sandboxes
+
+The Homebrew/`pi-shared setup` flow is macOS-only. On Linux, install from source with
+`./install.sh --no-catalog` ([source-only setup](docs/reference.md#source-only-setup-on-another-machine)).
+Omnigent runs each Pi session with a per-session `PI_CODING_AGENT_DIR` that it
+seeds from `~/.pi/agent/settings.json` **when the session starts**, so install
+into `~/.pi/agent`, then start a new Omnigent Pi session (`/reload` in a running
+one does not pick it up). [Details and fallback](docs/reference.md#linux-and-omnigent-sandboxes).
+
 ## Models and connections
 
 ### Native providers and subscriptions

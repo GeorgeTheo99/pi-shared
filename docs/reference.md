@@ -656,6 +656,36 @@ The public Homebrew path exposes this through
 Omnigent remains optional and is not added to plain module installation.
 Normal Pi use is unchanged when Omnigent is absent.
 
+## Linux and Omnigent sandboxes
+
+`./install.sh --no-catalog` works on Linux (it warns that it targets macOS; no
+launchd changes are made). The Homebrew `pi-shared setup` flow is macOS-only.
+
+The installer always configures `PI_SHARED_AGENT_DIR` (default `~/.pi/agent`),
+not the calling shell's `PI_CODING_AGENT_DIR`, and warns when the two differ.
+Omnigent's native Pi harness sets `PI_CODING_AGENT_DIR` to a per-session
+directory under `~/.omnigent/pi-native/` and copies `~/.pi/agent/settings.json`
+into it when the session starts. Writing the per-session copy would not survive
+the next session, so:
+
+1. Install normally, into `~/.pi/agent`. The package is registered with an
+   absolute path so it still resolves from the copied settings.
+2. Start a **new** Omnigent Pi session; a running session keeps its old copy.
+3. Check from that session's terminal: `pi list` should show this checkout.
+
+Omnigent copies only `settings.json` (plus `npm/` and `git/` package trees), not
+the `AGENTS.md` symlink. If your Omnigent version does not seed settings, fall
+back to a project-level registration in the workspace:
+
+```bash
+cd ~/workspace && pi install -l ~/local_code/pi-shared   # writes .pi/settings.json
+```
+
+Project packages load only after project trust. Run `/trust` in the Pi
+**terminal** view (slash commands typed into Omnigent's web chat are not run as
+Pi commands), or pass `-a` for one process. Trust is stored in the active agent
+directory, so a per-session profile may ask again in each new session.
+
 ## Source-only setup on another machine
 
 1. Install Pi separately, plus Python 3 and Node/npm. Clone this repo anywhere; use a reviewed release/revision for reproducibility. `~/local_code` is only a suggested location.

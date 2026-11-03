@@ -304,7 +304,9 @@ def replace_source(entry, source):
     return updated
 
 repo_name = package_name(repo)
-rel = os.path.relpath(repo, settings_dir.resolve())
+# Absolute, not relative: hosts such as Omnigent copy this settings.json into a
+# per-session agent directory, where a relative source would no longer resolve.
+source_value = str(repo)
 seen_repo = False
 new_packages = []
 seen_resolved = set()
@@ -319,8 +321,8 @@ for entry in packages:
             if seen_repo:
                 continue
             seen_repo = True
-            if resolved != repo:
-                entry = replace_source(entry, rel)
+            if source != source_value:
+                entry = replace_source(entry, source_value)
             resolved = repo
         key = str(resolved) if resolved else json.dumps(entry, sort_keys=True)
         if key in seen_resolved:
@@ -329,7 +331,7 @@ for entry in packages:
     new_packages.append(entry)
 
 if not seen_repo:
-    new_packages.append(rel)
+    new_packages.append(source_value)
 settings["packages"] = new_packages
 settings_path.parent.mkdir(parents=True, exist_ok=True)
 mode = settings_path.stat().st_mode & 0o777 if settings_path.exists() else 0o600
@@ -600,6 +602,26 @@ migrate_legacy_launcher_path() {
   warn "Compatibility link installed at $legacy; update your shell to source $canonical"
 }
 
+physical_dir() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"; }
+
+# The installer deliberately targets PI_SHARED_AGENT_DIR (default ~/.pi/agent),
+# not the calling shell's PI_CODING_AGENT_DIR: hosts such as Omnigent point that
+# at an ephemeral per-session copy. Say so when the active profile differs.
+warn_active_profile() {
+  local active="${PI_CODING_AGENT_DIR:-}" target
+  [ -n "$active" ] || return 0
+  active="$(expand_path "$active")"
+  for target in "$PI_AGENT_DIR" "$CATALOG_PI_AGENT_DIR"; do
+    [ -n "$target" ] && [ "$(physical_dir "$active")" = "$(physical_dir "$target")" ] && return 0
+  done
+  case "$active" in
+    */.omnigent/pi-native/*)
+      warn "PI_CODING_AGENT_DIR is an Omnigent per-session profile ($active); pi-shared was installed into $PI_AGENT_DIR, which Omnigent copies only when a Pi session starts. Start a new Omnigent Pi session; /reload does not pick it up." ;;
+    *)
+      warn "PI_CODING_AGENT_DIR=$active is not the profile being configured ($PI_AGENT_DIR); Pi sessions using it will not load pi-shared. Set PI_SHARED_AGENT_DIR=$active to install there." ;;
+  esac
+}
+
 main() {
   [ "$(uname -s)" = "Darwin" ] || warn "pi-shared installer is intended for macOS; continuing because no launchd changes are required"
   direct_preflight
@@ -638,6 +660,7 @@ main() {
     printf '\nNext step: source the generated launchers so pi-list is available (add this to your shell startup file if desired):\n'
     printf '  [ -f %q ] && source %q\n' "$LAUNCHERS_OUT" "$LAUNCHERS_OUT"
   fi
+  warn_active_profile
   ok "pi-shared installed"
 }
 
