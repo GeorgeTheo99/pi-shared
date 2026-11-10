@@ -3,12 +3,16 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import extension from "../../extensions/spawn-subagent/index.ts";
 
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-worktree-integration-")));
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 process.env.PI_SUBAGENT_STATE_DIR = path.join(root, "state");
 process.env.PI_SUBAGENT_DEPTH = "0";
+// Imported after the environment is set: the job store binds its directory at
+// module load, and a hoisted static import would bind the real one.
+const { default: extension } = await import("../../extensions/spawn-subagent/index.ts");
+const { JOB_STORE_DIR } = await import("../../extensions/_shared/job-store.ts");
+assert.equal(JOB_STORE_DIR, path.join(root, "state"));
 const tools = new Map();
 const events = new Map();
 const context = { cwd: root, hasUI: false, isProjectTrusted: () => true, model: undefined };

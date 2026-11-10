@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import extension from "../../extensions/spawn-subagent/index.ts";
-import { createJobWaker } from "../../extensions/_shared/job-wake.ts";
 
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-wake-")));
 process.env.PI_SUBAGENT_STATE_DIR = path.join(root, "state");
 process.env.PI_SUBAGENT_DEPTH = "0";
+// Imported after the environment is set: the job store binds its directory at
+// module load, and a hoisted static import would bind the real one.
+const { default: extension } = await import("../../extensions/spawn-subagent/index.ts");
+const { JOB_STORE_DIR } = await import("../../extensions/_shared/job-store.ts");
+assert.equal(JOB_STORE_DIR, path.join(root, "state"));
+const { createJobWaker } = await import("../../extensions/_shared/job-wake.ts");
 const tools = new Map();
 const handlers = new Map();
 const sent = [];

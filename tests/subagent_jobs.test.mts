@@ -251,3 +251,75 @@ test("history caps never evict active jobs", async () => {
 	const stored = jobs.readBackgroundJobStore();
 	for (const id of activeIds) assert.equal(stored.jobs.find((job) => job.id === id)?.status, "running");
 });
+
+test("a lapsed lease with a live owner is reported failed but recovers and keeps its real result", async () => {
+	const now = new Date().toISOString();
+	const lapsed = (stateRevision: number) => ({
+		id: "late-owner-job", status: "running" as const, stateRevision, startedAt: now, updatedAt: now,
+		owner: owner("late-owner", process.pid, -1_000),
+	});
+	await jobs.upsertStoredJob(lapsed(1));
+	assert.equal(jobs.readJobSnapshots().get("late-owner-job")?.status, "failed");
+
+	// The owner's own late heartbeat renews the lease instead of failing its job.
+	await jobs.heartbeatStoredJobs("late-owner", 60_000);
+	assert.equal(jobs.readStoredJob("late-owner-job")?.status, "running");
+	assert.equal(jobs.readJobSnapshots().get("late-owner-job")?.status, "running");
+
+	// Another process writing while the lease is lapsed must not make it final.
+	await jobs.upsertStoredJob(lapsed(1));
+	await jobs.mutateBackgroundJobStore(() => undefined);
+	assert.equal(jobs.readStoredJob("late-owner-job")?.status, "running");
+	await jobs.upsertStoredJob({ ...lapsed(2), status: "completed", result: { real: true } });
+	assert.equal(jobs.readStoredJob("late-owner-job")?.status, "completed");
+	assert.deepEqual(jobs.readStoredJob("late-owner-job")?.result, { real: true });
+});
+
+test("a lapsed lease does not hold background capacity, and is final once unrenewed for the retention window", async () => {
+	const now = new Date().toISOString();
+	const probe = { id: "capacity-probe", status: "running" as const, startedAt: now, updatedAt: now };
+	const before = (await jobs.createStoredJobIfCapacity(probe, 0)).activeJobs;
+	await jobs.upsertStoredJob({
+		id: "lapsed-capacity-job", status: "running", startedAt: now, updatedAt: now,
+		owner: owner("lapsed-capacity-owner", process.pid, -1_000),
+	});
+	assert.equal((await jobs.createStoredJobIfCapacity(probe, 0)).activeJobs, before);
+
+	await jobs.mutateBackgroundJobStore(() => undefined, { maxAgeMs: 500 });
+	const stored = jobs.readStoredJob("lapsed-capacity-job");
+	assert.equal(stored?.status, "failed");
+	assert.match(stored?.error ?? "", /lease expired/);
+});
+
+test("a failed or corrupt store read never erases job records", async () => {
+	const now = new Date().toISOString();
+	const storePath = jobs.JOB_STORE_PATH;
+	const aside = `${storePath}.aside`;
+	const recordCount = jobs.readBackgroundJobStore().jobs.length;
+	assert.ok(recordCount > 0);
+
+	fs.renameSync(storePath, aside);
+	fs.mkdirSync(storePath);
+	try {
+		await assert.rejects(
+			jobs.upsertStoredJob({ id: "after-read-failure", status: "completed", startedAt: now, updatedAt: now }),
+			/Could not read background job store/,
+		);
+	} finally {
+		fs.rmdirSync(storePath);
+		fs.renameSync(aside, storePath);
+	}
+	assert.equal(jobs.readBackgroundJobStore().jobs.length, recordCount);
+
+	fs.renameSync(storePath, aside);
+	fs.writeFileSync(storePath, "{ truncated");
+	try {
+		await jobs.upsertStoredJob({ id: "after-corruption", status: "completed", startedAt: now, updatedAt: now });
+		assert.deepEqual(jobs.readBackgroundJobStore().jobs.map((job) => job.id), ["after-corruption"]);
+		const quarantined = fs.readdirSync(stateDir).filter((name) => name.startsWith("jobs.json.corrupt-"));
+		assert.equal(quarantined.length, 1);
+		assert.equal(fs.readFileSync(path.join(stateDir, quarantined[0]), "utf8"), "{ truncated");
+	} finally {
+		fs.renameSync(aside, storePath);
+	}
+});

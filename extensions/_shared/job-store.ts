@@ -4,8 +4,13 @@
  * Writers merge individual records under an interprocess lock and publish with
  * atomic rename. Running jobs carry owner leases, so loading the extension in a
  * child Pi process cannot falsely fail another process's live work.
+ *
+ * A lapsed lease is reported as failed but stays recoverable while the owner
+ * process is alive: after host sleep or a stall the owner renews it and its
+ * real result still lands. Only a dead owner makes the failure permanent.
  */
 
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { normalizeInteractiveExchangeLimit } from "./interactive-protocol.ts";
@@ -182,6 +187,25 @@ export function readBackgroundJobStore(): BackgroundJobStore {
 	return normalizeStore(readJsonFile<unknown>(JOB_STORE_PATH, emptyStore()));
 }
 
+/** Read for a read-modify-write cycle. Only absence may start an empty store:
+ * falling back on a failed read would let the following write erase every job. */
+function readBackgroundJobStoreForUpdate(): BackgroundJobStore {
+	let text: string;
+	try {
+		text = fs.readFileSync(JOB_STORE_PATH, "utf8");
+	} catch (error: any) {
+		if (error?.code === "ENOENT") return emptyStore();
+		throw new Error(`Could not read background job store ${JOB_STORE_PATH}: ${error?.message ?? error}`, { cause: error });
+	}
+	try {
+		return normalizeStore(JSON.parse(text));
+	} catch {
+		// Unparseable: keep the bytes for inspection instead of blocking every job.
+		fs.renameSync(JOB_STORE_PATH, `${JOB_STORE_PATH}.corrupt-${Date.now()}`);
+		return emptyStore();
+	}
+}
+
 export function isProcessAlive(pid: number | undefined): boolean {
 	if (!Number.isInteger(pid) || Number(pid) <= 0) return false;
 	try {
@@ -244,9 +268,18 @@ export function readStoredJob(jobId: string): StoredBackgroundJob | undefined {
 	return readBackgroundJobStore().jobs.find((job) => job.id === jobId);
 }
 
+/** Whether an unfinished job can be failed for good. With a live owner process a
+ * lapsed lease may only mean a suspended host or a stalled event loop, so it
+ * is final only once nobody has renewed it for the whole retention window. */
+function isJobOwnerGone(job: StoredBackgroundJob, nowMs: number, maxAgeMs: number): boolean {
+	if (!job.owner || !isProcessAlive(job.owner.pid)) return isJobOwnerStale(job, nowMs);
+	const expiresAt = Date.parse(job.owner.leaseExpiresAt);
+	return !Number.isFinite(expiresAt) || nowMs - expiresAt > maxAgeMs;
+}
+
 function pruneJobs(store: BackgroundJobStore, nowMs: number, maxJobs: number, maxAgeMs: number): void {
 	for (const job of store.jobs) {
-		if (!TERMINAL_JOB_STATUS.has(job.status) && isJobOwnerStale(job, nowMs)) {
+		if (!TERMINAL_JOB_STATUS.has(job.status) && isJobOwnerGone(job, nowMs, maxAgeMs)) {
 			job.status = "failed";
 			job.question = undefined;
 			job.stateRevision = (job.stateRevision ?? 0) + 1;
@@ -277,7 +310,7 @@ export async function mutateBackgroundJobStore<T>(
 	return withInterprocessLock(
 		JOB_STORE_LOCK_PATH,
 		async () => {
-			const store = readBackgroundJobStore();
+			const store = readBackgroundJobStoreForUpdate();
 			pruneJobs(store, Date.now(), options.maxJobs ?? 100, options.maxAgeMs ?? 30 * 24 * 60 * 60 * 1000);
 			const result = await mutator(store);
 			store.version = JOB_STORE_VERSION;
@@ -330,7 +363,11 @@ export async function createStoredJobIfCapacity(
 	options: JobStoreMutationOptions = {},
 ): Promise<{ created: boolean; activeJobs: number }> {
 	return mutateBackgroundJobStore((store) => {
-		const activeJobs = store.jobs.filter((candidate) => !TERMINAL_JOB_STATUS.has(candidate.status)).length;
+		// A lapsed lease does not hold capacity, even while it is still recoverable.
+		const nowMs = Date.now();
+		const activeJobs = store.jobs.filter(
+			(candidate) => !TERMINAL_JOB_STATUS.has(candidate.status) && !isJobOwnerStale(candidate, nowMs),
+		).length;
 		if (activeJobs >= maxActiveJobs) return { created: false, activeJobs };
 		store.jobs.push(job);
 		return { created: true, activeJobs: activeJobs + 1 };
