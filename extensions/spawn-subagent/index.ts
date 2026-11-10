@@ -8,7 +8,8 @@ import {
   type SubagentWorktree,
   type WorktreeReport,
 } from "../_shared/subagent-worktree.ts";
-import { StringEnum, type Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
+import { StringEnum } from "../_shared/string-enum.ts";
 import { defineTool, type AgentToolResult, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { operationTool } from "../_shared/operation-tool.ts";
 import { structuredTool } from "../_shared/structured-result.ts";

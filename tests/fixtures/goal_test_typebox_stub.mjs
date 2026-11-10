@@ -7,4 +7,5 @@ export const Type = {
   Optional: schema,
   String: schema,
   Union: schema,
+  Unsafe: (value) => value,
 };

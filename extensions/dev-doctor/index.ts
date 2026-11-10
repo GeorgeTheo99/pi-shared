@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runManagedProcess } from "../_shared/managed-process.ts";
 import { createMcpInventory, formatMcpInventory } from "./mcp-inventory.ts";

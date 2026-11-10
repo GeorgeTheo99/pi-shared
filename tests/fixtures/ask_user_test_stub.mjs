@@ -7,6 +7,7 @@ export const Type = {
   Object: schema,
   Optional: schema,
   String: schema,
+  Unsafe: (value) => value,
 };
 
 export function defineTool(tool) {

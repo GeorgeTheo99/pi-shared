@@ -10,7 +10,7 @@ export async function resolve(specifier, context, nextResolve) {
 	if (specifier === "@earendil-works/pi-coding-agent") {
 		return { url: piStub, shortCircuit: true };
 	}
-	if (specifier === "@earendil-works/pi-ai") {
+	if (specifier === "@earendil-works/pi-ai" || specifier === "typebox") {
 		return { url: aiStub, shortCircuit: true };
 	}
 	if (specifier === "@earendil-works/pi-tui") {

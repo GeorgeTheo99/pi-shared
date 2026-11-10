@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "../_shared/string-enum.ts";
 import { CONFIG_PATH, throwIfCallerAborted, webSearchSelection } from "../_shared/mcp-client.js";
 import { MAX_QUESTION_CHARS, normalizeOptions, runResearch, type ResearchOptions } from "./research.js";
 import { buildSynthesisPrompt, formatToolResult, saveBundle } from "./output.js";

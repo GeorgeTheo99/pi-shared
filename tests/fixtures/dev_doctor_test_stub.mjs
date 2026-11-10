@@ -6,6 +6,7 @@ export const Type = {
   Array: (items, options = {}) => ({ type: 'array', items, ...options }),
   Optional: schema => schema,
   String: (options = {}) => ({ type: 'string', ...options }),
+  Unsafe: (value) => value,
 };
 export const defineTool = tool => tool;
 export const getAgentDir = () => process.env.PI_CODING_AGENT_DIR;

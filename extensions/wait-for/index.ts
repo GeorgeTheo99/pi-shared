@@ -29,7 +29,8 @@
  * error (default 126/127: not executable/not found); other non-zero means "not yet".
  */
 
-import { StringEnum, Type } from "@earendil-works/pi-ai";
+import { StringEnum } from "../_shared/string-enum.ts";
+import { Type } from "typebox";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { runShellProcess } from "../_shared/shell-process.ts";

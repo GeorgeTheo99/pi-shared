@@ -18,4 +18,5 @@ export const Type = {
   Optional(value) {
     return { ...value, optional: true };
   },
+  Unsafe: (value) => value,
 };

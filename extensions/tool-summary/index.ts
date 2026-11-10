@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
 	complete,
-	StringEnum,
 	type Message,
 	type Model,
 	type ProviderStreamOptions,
 } from "@earendil-works/pi-ai/compat";
+import { StringEnum } from "../_shared/string-enum.ts";
 import type {
 	ExtensionAPI,
 	ExtensionContext,

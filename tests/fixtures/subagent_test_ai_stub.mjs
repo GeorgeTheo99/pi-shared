@@ -11,6 +11,7 @@ export const Type = {
  Array: (items, options = {}) => ({ type: 'array', items, ...options }),
  Record: (_keys, values, options = {}) => ({ type: 'object', additionalProperties: values, ...options }),
  Object: (properties, options = {}) => ({ type: 'object', properties, required: Object.keys(properties).filter(key => !properties[key][optional]), ...options }),
+ Unsafe: (value) => value,
 };
 export const StringEnum = (values, options = {}) => ({ type: 'string', enum: values, ...options });
 

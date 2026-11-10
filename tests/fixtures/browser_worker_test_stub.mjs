@@ -15,6 +15,7 @@ export const Type = {
   Optional: (value) => ({ ...value, optional: true }),
   String: (options = {}) => schema("string", options),
   Union: (anyOf, options = {}) => ({ anyOf, ...options }),
+  Unsafe: (value) => value,
 };
 
 export function defineTool(tool) {

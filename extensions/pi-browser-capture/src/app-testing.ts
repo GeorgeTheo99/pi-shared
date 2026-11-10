@@ -6,7 +6,8 @@
  * this pi extension; nothing goes through browser-worker.
  */
 
-import { Type, StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "./string-enum.ts";
+import { Type } from "typebox";
 import {
 	defineTool,
 	type ExtensionAPI,

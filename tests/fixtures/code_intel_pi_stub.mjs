@@ -3,5 +3,6 @@ export const Type = {
   String: options => ({ type: "string", ...options }),
   Integer: options => ({ type: "integer", ...options }),
   Optional: value => ({ ...value, optional: true }),
+  Unsafe: (value) => value,
 };
 export const StringEnum = values => ({ type: "string", enum: values });

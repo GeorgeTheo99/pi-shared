@@ -1,5 +1,5 @@
 import * as sdk from "@earendil-works/pi-coding-agent";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { SafeEditState, type MutationQueue } from "./state.ts";
 
 export default function safeEdit(pi: sdk.ExtensionAPI) {

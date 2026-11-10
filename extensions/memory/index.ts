@@ -1,4 +1,5 @@
-import { StringEnum, Type } from "@earendil-works/pi-ai";
+import { StringEnum } from "../_shared/string-enum.ts";
+import { Type } from "typebox";
 import { defineTool, type ExtensionAPI, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";

@@ -1,4 +1,5 @@
-import { Type, StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "../_shared/string-enum.ts";
+import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CodeIntelService } from "./service.ts";
 

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { commandLogs, getCommandRunner, shutdownCommandRunner } from "../_shared/command-job-runner.ts";
 import { COMMAND_TERMINAL, type CommandRecord } from "../_shared/command-job-store.ts";

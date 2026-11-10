@@ -6,7 +6,7 @@
  * so clients do not bypass broker-level reliability, policy, and observability.
  */
 
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	CONFIG_PATH,

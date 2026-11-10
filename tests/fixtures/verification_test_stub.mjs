@@ -3,4 +3,5 @@ export const Type = {
 	Object: properties => ({ type: "object", properties }),
 	String: options => ({ type: "string", ...options }),
 	Optional: schema => ({ ...schema, optional: true }),
+	Unsafe: (value) => value,
 };

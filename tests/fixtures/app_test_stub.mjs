@@ -4,6 +4,7 @@ export const Type = {
   Optional: schema => ({ ...schema, optional: true }),
   String: (options = {}) => ({ type: "string", ...options }),
   Integer: (options = {}) => ({ type: "integer", ...options }),
+  Unsafe: (value) => value,
 };
 export const StringEnum = (values, options = {}) => ({ type: "string", enum: values, ...options });
 export const defineTool = tool => tool;
