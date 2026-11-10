@@ -191,6 +191,12 @@ function isSubscriptionGpt(model: PanelModel): boolean {
   return model.provider === "openai-codex" || (model.provider === "openai" && hasOpenAISubscriptionAuth(model.agentDir));
 }
 
+// claude-bridge runs Claude Code on the Claude subscription; the anthropic
+// provider bills an API key, or extra usage when signed in.
+function isSubscriptionClaude(model: PanelModel): boolean {
+  return model.provider === "claude-bridge";
+}
+
 function modelScore(model: PanelModel, currentFamily?: string, preferredRank = 999): number {
   const preference = preferredRank < 999 ? 100_000 - preferredRank * 1_000 : 0;
   const differentFamily = currentFamily && model.family !== currentFamily ? 10_000 : 0;
@@ -198,8 +204,10 @@ function modelScore(model: PanelModel, currentFamily?: string, preferredRank = 9
   // Prefer Sign in with ChatGPT over the legacy openai-codex route to the same plan.
   const subscriptionGpt = subscription ? (model.provider === "openai" ? 21_000 : 20_000) : 0;
   const apiRoutedGptPenalty = model.family === "gpt" && !subscription ? -20_000 : 0;
+  const subscriptionClaude = isSubscriptionClaude(model) ? 20_000 : 0;
+  const apiRoutedClaudePenalty = model.family === "claude" && !isSubscriptionClaude(model) ? -20_000 : 0;
   const reasoning = model.reasoning ? 500 : 0;
-  return preference + differentFamily + subscriptionGpt + apiRoutedGptPenalty + reasoning + Math.floor(model.contextWindow / 10_000) + Math.floor(model.maxTokens / 10_000);
+  return preference + differentFamily + subscriptionGpt + apiRoutedGptPenalty + subscriptionClaude + apiRoutedClaudePenalty + reasoning + Math.floor(model.contextWindow / 10_000) + Math.floor(model.maxTokens / 10_000);
 }
 
 function modelIsExcluded(model: PanelModel, config: PanelConfig): boolean {
@@ -268,9 +276,11 @@ export function selectModels(
       families.add(model.family);
     }
   }
-  // openai/X and openai-codex/X both run as the same subscription model, so count them once.
+  // openai/X and openai-codex/X both run as the same subscription model, and
+  // anthropic/X and claude-bridge/X as the same Claude model, so count them once.
   const sameModel = (a: PanelModel, b: PanelModel) =>
-    a.key === b.key || (a.id === b.id && isSubscriptionGpt(a) && isSubscriptionGpt(b));
+    a.key === b.key ||
+    (a.id === b.id && ((isSubscriptionGpt(a) && isSubscriptionGpt(b)) || (a.family === "claude" && b.family === "claude")));
   for (const model of ordered) {
     if (selected.length >= count) break;
     if (!selected.some((item) => sameModel(item, model))) selected.push(model);

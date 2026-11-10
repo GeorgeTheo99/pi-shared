@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 // The runner resolves ~/.pi/agent when it loads, so isolate HOME first.
-const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-gpt-subscription-"));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subscription-routing-"));
 process.env.HOME = home;
 process.env.PI_CODING_AGENT_DIR = path.join(home, "empty-profile");
 const { resolveSubagentModel, schedulerResourceKey, subagentEnv } = await import("../extensions/_shared/pi-agent-runner.ts");
@@ -64,8 +64,43 @@ test("subscription children never receive an OpenAI API key", () => {
 	assert.deepEqual(subagentEnv({ ...base }, "model-gateway/glm-5.3-fw"), base);
 });
 
+function bridgeProfile(name: string, packages: unknown[]): string {
+	const dir = profile(name, {});
+	fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ packages }));
+	return dir;
+}
+
+test("Claude subagents use the Claude subscription through claude-bridge", () => {
+	const bridge = bridgeProfile("claude-bridge", ["npm:pi-shared", { source: "../../local_code/pi-claude-bridge" }]);
+	assert.deepEqual(resolveSubagentModel("anthropic/claude-opus-5-5:high", bridge), {
+		agentDir: bridge,
+		model: "claude-bridge/claude-opus-5-5:high",
+	});
+	assert.deepEqual(resolveSubagentModel("claude-fable-5-2", bridge), { agentDir: bridge, model: "claude-bridge/claude-fable-5-2" });
+	assert.deepEqual(resolveSubagentModel("claude-bridge/claude-sonnet-5-5", bridge), {
+		agentDir: bridge,
+		model: "claude-bridge/claude-sonnet-5-5",
+	});
+});
+
+test("a profile without claude-bridge still routes Claude to it rather than bill the API", () => {
+	// No bridge anywhere: the child fails on the missing provider instead.
+	assert.deepEqual(resolveSubagentModel("anthropic/claude-opus-5-5", apiKey), {
+		agentDir: apiKey,
+		model: "claude-bridge/claude-opus-5-5",
+	});
+});
+
+test("claude-bridge children never receive an Anthropic API key", () => {
+	const base = { ANTHROPIC_API_KEY: "test-only", ANTHROPIC_AUTH_TOKEN: "test-only", ANTHROPIC_BASE_URL: "https://invalid.example", KEEP: "1" };
+	assert.deepEqual(subagentEnv({ ...base }, "claude-bridge/claude-opus-5-5"), { KEEP: "1" });
+	assert.deepEqual(subagentEnv({ ...base }, "anthropic/claude-opus-5-5"), base);
+});
+
 // Last: it signs in ~/.pi/agent, which the earlier tests rely on having no login.
-test("a profile without a login falls back to the signed-in ~/.pi/agent", () => {
+test("a profile without a login or bridge falls back to ~/.pi/agent", () => {
 	const fallback = profile(path.join(".pi", "agent"), { openai: { type: "oauth" } });
 	assert.deepEqual(resolveSubagentModel("gpt-6-sol", apiKey), { agentDir: fallback, model: "openai/gpt-6-sol" });
+	fs.writeFileSync(path.join(fallback, "settings.json"), JSON.stringify({ packages: ["npm:pi-claude-bridge@0.11.0"] }));
+	assert.deepEqual(resolveSubagentModel("claude-opus-5-5", apiKey), { agentDir: fallback, model: "claude-bridge/claude-opus-5-5" });
 });

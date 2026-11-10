@@ -38,7 +38,7 @@ Example:
 }
 ```
 
-Config values are model patterns, not hardcoded shared defaults. They are resolved against the active machine's runtime model registries. `modelProfileDirs` defaults to `["~/.pi-omlx/agent", "~/.pi/agent"]` when omitted and is honored only from `~/.pi/panel-config.json`, not project `.pi/panel-config.json`, because profile directories are a trust boundary. GPT-family panel choices prefer ChatGPT subscription models (`openai` signed in with Sign in with ChatGPT, then legacy `openai-codex`) over API-routed GPT entries, including `openai` with an API key, and compare mode counts `openai/X` and `openai-codex/X` as one model.
+Config values are model patterns, not hardcoded shared defaults. They are resolved against the active machine's runtime model registries. `modelProfileDirs` defaults to `["~/.pi-omlx/agent", "~/.pi/agent"]` when omitted and is honored only from `~/.pi/panel-config.json`, not project `.pi/panel-config.json`, because profile directories are a trust boundary. GPT-family panel choices prefer ChatGPT subscription models (`openai` signed in with Sign in with ChatGPT, then legacy `openai-codex`) over API-routed GPT entries, including `openai` with an API key, and compare mode counts `openai/X` and `openai-codex/X` as one model. Claude-family choices likewise prefer `claude-bridge` (the Claude subscription through Claude Code) over `anthropic` and other API-routed Claude entries, and compare mode counts `anthropic/X` and `claude-bridge/X` as one model.
 
 ## Notes
 

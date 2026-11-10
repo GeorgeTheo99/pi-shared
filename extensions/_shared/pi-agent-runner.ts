@@ -34,7 +34,11 @@ import {
 // openai-codex and fail rather than silently bill an OpenAI API key.
 const GPT_SUBSCRIPTION_PROVIDERS = ["openai", "openai-codex"];
 const LEGACY_GPT_SUBSCRIPTION_PROVIDER = "openai-codex";
-const GPT_SUBSCRIPTION_AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
+// Claude-family subagents use the Claude subscription through claude-bridge
+// (Claude Code). The built-in anthropic provider bills an API key, or extra
+// usage when signed in, so without the bridge they fail rather than bill it.
+const CLAUDE_SUBSCRIPTION_PROVIDER = "claude-bridge";
+const SUBSCRIPTION_AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 export const SUBAGENT_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type SubagentThinkingLevel = (typeof SUBAGENT_THINKING_LEVELS)[number];
 export const DEFAULT_SUBAGENT_THINKING_LEVEL: SubagentThinkingLevel = "high";
@@ -442,14 +446,30 @@ function gptSubscriptionProvider(agentDir?: string): string | undefined {
 	}
 }
 
-function gptSubscriptionAgentDir(preferredAgentDir?: string): string | undefined {
-	const candidates = [preferredAgentDir, defaultAgentDir(), GPT_SUBSCRIPTION_AGENT_DIR].filter((item): item is string => Boolean(item));
+/** True when the profile's settings load the pi-claude-bridge package. */
+function loadsClaudeBridge(agentDir: string): boolean {
+	try {
+		const settings = JSON.parse(fs.readFileSync(path.join(agentDir, "settings.json"), "utf8")) as { packages?: unknown };
+		return Array.isArray(settings.packages) && settings.packages.some((entry) => {
+			const source = typeof entry === "string" ? entry : (entry as { source?: unknown } | null)?.source;
+			return typeof source === "string" && source.includes("pi-claude-bridge");
+		});
+	} catch {
+		return false;
+	}
+}
+
+function subscriptionAgentDir(
+	preferredAgentDir: string | undefined,
+	hasSubscription: (agentDir: string) => boolean,
+): string | undefined {
+	const candidates = [preferredAgentDir, defaultAgentDir(), SUBSCRIPTION_AGENT_DIR].filter((item): item is string => Boolean(item));
 	const seen = new Set<string>();
 	for (const candidate of candidates) {
 		const canonical = canonicalAgentDir(candidate);
 		if (seen.has(canonical)) continue;
 		seen.add(canonical);
-		if (gptSubscriptionProvider(canonical)) return canonical;
+		if (hasSubscription(canonical)) return canonical;
 	}
 	return undefined;
 }
@@ -478,6 +498,10 @@ function isGptModelId(modelId: string): boolean {
 	return /^(?:gpt|chatgpt|o[1-9])(?:[-.]|$)/i.test(modelId);
 }
 
+function isClaudeModelId(modelId: string): boolean {
+	return /^claude-/i.test(modelId);
+}
+
 function parseProviderModel(model: string): { provider?: string; modelId: string; suffix: string } {
 	const { base, suffix } = splitThinkingSuffix(model.trim());
 	const slash = base.indexOf("/");
@@ -491,12 +515,18 @@ export function schedulerResourceKey(model: string | undefined, resourceLimits: 
 	return GPT_SUBSCRIPTION_PROVIDERS.find((name) => name in resourceLimits) ?? "openai";
 }
 
-/** A GPT subscription child never sees an OpenAI API key, so a lost login can't fall back to API billing. */
+/** A subscription child never sees its provider's API key, so a lost login can't fall back to API billing. */
 export function subagentEnv(env: NodeJS.ProcessEnv, model: string | undefined): NodeJS.ProcessEnv {
 	const provider = model ? parseProviderModel(model).provider : undefined;
 	if (provider && GPT_SUBSCRIPTION_PROVIDERS.includes(provider)) {
 		delete env.OPENAI_API_KEY;
 		delete env.OPENAI_BASE_URL;
+	}
+	if (provider === CLAUDE_SUBSCRIPTION_PROVIDER) {
+		// Claude Code would use these instead of the Claude login.
+		delete env.ANTHROPIC_API_KEY;
+		delete env.ANTHROPIC_AUTH_TOKEN;
+		delete env.ANTHROPIC_BASE_URL;
 	}
 	return env;
 }
@@ -507,31 +537,45 @@ function isGptFamilyModel(model: string | undefined): boolean {
 	return provider === LEGACY_GPT_SUBSCRIPTION_PROVIDER || isGptModelId(modelId);
 }
 
-function subagentProfileForModel(model: string | undefined, requestedAgentDir?: string): string | undefined {
-	const explicitAgentDir = requestedAgentDir ? canonicalAgentDir(requestedAgentDir) : undefined;
-	if (!isGptFamilyModel(model)) return explicitAgentDir;
-	return gptSubscriptionAgentDir(explicitAgentDir) ?? explicitAgentDir;
+function isClaudeFamilyModel(model: string | undefined): boolean {
+	if (!model) return false;
+	const { provider, modelId } = parseProviderModel(model);
+	return provider === CLAUDE_SUBSCRIPTION_PROVIDER || isClaudeModelId(modelId);
 }
 
-function preferGptSubscription(model: string | undefined, agentDir: string | undefined): string | undefined {
+function subagentProfileForModel(model: string | undefined, requestedAgentDir?: string): string | undefined {
+	const explicitAgentDir = requestedAgentDir ? canonicalAgentDir(requestedAgentDir) : undefined;
+	if (isGptFamilyModel(model)) {
+		return subscriptionAgentDir(explicitAgentDir, (dir) => Boolean(gptSubscriptionProvider(dir))) ?? explicitAgentDir;
+	}
+	if (isClaudeFamilyModel(model)) return subscriptionAgentDir(explicitAgentDir, loadsClaudeBridge) ?? explicitAgentDir;
+	return explicitAgentDir;
+}
+
+function preferSubscription(model: string | undefined, agentDir: string | undefined): string | undefined {
 	if (!model) return model;
 	const { provider, modelId, suffix } = parseProviderModel(model);
-	if (!modelId || !isGptModelId(modelId)) return model;
-	const subscription = gptSubscriptionProvider(agentDir) ?? LEGACY_GPT_SUBSCRIPTION_PROVIDER;
+	let subscription: string;
+	if (isGptModelId(modelId)) subscription = gptSubscriptionProvider(agentDir) ?? LEGACY_GPT_SUBSCRIPTION_PROVIDER;
+	else if (isClaudeModelId(modelId)) subscription = CLAUDE_SUBSCRIPTION_PROVIDER;
+	else return model;
 	return provider === subscription ? model : `${subscription}/${modelId}${suffix}`;
 }
 
-/** The profile and model a subagent runs with: GPT-family models go to a ChatGPT subscription. */
+/**
+ * The profile and model a subagent runs with: GPT-family models go to a ChatGPT
+ * subscription and Claude-family models to the Claude subscription via claude-bridge.
+ */
 export function resolveSubagentModel(
 	requestedModel: string | undefined,
 	requestedAgentDir?: string,
 ): { agentDir: string | undefined; model: string | undefined } {
 	const agentDir = subagentProfileForModel(requestedModel, requestedAgentDir);
-	return { agentDir, model: preferGptSubscription(requestedModel, agentDir) };
+	return { agentDir, model: preferSubscription(requestedModel, agentDir) };
 }
 
 function allowedAgentDirs(): Set<string> {
-	const dirs = [path.join(os.homedir(), ".pi-omlx", "agent"), GPT_SUBSCRIPTION_AGENT_DIR];
+	const dirs = [path.join(os.homedir(), ".pi-omlx", "agent"), SUBSCRIPTION_AGENT_DIR];
 	if (process.env.PI_CODING_AGENT_DIR) dirs.push(process.env.PI_CODING_AGENT_DIR);
 	dirs.push(...(process.env.PI_SPAWN_SUBAGENT_ALLOWED_AGENT_DIRS ?? "").split(",").map((item) => item.trim()).filter(Boolean));
 	return new Set(dirs.map(canonicalAgentDir));

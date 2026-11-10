@@ -209,3 +209,27 @@ test("compare mode counts openai/X and openai-codex/X as one subscription model"
   assert.ok(keys.includes("openai/gpt-6-luna"));
   assert.equal(keys.filter((key) => key.endsWith("/gpt-6-sol")).length, 1);
 });
+
+function claudeModel(provider: string, id: string, contextWindow = 200_000) {
+  return {
+    provider, id, key: `${provider}/${id}`, family: "claude", contextWindow, maxTokens: 64_000,
+    reasoning: true, images: true, source: "current" as const,
+  };
+}
+
+test("Claude panel choices prefer claude-bridge over the anthropic provider", () => {
+  const glm = { ...selectionModels[0], family: "glm" };
+  const pick = (models: ReturnType<typeof claudeModel>[]) =>
+    selectModels([glm, ...models], {}, { current: glm.key }).selected.map((model) => model.key);
+
+  // The anthropic entry's larger context would otherwise win.
+  assert.deepEqual(pick([claudeModel("anthropic", "claude-opus-5-5", 1_000_000), claudeModel("claude-bridge", "claude-opus-5-5")]),
+    ["claude-bridge/claude-opus-5-5"]);
+});
+
+test("compare mode counts anthropic/X and claude-bridge/X as one model", () => {
+  const models = [claudeModel("anthropic", "claude-opus-5-5"), claudeModel("claude-bridge", "claude-opus-5-5"),
+    claudeModel("claude-bridge", "claude-sonnet-5-5")];
+  const keys = selectModels(models, {}, { mode: "compare", count: 3 }).selected.map((model) => model.key);
+  assert.deepEqual(keys.sort(), ["claude-bridge/claude-opus-5-5", "claude-bridge/claude-sonnet-5-5"]);
+});
