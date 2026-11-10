@@ -361,6 +361,15 @@ descendants. A ready port is not a successful test, and cancellation is not
 confirmed cleanup.
 [Command-job contract](extensions/command-jobs/README.md).
 
+### Scheduled agent jobs
+
+With a [pi-jobs](https://github.com/GeorgeTheo99/pi-jobs) server configured, `jobs_create`,
+`jobs_update`, `jobs_run`, `jobs_runs` and `jobs_list` schedule unattended coding-agent runs
+(cron, webhook or on demand) from any session. pi-jobs is a separate install; runs happen on
+its server in fresh worktrees and leave branches, never merges or deploys. Interactive sessions
+confirm each change; the tools are absent inside pi-jobs runs and read-only for subagents.
+[Configuration and repository matching](extensions/pi-jobs/README.md).
+
 ### Blocking waits
 
 `wait_for_condition`, `wait_for_jobs`, and `wait_for_ready` block without repeated
