@@ -33,6 +33,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 path = Path(sys.argv[1])
@@ -40,21 +41,19 @@ settings_dir = path.parent
 pi_shared_dir = Path(sys.argv[2]).expanduser().resolve()
 pi_databricks_arg = Path(sys.argv[3]).expanduser()
 settings = {}
+original = None
 if path.exists():
+    original = path.read_text()
     try:
-        settings = json.loads(path.read_text())
+        settings = json.loads(original)
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Invalid JSON in {path}: {exc}")
 
-def rel_from_settings(target: Path) -> str:
-    try:
-        return os.path.relpath(target.resolve(), settings_dir.resolve())
-    except OSError:
-        return str(target)
-
 # pi-databricks is loaded as a full package (extensions + skills + skills-das),
 # so no separate top-level resource entries are needed.
-packages = settings.get("packages", [])
+packages = settings.get("packages")
+if packages is None:
+    packages = []
 if not isinstance(packages, list):
     raise SystemExit(f"Expected packages array in {path}")
 
@@ -66,13 +65,17 @@ def package_path(entry):
 
 for required in [pi_shared_dir, *([pi_databricks_arg.resolve()] if pi_databricks_arg.exists() else [])]:
     if required not in [package_path(entry) for entry in packages]:
-        packages.append(rel_from_settings(required))
+        # Absolute, as the installer writes it: hosts that copy settings.json into
+        # a per-session agent directory would not resolve a relative source.
+        packages.append(str(required))
 settings["packages"] = packages
 if settings.get("extensions") == ["../../local_code/pi-databricks/extensions"]:
     settings.pop("extensions", None)
 if settings.get("skills") == ["~/.codex/skills"]:
     settings.pop("skills", None)
-settings["enableSkillCommands"] = True
+# Defaults for a fresh or reset profile. This also runs on every gateway launch
+# of the default profile, so an explicit choice is never overridden.
+settings.setdefault("enableSkillCommands", True)
 # Pi clamps this preference to each model's supported levels. Explicit choices
 # remain untouched; override per-session with /thinking when supported.
 settings.setdefault("defaultThinkingLevel", "high")
@@ -93,8 +96,27 @@ if not any(choice in default_tools for choice in ("codemode", "+codemode", "-cod
     if version and tuple(map(int, version.groups()[:2])) >= (0, 99):
         settings["defaultTools"] = [*default_tools, "+codemode"]
 
-path.write_text(json.dumps(settings, indent=2) + "\n")
+# Every launch runs this, possibly concurrently with other launches and with a
+# running Pi saving its settings: write only a real change, and atomically.
+rendered = json.dumps(settings, indent=2) + "\n"
+if rendered != original:
+    target = path.resolve()
+    mode = target.stat().st_mode & 0o777 if target.exists() else 0o600
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", dir=target.parent, prefix=".settings-", suffix=".tmp", delete=False) as stream:
+            tmp = Path(stream.name)
+            os.fchmod(stream.fileno(), mode)
+            stream.write(rendered)
+        tmp.replace(target)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 PY
 
-ln -sfn "$PI_SHARED_DIR/AGENTS.md" "$PI_OMLX_AGENT_DIR/AGENTS.md"
+# Like the installer, never replace instructions the owner wrote themselves.
+agents_md="$PI_OMLX_AGENT_DIR/AGENTS.md"
+if [ ! -e "$agents_md" ] || [ -L "$agents_md" ]; then
+  ln -sfn "$PI_SHARED_DIR/AGENTS.md" "$agents_md"
+fi
 printf 'Repaired oMLX Pi profile at %s (runtime unchanged)\n' "$PI_OMLX_AGENT_DIR"

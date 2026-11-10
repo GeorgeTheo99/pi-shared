@@ -70,6 +70,38 @@ def test_preserves_explicit_preferences_and_package_filters(tmp_path):
     assert actual == {**original, "enableSkillCommands": True}
 
 
+def test_default_profile_keeps_owner_instructions_and_explicit_choices(tmp_path):
+    """Gateway launchers run the repair against ~/.pi/agent on every launch."""
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    (agent / "AGENTS.md").write_text("my own instructions\n")
+    original = {"packages": None, "enableSkillCommands": False}
+    result = run_repair(tmp_path, settings=original)
+    assert result.returncode == 0, result.stderr
+    assert not (agent / "AGENTS.md").is_symlink()
+    assert (agent / "AGENTS.md").read_text() == "my own instructions\n"
+    actual = json.loads((agent / "settings.json").read_text())
+    assert actual["enableSkillCommands"] is False
+    assert actual["packages"] == [str(SHARED_ROOT)]
+
+
+def test_unchanged_settings_are_not_rewritten_and_writes_keep_links_and_mode(tmp_path):
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    real = tmp_path / "dotfiles-settings.json"
+    real.write_text("{}")
+    real.chmod(0o640)
+    (agent / "settings.json").symlink_to(real)
+    assert run_repair(tmp_path).returncode == 0
+    assert (agent / "settings.json").is_symlink()
+    assert real.stat().st_mode & 0o777 == 0o640
+    assert json.loads(real.read_text())["packages"] == [str(SHARED_ROOT)]
+    assert not list(agent.glob(".settings-*")) and not list(tmp_path.glob(".settings-*"))
+    inode = real.stat().st_ino
+    assert run_repair(tmp_path).returncode == 0
+    assert real.stat().st_ino == inode
+
+
 def test_optional_overlay_and_legacy_resource_migration(tmp_path):
     original = {"packages": [], "extensions": ["../../local_code/pi-databricks/extensions"],
                 "skills": ["~/.codex/skills"]}

@@ -146,9 +146,9 @@ Requirements and behavior:
 
 `bin/pi-omlx-repair` repairs the dedicated `~/.pi-omlx/agent` profile used by generated `pi-*` model launchers. It resolves the pi-shared repo from its own script/symlink location, so it works outside `~/local_code`. It:
 
-- writes `settings.json` so this `pi-shared` repo is loaded as a package
+- updates `settings.json` (atomically, and only when something changed) so this `pi-shared` repo is loaded as a package; preferences such as `enableSkillCommands` are defaults that never override an explicit choice
 - includes the optional sibling `pi-databricks` package when present and removes its obsolete standalone resource entries
-- symlinks `~/.pi-omlx/agent/AGENTS.md` to this repo's `AGENTS.md`
+- symlinks `~/.pi-omlx/agent/AGENTS.md` to this repo's `AGENTS.md`, unless a regular `AGENTS.md` file is already there (the installer's `--force` replaces one)
 - leaves Pi/provider runtime files, models, and credentials untouched
 
 Runtime patching is retired. The zero-usage context guard is upstream in modern

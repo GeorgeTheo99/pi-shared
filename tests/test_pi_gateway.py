@@ -273,6 +273,30 @@ def test_manual_model_edit_fails_before_discovery(machine, server):
     assert machine["models"].read_text() == '{}\n'
 
 
+def test_reconnect_preserves_owner_providers_keys_and_overrides(machine, server):
+    assert invoke(machine, server).returncode == 0
+    config = json.loads(machine["models"].read_text())
+    config["providers"]["my-ollama"] = {"baseUrl": "http://localhost:11434/v1", "api": "openai-completions",
+                                        "apiKey": "ollama", "models": [{"id": "llama"}]}
+    config["providers"]["model-gateway"]["modelOverrides"] = {"vision": {"name": "Mine"}}
+    config["ownerKey"] = {"kept": True}
+    machine["models"].write_text(json.dumps(config, indent=2) + "\n")
+    # Any launch refreshes offline and records the owner's edits as current.
+    refreshed = subprocess.run([str(ROOT / "bin/pi-launch"), "--launcher-refresh"],
+                               env={**os.environ, "PI_LAUNCHER_CONFIG": str(machine["cli"])},
+                               capture_output=True, text=True)
+    assert refreshed.returncode == 0, refreshed.stderr
+    server["body"] = {"object": "list", "data": CATALOG["data"][:1]}
+    result = invoke(machine, server)
+    assert result.returncode == 0, result.stderr
+    merged = json.loads(machine["models"].read_text())
+    assert merged["providers"]["my-ollama"] == config["providers"]["my-ollama"]
+    assert merged["ownerKey"] == {"kept": True}
+    assert merged["providers"]["model-gateway"]["modelOverrides"] == {"vision": {"name": "Mine"}}
+    assert [m["id"] for m in merged["providers"]["model-gateway"]["models"]] == ["org/model-x"]
+    assert invoke(machine, server, "check").returncode == 0
+
+
 def test_check_rejects_different_endpoint(machine, server):
     assert invoke(machine, server).returncode == 0
     result = invoke(machine, {"url": "https://other.example.com"}, "check")

@@ -18,7 +18,7 @@ import urllib.request
 
 from pi_cli import (ROOT, atomic_write, digest, dump, generation_values, load_config,
                     make_config, read_owned, refresh)
-from pi_catalog import render_models, _dump as dump_models
+from pi_catalog import merge_models, render_models
 
 LIMIT = 1024 * 1024
 MODEL_LIMIT = 1000
@@ -245,14 +245,19 @@ def connect(args):
     values.pop("--omlx-status", None)
     values.pop("--omlx-status-url", None)
     argv = [part for flag, value in values.items() for part in ([flag] if value is True else [flag, value])]
-    models = dump_models(render_models(aliases, provider_name=values["--provider-name"],
-                               gateway_url=url, gateway_api_key=values["--gateway-api-key"]))
+    # Only the generated provider is replaced: other providers, top-level keys
+    # and the owner's modelOverrides in an existing models.json are kept.
+    models_path = Path(values["--models-out"])
+    models = merge_models(read_owned(models_path, missing=True),
+                          render_models(aliases, provider_name=values["--provider-name"],
+                                        gateway_url=url, gateway_api_key=values["--gateway-api-key"]),
+                          values["--provider-name"])
     updated = make_config(aliases, argv, {}, digest(models.encode()), digest(alias_text.encode()),
                           config.get("defaultProfile"))
     # Atomic per-file replacement, not a cross-file transaction. The setup
     # receipt remains incomplete on I/O failure; inspect partial output before retrying.
     atomic_write(aliases_path, alias_text)
-    atomic_write(Path(values["--models-out"]), models)
+    atomic_write(models_path, models)
     atomic_write(cli, dump(updated))
     print(f"Configured {len(aliases)} remote model routes. Catalog/auth read succeeded; inference was not tested.")
 
