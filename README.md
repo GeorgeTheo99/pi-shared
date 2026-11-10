@@ -276,6 +276,13 @@ and blocked tasks and dependency links. They display declared progress; they do
 not execute tasks or verify that an agent's completion claim is true.
 [Work-plan behavior](extensions/work-plan/README.md).
 
+### Narrow-terminal footer
+
+Pi's footer cuts the model name when the token stats leave no room for it, so a
+phone-width terminal can show a single letter. pi-shared's footer moves the model
+to its own line instead and otherwise matches Pi's footer.
+[Footer behavior](extensions/footer/README.md).
+
 ### Long-running goals
 
 `/goal` or `start_goal` persists an objective and queues continuation turns until
