@@ -253,7 +253,7 @@ def initialize_direct(path, preference=None, check=False):
 
 def refresh(path, config, check=False, *, write=True):
     """Re-render both outputs in memory; models.json changes only in the generated provider."""
-    from pi_catalog import merge_models, render_models, _load_omlx_status
+    from pi_catalog import merge_models, render_models, resolve_gateway_api_key, _load_omlx_status
     gen = config["generation"]
     values = generation_values(gen["args"])
     if "--direct-only" in values:
@@ -264,6 +264,14 @@ def refresh(path, config, check=False, *, write=True):
             if write:
                 atomic_write(path, dump(updated))
         return updated
+    # A saved legacy shared key moves to the discovered gateway's consumer key
+    # reference as soon as one is usable; any other saved key is kept.
+    api_key = values.get("--gateway-api-key")
+    if api_key is not None and "--gateway-url" in values \
+            and (api_key := resolve_gateway_api_key(api_key, values["--gateway-url"])) != values["--gateway-api-key"]:
+        values["--gateway-api-key"] = api_key
+        gen = {**gen, "args": [part for flag, value in values.items()
+                               for part in ([flag] if value is True else [flag, value])]}
     raw = read_owned(Path(values["--aliases"]), missing="--allow-empty-catalog" in values)
     aliases = json.loads(raw) if raw else {}
     if not isinstance(aliases, dict) or any(not isinstance(v, dict) for v in aliases.values()):

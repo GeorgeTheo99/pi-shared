@@ -264,7 +264,8 @@ def test_unrecognized_launcher_is_not_used_to_infer_opt_in(machine):
 
 
 @pytest.mark.parametrize("content", ["{bad json", "[]", '{"providers": []}',
-                                     '{"providers": {"a": {}, "b": {}}}'])
+                                     '{"providers": {"a": {"baseUrl": "http://localhost:9111/v1"},'
+                                     ' "b": {"baseUrl": "http://127.0.0.1:9111/v1"}}}'])
 def test_bad_or_ambiguous_models_fail_without_writing_outputs(machine, content):
     assert render(machine).returncode == 0
     _, models, launcher = paths(machine)
@@ -280,6 +281,59 @@ def test_explicit_provider_override_can_migrate_label(machine):
     assert render(machine, "--provider-name", "ls99-models").returncode == 0
     assert render(machine, "--provider-name", "model-gateway").returncode == 0
     assert_state(machine, False)
+
+
+def test_owner_providers_are_never_adopted_and_do_not_block_reruns(machine):
+    models = paths(machine)[1]
+    ollama = {"baseUrl": "http://localhost:11434/v1", "api": "openai-completions", "apiKey": "ollama",
+              "models": [{"id": "llama"}]}
+    models.parent.mkdir(parents=True)
+    models.write_text(json.dumps({"providers": {"ollama": ollama}}))
+    for _ in range(2):
+        result = render(machine)
+        assert result.returncode == 0, result.stderr
+        providers = json.loads(models.read_text())["providers"]
+        assert providers["ollama"] == ollama
+        assert providers["model-gateway"]["baseUrl"] == "http://localhost:9111/v1"
+    assert install(machine).returncode == 0
+    assert list(json.loads(models.read_text())["providers"]) == ["ollama", "model-gateway"]
+
+
+def test_gateway_provider_label_survives_loopback_spelling_and_ambiguity_is_explicit(machine):
+    assert render(machine, "--provider-name", "ls99-models").returncode == 0
+    result = render(machine, "--gateway-url", "http://127.0.0.1:9111")
+    assert result.returncode == 0, result.stderr
+    models = paths(machine)[1]
+    providers = json.loads(models.read_text())["providers"]
+    assert list(providers) == ["ls99-models"]
+    assert providers["ls99-models"]["baseUrl"] == "http://127.0.0.1:9111/v1"
+    providers["second"] = dict(providers["ls99-models"], baseUrl="http://localhost:9111/v1/")
+    before = json.dumps({"providers": providers})
+    models.write_text(before)
+    result = render(machine)
+    assert result.returncode != 0
+    assert "multiple providers point at" in result.stderr
+    assert models.read_text() == before
+
+
+def test_installer_uses_the_discovered_consumer_key_and_keeps_it_on_rerun(machine):
+    home = machine[0]
+    key = home / "pi-runtime.key"
+    key.write_text("consumer-test-token\n")
+    key.chmod(0o600)
+    endpoint = home / "Library/Application Support/model-gateway/endpoint.json"
+    endpoint.parent.mkdir(parents=True)
+    endpoint.write_text(json.dumps({"version": 1, "service": "model-gateway", "base_url": "http://127.0.0.1:9111/v1",
+                                    "consumers": {"pi-runtime": {"key_file": str(key)}}}))
+    endpoint.chmod(0o600)
+    models = paths(machine)[1]
+    for _ in range(2):
+        result = install(machine)
+        assert result.returncode == 0, result.stderr
+        api_key = json.loads(models.read_text())["providers"]["model-gateway"]["apiKey"]
+        assert api_key.startswith("!") and str(key) in api_key
+        assert "consumer-test-token" not in models.read_text() + paths(machine)[2].read_text()
+        assert "legacy shared key" not in result.stderr
 
 
 def test_existing_provider_is_read_through_models_symlink(machine):

@@ -303,19 +303,29 @@ Neither helper signs in or copies credentials.
 - `--ls99-extras` and `PI_SHARED_LS99_EXTRAS` remain deprecated compatibility
   aliases. The canonical environment variable takes precedence over the old
   one. Regenerated `pi-regen` commands always use the portable spelling.
-- New model configs use the provider label `model-gateway`. Existing single-provider
-  model outputs keep their label (including `ls99-models`) unless
-  `--provider-name` explicitly overrides it. Multi-provider outputs require an
-  explicit provider name. Launcher-only generation without `--models-out`
-  cannot infer an existing model provider; pass `--provider-name` in that case.
-- Gateway routes authenticate with the legacy shared key `cloud` unless the
-  installer receives `--gateway-key-file PATH`, a mode-0600 consumer key such as
-  the local gateway's `pi-runtime` key. The generated `apiKey` is a
-  `!pi-gateway key --key-file PATH` reference that Pi resolves per request; the
-  token is never written to generated files, and later refreshes keep the
-  reference. It requires JSON routing (`--cli-out`) and is refused for remote
-  gateway launchers, which keep their own key through `pi-gateway connect`. An
-  unusable key file is rejected before the installer changes anything.
+- New model configs use the provider label `model-gateway`. An existing model
+  output keeps the label of the provider that already points at the gateway
+  (including `ls99-models`; `localhost`, `127.0.0.1` and `[::1]` count as the
+  same host) unless `--provider-name` explicitly overrides it. Providers that
+  point anywhere else are the owner's: they are never adopted or rewritten, and
+  the generated provider is added alongside them. If several providers point at
+  the gateway, pass `--provider-name`. Launcher-only generation without
+  `--models-out` cannot infer an existing model provider; pass `--provider-name`
+  in that case.
+- Gateway routes authenticate with a key file, never a stored token. The
+  generated `apiKey` is a `!pi-gateway key --key-file PATH` reference that Pi
+  resolves per request, and later refreshes keep it. The file is, in order:
+  the installer's `--gateway-key-file PATH` (a mode-0600 consumer key; requires
+  JSON routing with `--cli-out`, and is refused for remote gateway launchers,
+  which keep their own key through `pi-gateway connect`); otherwise the
+  `pi-runtime` consumer key file that the local gateway publishes in its
+  discovery file, when the routes point at that gateway and the file is a
+  usable credential. An unusable `--gateway-key-file` is rejected before the
+  installer changes anything.
+- Only when neither exists does generation fall back to the legacy shared key
+  `cloud`, with a warning: current model-gateway releases reject it (HTTP 401).
+  A saved `cloud` is replaced by the discovered reference on the next launcher
+  refresh; any other saved key is kept.
 
 ### Commands before model configuration
 

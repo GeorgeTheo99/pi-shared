@@ -26,6 +26,13 @@ ALIASES = {
 }
 
 
+@pytest.fixture(autouse=True)
+def no_gateway_discovery(monkeypatch):
+    # Some tests call pi_cli in-process with the real HOME: never let them read
+    # this machine's gateway discovery file.
+    monkeypatch.setenv("MODEL_GATEWAY_ENDPOINT_FILE", "")
+
+
 @pytest.fixture
 def machine(tmp_path):
     home = tmp_path / "home"
@@ -690,6 +697,36 @@ def test_refresh_keeps_owner_models_outside_generated_provider(machine):
     assert refreshed["openai-codex"] == data["providers"]["openai-codex"]
     assert refreshed["model-gateway"]["apiKey"] != "hand-edited"
     assert launch(machine, "--launcher-check", upstream=False).returncode == 0
+
+
+def test_refresh_moves_a_saved_legacy_key_to_the_discovered_consumer_key(machine):
+    assert render(machine).returncode == 0
+    assert render(machine, "--gateway-api-key", "custom-key", "--provider-name", "model-gateway").returncode == 0
+    models = machine["home"] / ".pi-omlx/agent/models.json"
+    key = machine["home"] / "pi-runtime.key"
+    key.write_text("consumer-test-token\n")
+    key.chmod(0o600)
+    endpoint = machine["home"] / "endpoint.json"
+    endpoint.write_text(json.dumps({"version": 1, "service": "model-gateway", "base_url": "http://127.0.0.1:9111/v1",
+                                    "consumers": {"pi-runtime": {"key_file": str(key)}}}))
+    endpoint.chmod(0o600)
+    discovered = {"MODEL_GATEWAY_ENDPOINT_FILE": str(endpoint)}
+
+    # Any saved key other than the legacy shared one is the owner's choice.
+    assert launch(machine, "--launcher-refresh", upstream=False, env_extra=discovered).returncode == 0
+    assert json.loads(models.read_text())["providers"]["model-gateway"]["apiKey"] == "custom-key"
+
+    assert render(machine, "--gateway-api-key", "cloud").returncode == 0
+    assert launch(machine, "--launcher-check", upstream=False).returncode == 0
+    assert launch(machine, "--launcher-check", upstream=False, env_extra=discovered).returncode != 0
+    result = launch(machine, "--launcher-refresh", upstream=False, env_extra=discovered)
+    assert result.returncode == 0, result.stderr
+    api_key = json.loads(models.read_text())["providers"]["model-gateway"]["apiKey"]
+    assert api_key.startswith("!") and str(key) in api_key
+    args = json.loads(machine["config"].read_text())["generation"]["args"]
+    assert args[args.index("--gateway-api-key") + 1] == api_key
+    assert "consumer-test-token" not in models.read_text() + machine["config"].read_text()
+    assert launch(machine, "--launcher-check", upstream=False, env_extra=discovered).returncode == 0
 
 
 # --- migration -------------------------------------------------------------

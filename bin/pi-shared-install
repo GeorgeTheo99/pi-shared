@@ -13,7 +13,8 @@
 #                     [--direct-launchers|--no-direct-launchers] [--overlay PACKAGE_DIR ...]
 #
 # --gateway-key-file PATH authenticates gateway routes with a mode-0600 consumer key
-# file (for example the gateway's pi-runtime key) instead of the legacy shared key.
+# file. Without it, a local gateway's discovered pi-runtime key file is used when
+# usable; only then does generation fall back to the legacy shared key.
 # Pi reads the file at request time; the token is never written to generated output.
 # Requires JSON routing (--cli-out), which keeps the reference across later runs.
 # PI_SHARED_DIRECT_ONLY=1 bootstraps native-only JSON routing; no gateway catalog,
@@ -433,13 +434,16 @@ direct_preflight() {
 }
 
 # The Pi provider apiKey: a key-file command reference when requested, else the
-# legacy shared key.
+# discovered local gateway's pi-runtime key reference, else the legacy shared key.
 gateway_api_key() {
-  [ -n "$GATEWAY_KEY_FILE" ] || { printf 'cloud\n'; return 0; }
-  python3 -B - "$ROOT_DIR/lib" "$GATEWAY_KEY_FILE" <<'PY'
+  python3 -B - "$ROOT_DIR/lib" "$GATEWAY_KEY_FILE" "$(gateway_discovery url)" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
+from pi_catalog import resolve_gateway_api_key
 from pi_gateway import key_reference, read_key
+if not sys.argv[2]:
+    print(resolve_gateway_api_key(None, sys.argv[3]))
+    raise SystemExit(0)
 try:
     read_key(sys.argv[2])
 except (OSError, ValueError) as exc:

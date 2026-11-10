@@ -1495,6 +1495,42 @@ def test_gateway_url_defaults_to_discovered_endpoint(tmp_path):
     assert provider["baseUrl"] == "http://127.0.0.1:19111/v1"
 
 
+def _discovered_runtime_key(tmp_path, mode=0o600, consumer="pi-runtime"):
+    key = Path(os.environ["HOME"]) / "pi-runtime.key"
+    key.write_text("consumer-test-token\n")
+    key.chmod(mode)
+    _write_endpoint(Path(os.environ["HOME"]), {**_ENDPOINT, "consumers": {consumer: {"key_file": str(key)}}})
+    return _load_aliases(tmp_path, {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x"}})
+
+
+def test_gateway_key_defaults_to_the_discovered_consumer_key_reference(tmp_path):
+    p = _discovered_runtime_key(tmp_path)
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), "--launchers-out", str(tmp_path / "l.zsh"))
+    assert r.returncode == 0, r.stderr
+    assert "WARNING" not in r.stderr
+    api_key = json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["apiKey"]
+    resolved = subprocess.run(["sh", "-c", api_key[1:]], capture_output=True, text=True)
+    assert api_key.startswith("!") and resolved.stdout.strip() == "consumer-test-token"
+    for name in ("m.json", "l.zsh"):
+        assert "consumer-test-token" not in (tmp_path / name).read_text()
+    # An explicit key always wins, and pi-regen bakes the reference rather than re-deriving it.
+    assert shlex.quote(api_key) in (tmp_path / "l.zsh").read_text()
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), "--gateway-api-key", "explicit")
+    assert json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["apiKey"] == "explicit"
+
+
+@pytest.mark.parametrize("case", ["other-endpoint", "unusable-key", "no-consumer"])
+def test_gateway_key_never_leaves_its_endpoint_and_legacy_fallback_warns(tmp_path, case):
+    p = _discovered_runtime_key(tmp_path, 0o644 if case == "unusable-key" else 0o600,
+                                "ha-runtime" if case == "no-consumer" else "pi-runtime")
+    extra = ["--gateway-url", "https://gateway.example"] if case == "other-endpoint" else []
+    r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), *extra)
+    assert r.returncode == 0, r.stderr
+    assert json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["apiKey"] == "cloud"
+    assert "WARNING: gateway routes use the legacy shared key" in r.stderr
+    assert "WARNING" not in _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), *extra, "--quiet").stderr
+
+
 def test_explicit_gateway_url_beats_discovery(tmp_path):
     _write_endpoint(Path(os.environ["HOME"]), _ENDPOINT)
     p = _load_aliases(tmp_path, {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x"}})
