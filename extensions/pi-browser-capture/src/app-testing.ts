@@ -176,6 +176,7 @@ type NetworkEntry = Record<string, unknown>;
 class NativeAppRuntime {
 	private context: BrowserContext | null = null;
 	private proxy: Awaited<ReturnType<typeof startAppProxy>> | null = null;
+	private shutdowns = 0;
 	private trackedPages = new Set<Page>();
 	private activePageIndex = 0;
 	private consoleLog: ConsoleEntry[] = [];
@@ -199,6 +200,7 @@ class NativeAppRuntime {
 	async shutdown(): Promise<void> {
 		const context = this.context;
 		const proxy = this.proxy;
+		this.shutdowns++;
 		this.context = null;
 		this.proxy = null;
 		this.trackedPages.clear();
@@ -215,6 +217,7 @@ class NativeAppRuntime {
 		// Checking URL arguments is not enough: redirects, link clicks, subresources and
 		// page scripts would still reach any host from this signed-in profile. All browser
 		// traffic, loopback included, goes through a proxy that applies the same host rule.
+		const shutdowns = this.shutdowns;
 		const proxy = await startAppProxy(
 			{ check: checkAppUrl },
 			(url) => this.pushNetwork({ timestamp: utcNow(), kind: "refused", url }),
@@ -242,6 +245,12 @@ class NativeAppRuntime {
 		} catch (error) {
 			await proxy.close();
 			throw error;
+		}
+		if (shutdowns !== this.shutdowns) {
+			// The session shut down while the browser was starting: nothing would close these later.
+			await context.close().catch(() => undefined);
+			await proxy.close();
+			throw new Error("App browser was shut down while starting");
 		}
 		this.context = context;
 		this.proxy = proxy;

@@ -1207,6 +1207,17 @@ def test_models_out_replaces_only_the_generated_provider(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+def test_renamed_provider_replaces_the_old_label_across_loopback_spellings(tmp_path):
+    p = _load_aliases(tmp_path, {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x"}})
+    mp = tmp_path / "m.json"
+    assert _run("--aliases", str(p), "--models-out", str(mp), "--gateway-url", "http://localhost:9111").returncode == 0
+    r = subprocess.run([sys.executable, str(MODULE), "--aliases", str(p), "--models-out", str(mp),
+                        "--provider-name", "model-gateway", "--gateway-url", "http://127.0.0.1:9111"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert list(json.loads(mp.read_text())["providers"]) == ["model-gateway"]
+
+
 def test_unparseable_models_out_is_not_replaced(tmp_path):
     p = _load_aliases(tmp_path, {"cloud:x": {"name": "x", "alias": "x", "provider": "openai", "provider_model_id": "x", "thinking": "optional"}})
     mp = tmp_path / "m.json"
@@ -1519,11 +1530,13 @@ def test_gateway_key_defaults_to_the_discovered_consumer_key_reference(tmp_path)
     assert json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["apiKey"] == "explicit"
 
 
-@pytest.mark.parametrize("case", ["other-endpoint", "unusable-key", "no-consumer"])
+@pytest.mark.parametrize("case", ["other-endpoint", "ambiguous-url", "unusable-key", "no-consumer"])
 def test_gateway_key_never_leaves_its_endpoint_and_legacy_fallback_warns(tmp_path, case):
     p = _discovered_runtime_key(tmp_path, 0o644 if case == "unusable-key" else 0o600,
                                 "ha-runtime" if case == "no-consumer" else "pi-runtime")
-    extra = ["--gateway-url", "https://gateway.example"] if case == "other-endpoint" else []
+    # urllib reads the second URL as the discovered loopback host; Pi's parser reads other.example.
+    extra = {"other-endpoint": ["--gateway-url", "https://gateway.example"],
+             "ambiguous-url": ["--gateway-url", "http://other.example\\@127.0.0.1:19111"]}.get(case, [])
     r = _run("--aliases", str(p), "--models-out", str(tmp_path / "m.json"), *extra)
     assert r.returncode == 0, r.stderr
     assert json.loads((tmp_path / "m.json").read_text())["providers"]["ls99-models"]["apiKey"] == "cloud"

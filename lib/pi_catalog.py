@@ -129,7 +129,10 @@ def resolve_gateway_api_key(value: str | None, gateway_url: str) -> str:
     consumers, base = discovery.get("consumers"), discovery.get("base_url")
     consumer = consumers.get("pi-runtime") if isinstance(consumers, dict) else None
     key_file = consumer.get("key_file") if isinstance(consumer, dict) else None
+    # Plain origins only: Pi's URL parser and urllib disagree on forms such as
+    # "http://other.example\@127.0.0.1:9111", which must never look local here.
     if (isinstance(key_file, str) and isinstance(base, str)
+            and re.fullmatch(r"https?://[A-Za-z0-9.\[\]:-]+", gateway_url.rstrip("/"))
             and _same_endpoint(base.rstrip("/").removesuffix("/v1"), gateway_url.rstrip("/"))):
         from pi_gateway import key_reference, read_key
         try:
@@ -1140,7 +1143,8 @@ def merge_models(existing: bytes | str, rendered: dict, provider_name: str) -> s
         raise ValueError("existing models.json must be an object with a providers object")
     generated = dict(rendered["providers"][provider_name])
     owned = [name for name, value in providers.items()
-             if name == provider_name or (isinstance(value, dict) and value.get("baseUrl") == generated["baseUrl"])]
+             if name == provider_name
+             or (isinstance(value, dict) and _same_endpoint(value.get("baseUrl"), generated["baseUrl"]))]
     overrides = next((providers[name]["modelOverrides"] for name in [provider_name, *owned]
                       if isinstance(providers.get(name), dict) and "modelOverrides" in providers[name]), None)
     if overrides is not None:
