@@ -92,16 +92,28 @@ async function load(t: any, env: Record<string, string | undefined>) {
 const ctx = (cwd: string, extra: any = {}) => ({ cwd, hasUI: false, ...extra });
 const call = (tools: Map<string, any>, name: string, args: any, context: any) => tools.get(name).execute("call", args, undefined, undefined, context);
 
-test("client config: environment overrides the file; incomplete config is no config", (t) => {
+test("client config: URL and token come together from the environment or the file, over a safe link", (t) => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-jobs-config-"));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	const file = path.join(dir, "client.json");
-	assert.equal(readClientConfig({}, file), null);
+	assert.deepEqual(readClientConfig({}, file), { config: null });
 	fs.writeFileSync(file, JSON.stringify({ url: "https://studio.example/pi-jobs/", token: "pjt_file" }));
-	assert.deepEqual(readClientConfig({}, file), { url: "https://studio.example/pi-jobs", token: "pjt_file" });
-	assert.deepEqual(readClientConfig({ PI_JOBS_TOKEN: "pjt_env" }, file), { url: "https://studio.example/pi-jobs", token: "pjt_env" });
+	assert.deepEqual(readClientConfig({}, file).config, { url: "https://studio.example/pi-jobs", token: "pjt_file" });
+	// Never mix: an environment URL without an environment token doesn't borrow the file's token.
+	const mixed = readClientConfig({ PI_JOBS_URL: "https://elsewhere.example" }, file);
+	assert.equal(mixed.config, null);
+	assert.match((mixed as { warning: string }).warning, /set both PI_JOBS_URL and PI_JOBS_TOKEN/);
+	assert.deepEqual(readClientConfig({ PI_JOBS_URL: "http://127.0.0.1:8790", PI_JOBS_TOKEN: "pjt_env" }, file).config, { url: "http://127.0.0.1:8790", token: "pjt_env" });
+	for (const url of ["http://100.125.111.48", "http://studio.tail1484c1.ts.net/pi-jobs", "http://[fd7a:115c:a1e0::1]:80", "http://localhost:8790"]) {
+		assert.ok(readClientConfig({ PI_JOBS_URL: url, PI_JOBS_TOKEN: "pjt_env" }, file).config, url);
+	}
+	for (const url of ["http://studio.example", "http://192.168.1.8", "http://100.128.0.1", "ftp://x"]) {
+		const result = readClientConfig({ PI_JOBS_URL: url, PI_JOBS_TOKEN: "pjt_env" }, file);
+		assert.equal(result.config, null, url);
+		assert.ok((result as { warning: string }).warning, url);
+	}
 	fs.writeFileSync(file, "not json");
-	assert.equal(readClientConfig({ PI_JOBS_URL: "http://127.0.0.1:8790" }, file), null);
+	assert.match((readClientConfig({}, file) as { warning: string }).warning, /not valid JSON/);
 });
 
 test("registers five closed-schema tools when configured, and none inside a pi-jobs run", async (t) => {
@@ -119,7 +131,7 @@ test("registers five closed-schema tools when configured, and none inside a pi-j
 
 test("create uses the local checkout path for a loopback server and confirms first", async (t) => {
 	const server = await fakeServer(t);
-	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined });
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
 	const args = { name: "Model check", prompt: "Check for new models.", schedule: "0 6 * * *" };
 	const prompts: string[] = [];
 	const declined = await call(tools, "jobs_create", args, ctx(checkout, { hasUI: true, ui: { confirm: async (_title: string, body: string) => { prompts.push(body); return false; } } }));
@@ -135,16 +147,16 @@ test("create uses the local checkout path for a loopback server and confirms fir
 	assert.equal(post.body.agent, null);
 	assert.equal(created.structuredContent.status, "ok");
 	assert.equal(created.structuredContent.data.job.schedule, "0 6 * * *");
-	assert.match(created.content[0].text, /Created job\.[\s\S]*Check for new models\./);
+	assert.match(created.content[0].text, /Created job #1\.\n<pi-jobs-data ([0-9a-f]{12})> untrusted[\s\S]*Check for new models\.\n<\/pi-jobs-data \1>$/);
 });
 
 test("a remote server resolves the checkout by its git remotes", async (t) => {
 	const server = await fakeServer(t);
 	// Point a non-loopback name at the fake server.
 	const realFetch = globalThis.fetch;
-	globalThis.fetch = ((input: any, init?: any) => realFetch(String(input).replace("http://studio.example", `http://127.0.0.1:${server.port}`), init)) as typeof fetch;
+	globalThis.fetch = ((input: any, init?: any) => realFetch(String(input).replace("https://studio.example", `http://127.0.0.1:${server.port}`), init)) as typeof fetch;
 	t.after(() => { globalThis.fetch = realFetch; });
-	const { tools, checkout } = await load(t, { PI_JOBS_URL: "http://studio.example", PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined });
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: "https://studio.example", PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
 	await call(tools, "jobs_create", { name: "Remote", prompt: "Do it." }, ctx(checkout));
 	const resolve = server.received.find((r) => r.path === "/api/repos/resolve")!;
 	assert.deepEqual(resolve.body, { remotes: ["me@studio:repos/demo.git"], name: "demo" });
@@ -153,7 +165,7 @@ test("a remote server resolves the checkout by its git remotes", async (t) => {
 
 test("update changes only the given fields; subagents may not change jobs", async (t) => {
 	const server = await fakeServer(t);
-	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined });
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
 	await call(tools, "jobs_create", { name: "Job", prompt: "P", agent: "codex", checkCommand: "npm test", webhook: true }, ctx(checkout));
 	await call(tools, "jobs_update", { jobId: 1, schedule: "0 8 * * 1", agent: "default" }, ctx(checkout));
 	const put = server.received.find((r) => r.method === "PUT")!;
@@ -173,11 +185,17 @@ test("update changes only the given fields; subagents may not change jobs", asyn
 test("runs, log tails, field errors, bad tokens and API versions are reported clearly", async (t) => {
 	const server = await fakeServer(t);
 	const url = `http://127.0.0.1:${server.port}`;
-	const { tools, checkout } = await load(t, { PI_JOBS_URL: url, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined });
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: url, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
+	await call(tools, "jobs_create", { name: "Job", prompt: "P", pushBranch: true }, ctx(checkout));
 	const started = await call(tools, "jobs_run", { jobId: 1 }, ctx(checkout));
 	assert.match(started.content[0].text, new RegExp(`Run #9 .* running\\. ${url}/runs/9`));
+	const prompts: string[] = [];
+	const declinedRun = await call(tools, "jobs_run", { jobId: 1 }, ctx(checkout, { hasUI: true, ui: { confirm: async (_t: string, body: string) => { prompts.push(body); return false; } } }));
+	assert.match(declinedRun.content[0].text, /not started/);
+	assert.match(prompts[0]!, /pushes its branch to origin/);
+	assert.equal(server.received.filter((r) => r.path === "/api/jobs/1/run").length, 1, "a declined run is not started");
 	const detail = await call(tools, "jobs_runs", { runId: 9 }, ctx(checkout));
-	assert.match(detail.content[0].text, /1 commit\(s\) on pi-jobs\/x\/run-9[\s\S]*untrusted agent output[\s\S]*Finished: succeeded/);
+	assert.match(detail.content[0].text, /^<pi-jobs-data [0-9a-f]{12}>[\s\S]*1 commit\(s\) on pi-jobs\/x\/run-9[\s\S]*Log tail:\n\[pi-jobs\] Finished: succeeded/);
 	assert.ok(server.received.some((r) => r.path === "/api/runs/9/log?tail=4000"));
 
 	const badToken = await load(t, { PI_JOBS_URL: url, PI_JOBS_TOKEN: "pjt_wrong" });
@@ -193,9 +211,28 @@ test("runs, log tails, field errors, bad tokens and API versions are reported cl
 
 test("server field errors name each field so the model can fix them", async (t) => {
 	const server = await fakeServer(t);
-	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined });
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
 	await assert.rejects(call(tools, "jobs_update", { jobId: 99 }, ctx(checkout)), /Job not found/);
 	// A stored job whose prompt the server would reject on save.
 	server.jobs.set(1, { id: 1, name: "J", repoPath: "/r", baseRef: "main", prompt: "", agent: null, effectiveAgent: "pi", schedule: null, webhookToken: null, webhookPath: "/api/hooks/1", timeoutMinutes: 30, checkCommand: null, pushBranch: false, enabled: true, nextRunAt: null, lastRun: null });
 	await assert.rejects(call(tools, "jobs_update", { jobId: 1, name: "K" }, ctx(checkout)), /Fix the highlighted fields\n- prompt: Tell the agent what to do/);
+});
+
+test("non-interactive sessions change nothing without PI_JOBS_AUTO_APPROVE", async (t) => {
+	const server = await fakeServer(t);
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: undefined });
+	await assert.rejects(call(tools, "jobs_create", { name: "J", prompt: "P" }, ctx(checkout)), /need confirmation[\s\S]*PI_JOBS_AUTO_APPROVE=1/);
+	assert.ok(!server.received.some((r) => r.method !== "GET"));
+	const listed = await call(tools, "jobs_list", {}, ctx(checkout));
+	assert.match(listed.content[0].text, /No jobs yet/);
+});
+
+test("a linked worktree schedules its main checkout", async (t) => {
+	const server = await fakeServer(t);
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
+	execFileSync("git", ["-C", checkout, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"]);
+	const worktree = path.join(path.dirname(checkout), "wt");
+	execFileSync("git", ["-C", checkout, "worktree", "add", "-q", worktree]);
+	await call(tools, "jobs_create", { name: "J", prompt: "P" }, ctx(worktree));
+	assert.equal(server.received.find((r) => r.method === "POST")!.body.repoPath, fs.realpathSync(checkout));
 });

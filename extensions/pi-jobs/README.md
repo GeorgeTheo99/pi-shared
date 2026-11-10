@@ -34,15 +34,18 @@ The tools are registered only when a server is configured:
 
 | Source | Contents |
 | --- | --- |
-| `~/.config/pi-jobs/client.json` (mode `0600`) | `{"url": "…", "token": "pjt_…"}`, written by `pi-jobs client-config <url> <token>`, or by `pi-jobs token create <name> --client-config` on the server itself |
-| `PI_JOBS_URL`, `PI_JOBS_TOKEN` | Override the file |
+| `~/.config/pi-jobs/client.json` (mode `0600`) | `{"url": "…", "token": "pjt_…"}`, written by `pi-jobs client-config <url>` (which reads the token from stdin), or by `pi-jobs token create <name> --client-config` on the server itself |
+| `PI_JOBS_URL` and `PI_JOBS_TOKEN` | Used instead of the file; set both or neither, so a token is never sent to a URL it wasn't saved with |
 
+Plain `http://` is accepted only for loopback and tailnet hosts; anything else needs `https://`.
+An incomplete or unsafe configuration disables the tools with a warning at session start.
 Start a new session after configuring. Every call first checks the server's `/api/health`
 `apiVersion` (currently `1`) and stops with an update hint if the server speaks another version.
 
 ## Which repository a job is for
 
-`repo` (default: the session's working directory) is a local checkout.
+`repo` (default: the session's working directory) is a local checkout. A linked worktree stands
+for its main checkout.
 
 - **Loopback server** (`127.0.0.1`, `localhost`): the job uses the checkout's own path.
 - **Remote server** (for example over Tailscale): the tools send the checkout's remote URLs, and
@@ -52,12 +55,15 @@ Start a new session after configuring. Every call first checks the server's `/ap
 
 ## Safeguards
 
-- **Confirmation:** in interactive sessions `jobs_create` and `jobs_update` show the job and save
-  only after the user confirms. A non-interactive session's prompt is its approval.
-- **No recursion:** nothing is registered inside a pi-jobs run (`PI_JOBS_RUN_ID` set), so a
-  scheduled agent cannot schedule more jobs.
+- **Confirmation:** in interactive sessions `jobs_create`, `jobs_update` and `jobs_run` show the
+  job and act only after the user confirms. Non-interactive sessions (print mode, scripts) change
+  nothing unless `PI_JOBS_AUTO_APPROVE=1` declares their prompt trusted.
+- **Not offered inside runs:** nothing is registered inside a pi-jobs run (`PI_JOBS_RUN_ID` set).
+  This keeps scheduled agents from reaching for these tools; it is not a sandbox, since an
+  unsandboxed agent runs as the owner and could read a token file.
 - **Subagents:** delegated subagents (`PI_SUBAGENT_DEPTH > 0`) can list jobs and runs but not
   create, change or start them.
-- **Untrusted output:** job instructions and run logs are returned as data, not instructions.
+- **Untrusted output:** job settings, instructions and run logs are returned inside nonce-tagged
+  `<pi-jobs-data …>` markers as data, not instructions.
 - **Token scope:** a pi-jobs token can run agents as the server's owner. Keep `client.json`
   private and revoke tokens in the pi-jobs UI when a machine no longer needs one.
