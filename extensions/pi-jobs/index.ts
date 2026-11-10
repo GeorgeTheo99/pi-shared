@@ -14,7 +14,7 @@ import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-
 import { operationTool } from "../_shared/operation-tool.ts";
 import { structuredTool } from "../_shared/structured-result.ts";
 import { warnOnce } from "../_shared/mcp-client.ts";
-import { readClientConfig, type ClientConfig } from "./config.ts";
+import { isLoopbackHost, readClientConfig, type ClientConfig } from "./config.ts";
 
 const execFileP = promisify(execFile);
 
@@ -29,15 +29,14 @@ const TOOL_DEFAULTS = {
 } as const;
 
 function isLoopback(url: string): boolean {
-	const host = URL.parse(url)?.hostname.replace(/^\[|\]$/g, "") ?? "";
-	return host === "localhost" || host === "::1" || /^127\./.test(host);
+	return isLoopbackHost(URL.parse(url)?.hostname ?? "");
 }
 
 class PiJobsError extends Error {}
 
 function describeHttpError(status: number, body: { error?: string; fields?: Record<string, string> }, url: string): string {
 	if (status === 401) {
-		return `pi-jobs at ${url} rejected the token. Create a new one (pi-jobs Settings → API tokens, or \`pi-jobs token create <name>\` on the server) and save it with \`pi-jobs client-config ${url} <token>\`.`;
+		return `pi-jobs at ${url} rejected the token. Create a new one (pi-jobs Settings → API tokens, or \`pi-jobs token create <name>\` on the server) and save it with \`pi-jobs client-config ${url}\`, which reads the token from stdin.`;
 	}
 	const fields = Object.entries(body.fields ?? {}).map(([field, message]) => `- ${field}: ${message}`);
 	return [`pi-jobs: ${body.error ?? `request failed (HTTP ${status})`}`, ...fields].join("\n");

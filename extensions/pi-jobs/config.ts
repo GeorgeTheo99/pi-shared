@@ -12,12 +12,25 @@ export interface ClientConfig {
 
 export type ConfigResult = { config: ClientConfig } | { config: null; warning?: string };
 
+function ipv4(host: string): number[] | null {
+	const parts = host.split(".");
+	if (parts.length !== 4 || !parts.every((p) => /^\d{1,3}$/.test(p))) return null;
+	const octets = parts.map(Number);
+	return octets.every((n) => n <= 255) ? octets : null;
+}
+
+/** For a WHATWG-normalized URL hostname: this machine itself. */
+export function isLoopbackHost(hostname: string): boolean {
+	const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+	return host === "localhost" || host === "::1" || ipv4(host)?.[0] === 127;
+}
+
 /** Loopback and Tailscale addresses, where plain HTTP is acceptable (Tailscale encrypts the link). */
 function isPrivateLink(hostname: string): boolean {
 	const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-	if (host === "localhost" || host === "::1" || host.endsWith(".ts.net") || /^fd7a:115c:a1e0:/.test(host)) return true;
-	const ip = host.split(".").map(Number);
-	return ip.length === 4 && ip.every((n) => Number.isInteger(n) && n >= 0 && n <= 255) && (ip[0] === 127 || (ip[0] === 100 && ip[1]! >= 64 && ip[1]! <= 127));
+	if (isLoopbackHost(host) || host.endsWith(".ts.net") || /^fd7a:115c:a1e0:/.test(host)) return true;
+	const ip = ipv4(host);
+	return ip !== null && ip[0] === 100 && ip[1]! >= 64 && ip[1]! <= 127;
 }
 
 /**

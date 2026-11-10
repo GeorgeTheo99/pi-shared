@@ -107,7 +107,7 @@ test("client config: URL and token come together from the environment or the fil
 	for (const url of ["http://100.125.111.48", "http://studio.tail1484c1.ts.net/pi-jobs", "http://[fd7a:115c:a1e0::1]:80", "http://localhost:8790"]) {
 		assert.ok(readClientConfig({ PI_JOBS_URL: url, PI_JOBS_TOKEN: "pjt_env" }, file).config, url);
 	}
-	for (const url of ["http://studio.example", "http://192.168.1.8", "http://100.128.0.1", "ftp://x"]) {
+	for (const url of ["http://studio.example", "http://192.168.1.8", "http://100.128.0.1", "http://127.0.0.1.evil.example", "http://[::ffff:127.0.0.1]", "ftp://x"]) {
 		const result = readClientConfig({ PI_JOBS_URL: url, PI_JOBS_TOKEN: "pjt_env" }, file);
 		assert.equal(result.config, null, url);
 		assert.ok((result as { warning: string }).warning, url);
@@ -199,7 +199,7 @@ test("runs, log tails, field errors, bad tokens and API versions are reported cl
 	assert.ok(server.received.some((r) => r.path === "/api/runs/9/log?tail=4000"));
 
 	const badToken = await load(t, { PI_JOBS_URL: url, PI_JOBS_TOKEN: "pjt_wrong" });
-	await assert.rejects(call(badToken.tools, "jobs_list", {}, ctx(checkout)), /rejected the token[\s\S]*pi-jobs client-config/);
+	await assert.rejects(call(badToken.tools, "jobs_list", {}, ctx(checkout)), new RegExp(`rejected the token[\\s\\S]*\`pi-jobs client-config ${url}\`, which reads the token from stdin`));
 
 	const oldServer = await fakeServer(t, { apiVersion: 2 });
 	const mismatched = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${oldServer.port}`, PI_JOBS_TOKEN: TOKEN });
