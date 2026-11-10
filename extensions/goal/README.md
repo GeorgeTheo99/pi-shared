@@ -15,6 +15,10 @@ objective is complete, blocked, paused, or out of turn budget.
 Pressing Escape during an active goal's turn pauses autopilot without consuming the
 interrupted turn; `/goal resume` continues.
 
+A failed model request (outage, quota, expired key) is not charged as a turn and
+queues no continuation. Pi's own retries run first; if the request still fails
+when Pi settles, the goal pauses until `/goal resume`.
+
 ## Tools
 
 - `start_goal` — lets the agent create a goal from a normal session when the user

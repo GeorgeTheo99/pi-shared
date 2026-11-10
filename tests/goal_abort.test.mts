@@ -124,6 +124,46 @@ test("an aborted active-goal turn pauses without consuming budget or queuing con
   ]);
 });
 
+test("a failed model request is never charged or continued, and pauses only if Pi does not recover", async () => {
+  const harness = makeHarness();
+  (await loadGoalExtension("model-error"))(harness.pi as any);
+  await startGoal(harness);
+  const agentEnd = harness.handlers.get("agent_end")!;
+  const settled = harness.handlers.get("agent_settled");
+  assert.ok(settled, "agent_settled should be registered");
+  const failed = { messages: [{ role: "user" }, { role: "assistant", stopReason: "error", content: [] }] };
+  const worked = { messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] }] };
+
+  // Pi retries the failed attempt and the retry succeeds: one turn, one continuation.
+  await agentEnd(failed, harness.ctx);
+  await agentEnd(failed, harness.ctx);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(harness.sent, []);
+  assert.equal(harness.branch.filter((entry) => entry.customType === "pi-goal-state").length, 1);
+  await agentEnd(worked, harness.ctx);
+  await settled({ aborted: false }, harness.ctx);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(latestGoalState(harness.branch).status, "active");
+  assert.equal(latestGoalState(harness.branch).turnsCompleted, 1);
+  assert.equal(harness.sent.length, 1);
+
+  // Retries exhausted: the goal pauses instead of re-prompting through the outage.
+  harness.sent.length = 0;
+  for (let attempt = 0; attempt < 4; attempt++) await agentEnd(failed, harness.ctx);
+  await settled({ aborted: false }, harness.ctx);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const state = latestGoalState(harness.branch);
+  assert.equal(state.status, "paused");
+  assert.equal(state.turnsCompleted, 1);
+  assert.equal(state.progressLog.at(-1)?.note, "Paused because the model request failed and was not recovered.");
+  assert.deepEqual(harness.sent, []);
+  assert.deepEqual(harness.notifications, [
+    { message: "Goal paused after a model error. Run /goal resume to continue.", level: "warning" },
+  ]);
+  await settled({ aborted: false }, harness.ctx);
+  assert.equal(harness.notifications.length, 1);
+});
+
 test("an aborted turn still persists the pause without a UI", async () => {
   const harness = makeHarness(false);
   (await loadGoalExtension("no-ui"))(harness.pi as any);

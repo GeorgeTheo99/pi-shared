@@ -907,7 +907,11 @@ export default function goalExtension(pi: ExtensionAPI) {
     },
   });
 
+  // A failed model request may still be retried by Pi; agent_settled decides once it stops.
+  let errorHeld = false;
+
   pi.on("agent_end", async (event, ctx) => {
+    errorHeld = false;
     if (!goal || goal.status !== "active") return;
 
     const orientation = inspectChildHandoffOrientation(
@@ -924,6 +928,12 @@ export default function goalExtension(pi: ExtensionAPI) {
       record(pi, "paused", "Paused because the user interrupted the active turn.");
       setStatus(ctx);
       if (ctx.hasUI) ctx.ui.notify("Goal paused after interrupt. Run /goal resume to continue.", "info");
+      return;
+    }
+    // Not a turn of work: charging it and continuing would re-prompt through an
+    // outage or an expired key until the whole budget is gone.
+    if (lastAssistant?.stopReason === "error") {
+      errorHeld = true;
       return;
     }
 
@@ -1053,5 +1063,14 @@ export default function goalExtension(pi: ExtensionAPI) {
     }
 
     queueGoalPrompt(pi, continuationPrompt(goal), handoffGate);
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (!errorHeld) return;
+    errorHeld = false;
+    if (!goal || goal.status !== "active") return;
+    record(pi, "paused", "Paused because the model request failed and was not recovered.");
+    setStatus(ctx);
+    if (ctx.hasUI) ctx.ui.notify("Goal paused after a model error. Run /goal resume to continue.", "warning");
   });
 }
