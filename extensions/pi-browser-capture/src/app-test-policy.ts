@@ -27,13 +27,17 @@ export function appTargetPolicy(baseUrl: string | undefined, rawHosts = "") {
  * unlike Playwright route(), which only sees the first URL of a redirect chain.
  * No TLS interception, credentials, response buffering or request replay.
  * This is a hostname policy for trusted app tests, not an OS/network sandbox.
+ * `idleMs` 0 keeps idle connections open, for a long-lived browser whose app
+ * holds WebSocket or event-stream connections.
  */
-export async function startAppProxy(policy: ReturnType<typeof appTargetPolicy>, refused: (url: string) => void) {
+export async function startAppProxy(
+	policy: Pick<ReturnType<typeof appTargetPolicy>, "check">, refused: (url: string) => void, idleMs = 30_000,
+) {
 	const sockets = new Set<Socket>();
 	function track(socket: Socket) {
 		if (sockets.size >= 256) { socket.destroy(); return; }
 		sockets.add(socket);
-		socket.setTimeout(30_000, () => socket.destroy());
+		socket.setTimeout(idleMs, () => socket.destroy());
 		socket.on("error", () => socket.destroy());
 		socket.on("close", () => sockets.delete(socket));
 	}

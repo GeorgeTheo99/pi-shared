@@ -23,6 +23,7 @@ import https from "node:https";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { URL } from "node:url";
+import { startAppProxy } from "./app-test-policy.ts";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -114,21 +115,15 @@ function hostMatchesRule(host: string, rule: string): boolean {
 	return host === rule;
 }
 
-function resolveAppUrl(urlOrPath: string): string {
-	if (!config.baseUrl && config.allowedHosts.size === 0) {
+/** The one host rule, for URL arguments and for every request the browser itself makes. */
+function checkAppUrl(candidate: string): URL {
+	// An unparseable base URL yields no hosts: that is a configuration error, never an open door.
+	if (config.allowedHosts.size === 0) {
 		throw new Error(
-			"Configure BROWSER_MCP_APP_BASE_URL or BROWSER_MCP_APP_ALLOWED_HOSTS before using app-testing tools.",
+			"Configure BROWSER_MCP_APP_BASE_URL as a full URL (for example http://127.0.0.1:8100) or " +
+			"BROWSER_MCP_APP_ALLOWED_HOSTS before using app-testing tools.",
 		);
 	}
-
-	let candidate = urlOrPath.trim();
-	if (!candidate) throw new Error("URL cannot be empty");
-
-	if (candidate.startsWith("/") || !candidate.includes("://")) {
-		if (!config.baseUrl) throw new Error("Relative paths require a configured base URL");
-		candidate = new URL(candidate.replace(/^\/+/, ""), `${config.baseUrl.replace(/\/+$/, "")}/`).toString();
-	}
-
 	let parsed: URL;
 	try {
 		parsed = new URL(candidate);
@@ -139,13 +134,21 @@ function resolveAppUrl(urlOrPath: string): string {
 
 	const host = parsed.hostname.toLowerCase();
 	if (!host) throw new Error("URL is missing a hostname");
-	if (config.allowedHosts.size > 0) {
-		for (const rule of config.allowedHosts) {
-			if (hostMatchesRule(host, rule)) return parsed.toString();
-		}
-		throw new Error(`Host '${host}' is not allowed. Allowed hosts: ${JSON.stringify([...config.allowedHosts].sort())}`);
+	for (const rule of config.allowedHosts) {
+		if (hostMatchesRule(host, rule)) return parsed;
 	}
-	return parsed.toString();
+	throw new Error(`Host '${host}' is not allowed. Allowed hosts: ${JSON.stringify([...config.allowedHosts].sort())}`);
+}
+
+function resolveAppUrl(urlOrPath: string): string {
+	let candidate = urlOrPath.trim();
+	if (!candidate) throw new Error("URL cannot be empty");
+
+	if (candidate.startsWith("/") || !candidate.includes("://")) {
+		if (!config.baseUrl) throw new Error("Relative paths require a configured base URL");
+		candidate = new URL(candidate.replace(/^\/+/, ""), `${config.baseUrl.replace(/\/+$/, "")}/`).toString();
+	}
+	return checkAppUrl(candidate).toString();
 }
 
 function jsonText(value: unknown): string {
@@ -172,6 +175,7 @@ type NetworkEntry = Record<string, unknown>;
 
 class NativeAppRuntime {
 	private context: BrowserContext | null = null;
+	private proxy: Awaited<ReturnType<typeof startAppProxy>> | null = null;
 	private trackedPages = new Set<Page>();
 	private activePageIndex = 0;
 	private consoleLog: ConsoleEntry[] = [];
@@ -194,9 +198,12 @@ class NativeAppRuntime {
 
 	async shutdown(): Promise<void> {
 		const context = this.context;
+		const proxy = this.proxy;
 		this.context = null;
+		this.proxy = null;
 		this.trackedPages.clear();
 		if (context) await context.close().catch(() => undefined);
+		await proxy?.close();
 	}
 
 	private async ensureContext(): Promise<BrowserContext> {
@@ -205,17 +212,43 @@ class NativeAppRuntime {
 		await mkdir(config.profileDir, { recursive: true });
 		await mkdir(config.artifactDir, { recursive: true });
 
+		// Checking URL arguments is not enough: redirects, link clicks, subresources and
+		// page scripts would still reach any host from this signed-in profile. All browser
+		// traffic, loopback included, goes through a proxy that applies the same host rule.
+		const proxy = await startAppProxy(
+			{ check: checkAppUrl },
+			(url) => this.pushNetwork({ timestamp: utcNow(), kind: "refused", url }),
+			0,
+		);
 		const launchOptions: Parameters<typeof chromium.launchPersistentContext>[1] = {
 			headless: config.headless,
 			ignoreHTTPSErrors: config.ignoreHttpsErrors,
 			viewport: { width: config.viewportWidth, height: config.viewportHeight },
 			userAgent: config.userAgent ?? DEFAULT_STEALTH_USER_AGENT,
-			args: STEALTH_LAUNCH_ARGS,
+			proxy: { server: proxy.url, bypass: "<-loopback>" },
+			args: [
+				...STEALTH_LAUNCH_ARGS,
+				"--proxy-bypass-list=<-loopback>",
+				"--disable-quic",
+				"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+			],
 		};
 		if (config.browserChannel) launchOptions.channel = config.browserChannel;
 		if (config.browserExecutablePath) launchOptions.executablePath = config.browserExecutablePath;
 
-		this.context = await chromium.launchPersistentContext(config.profileDir, launchOptions);
+		let context: BrowserContext;
+		try {
+			context = await chromium.launchPersistentContext(config.profileDir, launchOptions);
+		} catch (error) {
+			await proxy.close();
+			throw error;
+		}
+		this.context = context;
+		this.proxy = proxy;
+		// A crash or a closed headed window: forget the context so the next call relaunches.
+		context.on("close", () => {
+			if (this.context === context) void this.shutdown();
+		});
 		this.context.setDefaultTimeout(config.defaultTimeoutMs);
 		this.context.on("page", (page) => {
 			this.attachPage(page);
@@ -699,6 +732,7 @@ const appInspect = defineTool({
 	description:
 		"Operate the persistent, authenticated local/private app-testing browser through one explicit action. " +
 		"Relative paths resolve against the configured app base URL; absolute URLs must be on allowed hosts. " +
+		"The browser itself reaches only those hosts, so redirects, subresources and page scripts to any other host are refused. " +
 		"request sends a direct HTTP call to an app endpoint.",
 	promptSnippet: "app_inspect to explore, debug, or call the API of a local/private app",
 	promptGuidelines: [

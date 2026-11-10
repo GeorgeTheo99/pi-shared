@@ -57,4 +57,36 @@ test("app_inspect is the single persistent app tool and dispatches actions again
 	await assert.rejects(call({ action: "click" }), /action=click requires selector/);
 	await assert.rejects(call({ action: "request", method: "GET" }), /action=request requires url/);
 	await assert.rejects(call({ action: "open", url: "https://example.com/" }), /not allowed|allowed hosts/i);
+
+	// The host rule covers what the browser does after the first URL: redirects, page
+	// scripts and evaluate never reach a host outside the allowlist.
+	// A redirect chain that leaves the app ends at the proxy's refusal, not at the other host.
+	assert.equal((await call({ action: "open", url: "/escape" })).status, 403);
+	await call({ action: "open" });
+	await call({ action: "click", selector: "#leak" });
+	await call({ action: "wait", selector: "#network-done" });
+	const escaped = await call({ action: "evaluate", script: `fetch(${JSON.stringify(fixture.forbidden)}).then(r => r.status, () => "blocked")` });
+	assert.notEqual(escaped.result, 200);
+	assert.equal(fixture.refusedHits, 0);
+	const refused = (await call({ action: "network", url_contains: "localhost" })).entries.filter((entry: any) => entry.kind === "refused");
+	assert.ok(refused.length >= 3, JSON.stringify(refused));
+});
+
+test("app_inspect fails closed when the base URL yields no allowed host", async () => {
+	const saved = Object.fromEntries(["BROWSER_MCP_APP_BASE_URL", "BROWSER_MCP_APP_ALLOWED_HOSTS"].map(name => [name, process.env[name]]));
+	const restore = () => { for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value; };
+	try {
+		delete process.env.BROWSER_MCP_APP_ALLOWED_HOSTS;
+		for (const [index, base] of ["127.0.0.1:8100", "localhost:3000", "myapp.test"].entries()) {
+			process.env.BROWSER_MCP_APP_BASE_URL = base;
+			const { default: extension } = await import(`../extensions/pi-browser-capture/src/app-testing.ts?bad-base=${index}`);
+			const tools: any[] = [];
+			extension({ registerTool: (tool: any) => tools.push(tool), on: () => undefined } as any);
+			for (const params of [{ action: "request", method: "GET", url: "https://example.com/steal" }, { action: "open", url: "https://example.com/" }, { action: "open" }]) {
+				await assert.rejects(tools[0].execute("tool-id", params, undefined), /Configure BROWSER_MCP_APP_BASE_URL as a full URL|Invalid URL|Only http and https/);
+			}
+		}
+	} finally {
+		restore();
+	}
 });

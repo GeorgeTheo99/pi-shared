@@ -80,9 +80,21 @@ Configure with:
 
 ```bash
 export BROWSER_MCP_APP_BASE_URL='http://127.0.0.1:8100'
-# Optional comma-separated host allowlist for absolute app URLs:
+# Optional comma-separated hosts the app browser may reach besides the base URL's host:
 export BROWSER_MCP_APP_ALLOWED_HOSTS='127.0.0.1,localhost,dev.internal'
 ```
+
+The allowlist covers everything the app browser does, not only the URL passed to
+`open` or `request`. All browser traffic, loopback included, goes through a local
+proxy that checks every HTTP request and every HTTPS or WebSocket `CONNECT`
+destination, so redirects, link clicks, subresources and page scripts (including
+`evaluate`) cannot reach another host from the signed-in profile. A refused request
+gets a `403` from the proxy and appears in `network` with `kind: "refused"`. An app
+that loads third-party resources (a CDN, an identity provider) needs those hosts in
+`BROWSER_MCP_APP_ALLOWED_HOSTS`. `BROWSER_MCP_APP_BASE_URL` must be a full
+`http(s)://` URL: a value such as `localhost:3000` allows no host, and every call
+then fails with a configuration error. This is a hostname policy, not a network
+sandbox.
 
 ## Reproducible isolated app tests
 
@@ -209,7 +221,7 @@ The Playwright/Patchright dependencies above are for the separate `app_inspect`/
 ## App environment variables
 
 - `BROWSER_MCP_APP_BASE_URL` — default `http://127.0.0.1:8100`
-- `BROWSER_MCP_APP_ALLOWED_HOSTS` — comma-separated allowed hosts for absolute app URLs
+- `BROWSER_MCP_APP_ALLOWED_HOSTS` — comma-separated hosts the app browser may reach besides the base URL's host
 - `BROWSER_MCP_APP_PROFILE_DIR` — app browser profile directory
 - `BROWSER_MCP_APP_ARTIFACT_DIR` — app screenshot output directory
 - `BROWSER_MCP_NETWORK_LOG_LIMIT` — default `400`
