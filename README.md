@@ -461,6 +461,14 @@ retrieves bounded exact slices from the active branch. Model-based summaries can
 use extra inference; recall cannot recover content the original tool already
 truncated. [Summary, image-aging, and recall policy](extensions/tool-summary/README.md).
 
+### Secret redaction in tool results
+
+Every tool result is scanned before Pi stores it or sends it to the model. Exact
+values from local secret stores (`~/.config/<tool>/secrets/`, plus
+`PI_SECRET_DIRS`) and well-known token formats are replaced with
+`[REDACTED …]`. Images and on-disk overflow files are not redacted.
+[What is matched and its limits](extensions/secret-guard/README.md).
+
 ## Knowledge and artifacts
 
 ### Software-engineering knowledge base
