@@ -7,6 +7,7 @@ const CUSTOM_OPTION_BASE_LABEL = "✎ Type something else";
 
 interface AskUserDetails {
 	question: string;
+	details?: string;
 	options: string[];
 	answer: string | null;
 	cancelled: boolean;
@@ -23,6 +24,11 @@ function customOptionLabel(existing: Set<string>): string {
 	let label = CUSTOM_OPTION_BASE_LABEL;
 	while (existing.has(label)) label += "…";
 	return label;
+}
+
+/** Everything the user needs to answer, since the dialog is the only part of the turn they are sure to see. */
+function dialogText(...parts: (string | undefined)[]): string {
+	return parts.filter(Boolean).join("\n\n");
 }
 
 function textResult(text: string, details: AskUserDetails) {
@@ -45,18 +51,26 @@ const askUserTool = defineTool({
 	name: "ask_user",
 	label: "Ask User",
 	description:
-		"Ask the user an interactive multiple-choice question and return their answer. Use only when progress is blocked by a necessary user decision, preference, missing fact, or approval. If the user declines, dismisses, or times out the prompt, the agent loop is aborted and control is returned to the user — the agent must wait for the user's next message and must NEVER assume an answer or continue the prior task.",
+		"Ask the user an interactive multiple-choice question and return their answer. Use only when progress is blocked by a necessary user decision, preference, missing fact, or approval, or by a step only the user can perform. The user sees only this call's question, details, and options, never your reasoning or tool output, so the call must stand alone: when it asks the user to run, do, or approve something, put the exact commands or steps in details. If the user declines, dismisses, or times out the prompt, the agent loop is aborted and control is returned to the user — the agent must wait for the user's next message and must NEVER assume an answer or continue the prior task.",
 	promptSnippet: "ask_user to ask the user a structured question with selectable options",
 	promptGuidelines: [
 		"Use ask_user when you genuinely need a user decision to proceed and the choices can be made explicit.",
 		"Use ask_user for irreversible tradeoffs, or for product/design decisions where you have no defensible recommendation. For a reversible choice with a clear recommendation, take it and keep working instead of asking.",
 		"Do not use ask_user for routine status updates, rhetorical questions, or information you can safely discover with available tools.",
 		"Provide concise, mutually exclusive options. Include a safe/cancel/no-op option when relevant.",
+		"The user sees only the ask_user dialog, not your reasoning or tool output. When the question asks the user to run, do, or approve something, write the exact commands or steps in details. Never ask whether the user ran \"it\" or wants \"this\" run when the call does not spell out what that is.",
 		"If the user dismisses or times out an ask_user prompt, the agent loop is aborted automatically. Do not assume a default answer, do not pick an option on the user's behalf, and do not continue the prior task. Wait for the user's next message before doing anything.",
 		"ALWAYS invoke ask_user via the native tool-call channel. NEVER emit `<ask_user>`, `<question>`, `<options>`, `<allow_custom>`, or any other XML/HTML-style tag in assistant text to represent a question — that syntax is from a different harness and will render as raw markup to the user instead of opening an interactive prompt. If you want to ask the user, call the ask_user tool; otherwise just write the question as plain prose.",
 	],
 	parameters: Type.Object({
-		question: Type.String({ description: "The question to show the user" }),
+		question: Type.String({
+			description: "The question to show the user. It must make sense without anything outside this call: do not refer to a command, step, or plan that is not written out in question or details.",
+		}),
+		details: Type.Optional(
+			Type.String({
+				description: "Shown verbatim under the question. Required when the user must run, do, or approve something: the exact commands (one per line, each on a single line where possible), where to run them, and the result to expect; or the exact command or change being approved.",
+			}),
+		),
 		options: Type.Optional(
 			Type.Array(Type.String(), {
 				description: `Selectable answer options. Up to ${MAX_OPTIONS} non-empty unique options are shown.`,
@@ -80,10 +94,14 @@ const askUserTool = defineTool({
 
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		const question = params.question.trim();
+		const detailsText = params.details?.trim() || undefined;
 		const options = normalizeOptions(params.options);
 		const allowCustom = params.allow_custom ?? options.length === 0;
+		const prompt = dialogText(question, detailsText);
+		const inputPrompt = dialogText(prompt, params.custom_prompt?.trim());
 		const baseDetails: AskUserDetails = {
 			question,
+			...(detailsText ? { details: detailsText } : {}),
 			options,
 			answer: null,
 			cancelled: false,
@@ -129,7 +147,7 @@ const askUserTool = defineTool({
 
 		if (options.length === 0) {
 			const answer = await ctx.ui.input(
-				params.custom_prompt?.trim() || question,
+				inputPrompt,
 				"Type your answer",
 				dialogOptions(params.timeout_ms, signal),
 			);
@@ -147,7 +165,7 @@ const askUserTool = defineTool({
 		const existing = new Set(options);
 		const customLabel = customOptionLabel(existing);
 		const displayedOptions = allowCustom ? [...options, customLabel] : options;
-		const selected = await ctx.ui.select(question, displayedOptions, dialogOptions(params.timeout_ms, signal));
+		const selected = await ctx.ui.select(prompt, displayedOptions, dialogOptions(params.timeout_ms, signal));
 
 		if (!selected) {
 			return cancelledResult({ ...baseDetails, cancelled: true });
@@ -155,7 +173,7 @@ const askUserTool = defineTool({
 
 		if (selected === customLabel) {
 			const answer = await ctx.ui.input(
-				params.custom_prompt?.trim() || question,
+				inputPrompt,
 				"Type your answer",
 				dialogOptions(params.timeout_ms, signal),
 			);
@@ -181,6 +199,9 @@ const askUserTool = defineTool({
 	renderCall(args, theme) {
 		const options = normalizeOptions(args.options);
 		const lines = [theme.fg("toolTitle", theme.bold("ask_user ")) + theme.fg("muted", args.question ?? "")];
+		// Keeps the commands or steps in the transcript after the dialog closes.
+		const detailsText = args.details?.trim();
+		if (detailsText) lines.push(...detailsText.split("\n").map((line) => `  ${line}`));
 		if (options.length) {
 			lines.push(theme.fg("dim", `  Options: ${options.map((option, index) => `${index + 1}. ${option}`).join(", ")}`));
 		}

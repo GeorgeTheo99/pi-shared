@@ -264,7 +264,8 @@ returned to cloud models may also remain in Pi transcripts.
 
 ### Structured questions
 
-`ask_user` offers choices or custom input in interactive UI sessions. Dismissing
+`ask_user` offers choices or custom input in interactive UI sessions, and shows
+any commands or steps the user has to perform alongside the question. Dismissing
 or timing out a question aborts the agent loop rather than guessing an answer.
 It is not a headless approval mechanism.
 [Question tool](extensions/ask-user/README.md).

@@ -299,7 +299,7 @@ ${state.objective}
 Do exactly one of these on this retry (attempt ${attempt}/${MAX_EMPTY_STOP_RETRIES}):
 1. Make the smallest plausible next concrete tool call that advances the goal (read a file, run a command, edit code, query state).
 2. If you genuinely believe the goal is complete, call update_goal with status "complete" and concrete evidence.
-3. If you are genuinely blocked on something only the user can resolve (missing credentials, an external decision, an irreversible action they have not authorized), call update_goal with status "blocked" with a one-line explanation.
+3. If you are genuinely blocked on something only the user can resolve (missing credentials, an external decision, an irreversible action they have not authorized), call update_goal with status "blocked" and a note that states exactly what the user must do or decide, including any command verbatim.
 
 Do not return another empty response. Do not summarize. Do not produce a status-update narrative. Pick one of the three actions above and execute it now.`;
 }
@@ -862,6 +862,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       "Use update_goal with status active only when a turn produced a meaningful state change worth recording. Do not log no-op turns.",
       "Use update_goal with status complete only after auditing concrete evidence that every goal requirement is satisfied.",
       "Use update_goal with status blocked only when you cannot resolve the blocker yourself by reading state, editing code, retrying, or changing approach — e.g. missing credentials, an external decision the user must make, or an irreversible action they have not authorized. Do not block for routine next-step approval.",
+      "A blocked note is the only thing the user reads before acting: state exactly what they must do or decide, with any command they have to run written out verbatim and where to run it.",
     ],
     parameters: Type.Object({
       status: Type.Union([
@@ -870,7 +871,7 @@ export default function goalExtension(pi: ExtensionAPI) {
         Type.Literal("blocked"),
         Type.Literal("paused"),
       ], { description: "Goal status update." }),
-      note: Type.String({ description: "Short progress, completion, or blocker note." }),
+      note: Type.String({ description: "Short progress or completion note. For blocked: exactly what the user must do or decide, with any command they have to run written out verbatim." }),
       evidence: Type.Optional(Type.String({ description: "Concrete evidence: files, commands, test results, URLs, or runtime checks." })),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
