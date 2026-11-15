@@ -177,6 +177,25 @@ def routes_for(aliases, provider, profile, direct, claude_bridge_only=False):
     return dict(sorted(routes.items()))
 
 
+def removed_claude_shortcut(config, alias):
+    """Claude model id behind a shortcut that --claude-bridge-only removed ("" for the
+    direct Anthropic preset), else None. Lets the launcher refuse it instead of
+    passing the alias to Pi as a prompt."""
+    from pi_catalog import _CLAUDE_ID_RE, _eligible_entries, _is_claude, _model_id_for, _pi_hints
+    values = generation_values(config["generation"]["args"])
+    if "--claude-bridge-only" not in values:
+        return None
+    if alias == "anthropic":
+        return ""
+    raw = read_owned(Path(values["--aliases"]), missing=True) if "--aliases" in values else b""
+    for key, meta in _eligible_entries(json.loads(raw) if raw else {}):
+        if _is_claude(key, meta) and alias in [str(meta["alias"]), *(_pi_hints(meta).get("aliases") or [])]:
+            model = _model_id_for(key, meta)
+            match = _CLAUDE_ID_RE.search(model)  # anthropic/claude-x and Bedrock ids → claude-x
+            return model[match.start():].lstrip("/.:@") if match else model
+    return None
+
+
 def make_config(aliases, args, status, models_digest, aliases_digest, default_profile=None):
     values = generation_values(args)
     if "--direct-only" in values and (aliases or default_profile is not None):
@@ -712,6 +731,9 @@ def main(argv=None):
                 # Refresh first to discover newly added shortcuts and retire removed ones.
                 config = refresh(path, config)
                 route = config["routes"].get(argv[0])
+                if route is None and (model := removed_claude_shortcut(config, argv[0])) is not None:
+                    raise ValueError(f"'{argv[0]}' is not available: Claude runs only through claude-bridge here; "
+                                     f"use pi --model claude-bridge/{model or '<model>'} (or pi -- {argv[0]} for a literal prompt)")
         save = route is not None and argv[1:] == ["--default"]
         if route:
             alias = argv.pop(0)

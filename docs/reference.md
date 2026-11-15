@@ -305,7 +305,9 @@ Neither helper signs in or copies credentials.
 subscription through claude-bridge: it omits the direct `anthropic` route and every
 catalog model that is Anthropic-hosted or Claude-family (`claude-*` model ids, as
 subagent routing uses) from both the launcher routes and the generated `models.json`
-provider. The flag is stored in the launcher's generation args, so
+provider. A removed shortcut such as `pi anthropic` fails with a pointer to
+`pi --model claude-bridge/<model>` instead of starting Pi with the word as a prompt
+(`pi -- <word>` still sends it literally). The flag is stored in the launcher's generation args, so
 `--launcher-refresh` and `pi-shared update` keep it. Enable it on an existing
 installation by re-rendering with the saved arguments (`--no-claude-bridge-only`
 turns it off):

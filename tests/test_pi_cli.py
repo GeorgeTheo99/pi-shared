@@ -981,3 +981,19 @@ def test_claude_bridge_only_installer_override_toggles_policy(machine):
 def test_claude_bridge_only_rejects_legacy_zsh_output(machine):
     result = render(machine, "--claude-bridge-only", launchers=True)
     assert result.returncode != 0 and "--cli-out" in result.stderr
+
+
+def test_claude_bridge_only_refuses_removed_shortcuts_instead_of_prompting(machine):
+    machine["aliases"].write_text(json.dumps(CLAUDE_ALIASES))
+    assert render(machine, "--direct-launchers", "--claude-bridge-only").returncode == 0
+    for alias, hint in (("native", "claude-bridge/claude-x-1"), ("routed", "claude-bridge/claude-y"),
+                        ("anthropic", "claude-bridge/<model>")):
+        result = launch(machine, alias)
+        assert result.returncode == 1 and not result.stdout
+        assert "only through claude-bridge" in result.stderr and hint in result.stderr
+    # Literal prompts and unrelated words still reach Pi unchanged.
+    assert invocation(launch(machine, "--", "native"))["argv"] == ["--", "native"]
+    assert invocation(launch(machine, "hello"))["argv"] == ["hello"]
+    # Without the policy the shortcut is an ordinary route again.
+    assert render(machine, "--no-claude-bridge-only").returncode == 0
+    assert invocation(launch(machine, "native"))["argv"][:2] == ["--provider", "model-gateway"]
