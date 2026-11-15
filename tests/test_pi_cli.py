@@ -929,3 +929,55 @@ def test_gateway_key_file_override_refuses_remote_gateway_launcher(machine):
     with pytest.raises(ValueError, match="pi-gateway connect"):
         configure(machine["config"], ["--gateway-key-file", str(key)])
     assert machine["config"].read_bytes() == before
+
+
+CLAUDE_ALIASES = {
+    **ALIASES,
+    "cloud:claude-native": {"name": "claude-native", "alias": "native", "provider": "anthropic",
+                            "provider_model_id": "claude-x-1", "protocol": "anthropic"},
+    "cloud:anthropic/claude-y": {"name": "Routed", "alias": "routed", "provider": "openrouter",
+                                 "provider_model_id": "anthropic/claude-y"},
+}
+
+
+def gateway_model_ids(machine):
+    models = json.loads((machine["home"] / ".pi-omlx/agent/models.json").read_text())
+    return {model["id"] for model in models["providers"]["model-gateway"]["models"]}
+
+
+def test_claude_bridge_only_drops_claude_models_and_direct_anthropic_route(machine):
+    machine["aliases"].write_text(json.dumps(CLAUDE_ALIASES))
+    assert render(machine, "--direct-launchers").returncode == 0
+    assert {"native", "routed", "anthropic"} <= json.loads(machine["config"].read_text())["routes"].keys()
+    result = render(machine, "--direct-launchers", "--claude-bridge-only")
+    assert result.returncode == 0, result.stderr
+    config = json.loads(machine["config"].read_text())
+    assert set(config["routes"]) == {"openai", "other", "test"}
+    assert "--claude-bridge-only" in config["generation"]["args"]
+    assert gateway_model_ids(machine) == {"test-1", "other-2"}
+    # Routine refresh (pi-shared update) and a plain re-render keep the policy.
+    assert launch(machine, "--launcher-check", upstream=False).returncode == 0
+    result = launch(machine, "--launcher-refresh", upstream=False)
+    assert result.returncode == 0, result.stderr
+    assert render(machine).returncode == 0
+    assert set(json.loads(machine["config"].read_text())["routes"]) == {"openai", "other", "test"}
+    assert gateway_model_ids(machine) == {"test-1", "other-2"}
+
+
+def test_claude_bridge_only_installer_override_toggles_policy(machine):
+    sys.path.insert(0, str(ROOT / "lib"))
+    from pi_cli import configure
+    machine["aliases"].write_text(json.dumps(CLAUDE_ALIASES))
+    assert render(machine, "--direct-launchers").returncode == 0
+    configure(machine["config"], ["--claude-bridge-only"])
+    assert set(json.loads(machine["config"].read_text())["routes"]) == {"openai", "other", "test"}
+    assert gateway_model_ids(machine) == {"test-1", "other-2"}
+    configure(machine["config"], ["--no-claude-bridge-only"])
+    config = json.loads(machine["config"].read_text())
+    assert {"anthropic", "native", "routed"} <= config["routes"].keys()
+    assert "--claude-bridge-only" not in config["generation"]["args"]
+
+
+def test_claude_bridge_only_rejects_legacy_zsh_output(machine):
+    result = render(machine, "--claude-bridge-only", launchers=True)
+    assert result.returncode != 0 and "--cli-out" in result.stderr

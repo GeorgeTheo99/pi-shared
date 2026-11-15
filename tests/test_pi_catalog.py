@@ -1591,3 +1591,22 @@ def test_discovery_honors_endpoint_override(tmp_path, monkeypatch):
     monkeypatch.setenv("MODEL_GATEWAY_ENDPOINT_FILE", str(target))
     assert pi_catalog.default_gateway_url() == "http://127.0.0.1:19111"
     assert pi_catalog.default_aliases_path() == "/srv/gw/model-aliases.json"
+
+
+@pytest.mark.parametrize(("key", "meta", "expected"), [
+    ("cloud:claude-opus-5", {"provider": "anthropic", "provider_model_id": "claude-opus-5"}, True),
+    ("cloud:x", {"provider": "anthropic", "provider_model_id": "any-id"}, True),
+    ("cloud:x", {"provider": "openrouter", "provider_model_id": "anthropic/claude-y"}, True),
+    ("cloud:x", {"provider": "bedrock", "provider_model_id": "us.anthropic.claude-sonnet-4-6"}, True),
+    ("cloud:x", {"provider": "vertex", "provider_model_id": "claude-opus-4@2025"}, True),
+    ("cloud:x", {"provider": "gw", "provider_model_id": "opus", "pi": {"id": "claude-opus"}}, True),
+    ("cloud:x", {"provider": "gw", "provider_model_id": "opus", "name": "Claude Opus"}, True),
+    ("cloud:x", {"provider": "gw", "provider_model_id": "opus", "pi": {"name": "claude-opus"}}, True),
+    ("qwen3-8b-claude-distill", {"name": "Qwen3-8B-Claude-Distill"}, False),
+    ("cloud:gpt-5.4", {"provider": "openai", "provider_model_id": "gpt-5.4", "name": "gpt-5.4"}, False),
+])
+def test_is_claude_matches_anthropic_hosted_and_claude_family(key, meta, expected):
+    sys.path.insert(0, str(SHARED_ROOT / "lib"))
+    import pi_catalog
+
+    assert pi_catalog._is_claude(key, meta) is expected

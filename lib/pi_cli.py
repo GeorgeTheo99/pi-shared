@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 COMMANDS = {"install", "remove", "uninstall", "update", "list", "config", "auth", "setup", "help", "version"}
 VALUES = {"--aliases", "--models-out", "--provider-name", "--gateway-url", "--gateway-api-key",
           "--pi-agent-dir", "--omlx-status", "--omlx-status-url", "--shared-dir"}
-FLAGS = {"--direct-launchers", "--no-direct-launchers", "--allow-empty-catalog", "--direct-only"}
+FLAGS = {"--direct-launchers", "--no-direct-launchers", "--allow-empty-catalog", "--direct-only",
+         "--claude-bridge-only"}
 PATHS = {"--aliases", "--models-out", "--pi-agent-dir", "--omlx-status", "--shared-dir"}
 LIMIT = 8 * 1024 * 1024
 
@@ -152,10 +153,10 @@ def legacy_metadata(path):
     return status, models_digest
 
 
-def routes_for(aliases, provider, profile, direct):
+def routes_for(aliases, provider, profile, direct, claude_bridge_only=False):
     from pi_catalog import _eligible_entries, _model_id_for, _pi_hints
     routes = {}
-    for key, meta in _eligible_entries(aliases):
+    for key, meta in _eligible_entries(aliases, claude_bridge_only=claude_bridge_only):
         for alias in [str(meta["alias"]), *(_pi_hints(meta).get("aliases") or [])]:
             # Newly reserved launcher command: retire legacy shortcuts without
             # rejecting otherwise valid existing configurations/model catalogs.
@@ -166,12 +167,13 @@ def routes_for(aliases, provider, profile, direct):
             routes[alias] = {"provider": provider, "model": _model_id_for(key, meta),
                              "profile": profile, "gateway": True}
     if direct:
-        if "anthropic" in routes:
+        if "anthropic" in routes and not claude_bridge_only:
             raise ValueError("gateway alias 'anthropic' conflicts with the direct Anthropic shortcut; rename the gateway alias before enabling direct launchers")
         routes["openai"] = {"provider": "openai", "model": "gpt-6-astra",
                             "profile": None, "gateway": False}
-        routes["anthropic"] = {"provider": "anthropic", "model": "claude-sonnet-4-6",
-                               "profile": None, "gateway": False}
+        if not claude_bridge_only:
+            routes["anthropic"] = {"provider": "anthropic", "model": "claude-sonnet-4-6",
+                                   "profile": None, "gateway": False}
     return dict(sorted(routes.items()))
 
 
@@ -180,7 +182,7 @@ def make_config(aliases, args, status, models_digest, aliases_digest, default_pr
     if "--direct-only" in values and (aliases or default_profile is not None):
         raise ValueError("Direct-only launchers cannot include gateway aliases or a default profile")
     routes = routes_for(aliases, values.get("--provider-name", ""), values.get("--pi-agent-dir"),
-                        "--direct-launchers" in values)
+                        "--direct-launchers" in values, "--claude-bridge-only" in values)
     return {"version": 1, "routes": routes, "defaultProfile": default_profile,
             "generation": {"args": args, "status": status, "modelsSha256": models_digest,
                            "aliasesSha256": aliases_digest}}
@@ -290,7 +292,8 @@ def refresh(path, config, check=False, *, write=True):
         if aliases:
             content = merge_models(old, render_models(aliases, provider_name=values["--provider-name"],
                                    gateway_url=values["--gateway-url"], gateway_api_key=values["--gateway-api-key"],
-                                   omlx_status=status), values["--provider-name"])
+                                   omlx_status=status, claude_bridge_only="--claude-bridge-only" in values),
+                                   values["--provider-name"])
             expected = digest(content.encode())
     updated = make_config(aliases, gen["args"], status, expected, digest(raw), config.get("defaultProfile"))
     changed = updated != config or (content is not None and content.encode() != old)
@@ -361,6 +364,10 @@ def configure(path, overrides):
             values.pop("--direct-launchers", None)
             values.pop("--no-direct-launchers", None)
             values[flag] = True
+        elif flag in {"--claude-bridge-only", "--no-claude-bridge-only"}:
+            values.pop("--claude-bridge-only", None)
+            if flag == "--claude-bridge-only":
+                values[flag] = True
         elif flag in {"--aliases", "--models-out", "--provider-name", "--pi-agent-dir"} and i < len(overrides):
             value = overrides[i]
             i += 1
@@ -388,7 +395,9 @@ def configure(path, overrides):
     with tempfile.TemporaryDirectory(prefix="pi-cli-configure-") as directory:
         cache = Path(directory) / "status.json"
         cache.write_text(json.dumps({"models": [{"id": key, **row} for key, row in config["generation"]["status"].items()]}))
-        result = render([*args, "--cli-out", str(path), "--offline", "--status-cache", str(cache), "--quiet"])
+        # The renderer preserves an omitted selection, so state its absence explicitly.
+        bridge = [] if "--claude-bridge-only" in values else ["--no-claude-bridge-only"]
+        result = render([*args, *bridge, "--cli-out", str(path), "--offline", "--status-cache", str(cache), "--quiet"])
     if result:
         raise ValueError("CLI configuration rendering failed")
 

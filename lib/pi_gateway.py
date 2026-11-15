@@ -250,7 +250,8 @@ def connect(args):
     models_path = Path(values["--models-out"])
     models = merge_models(read_owned(models_path, missing=True),
                           render_models(aliases, provider_name=values["--provider-name"],
-                                        gateway_url=url, gateway_api_key=values["--gateway-api-key"]),
+                                        gateway_url=url, gateway_api_key=values["--gateway-api-key"],
+                                        claude_bridge_only="--claude-bridge-only" in values),
                           values["--provider-name"])
     updated = make_config(aliases, argv, {}, digest(models.encode()), digest(alias_text.encode()),
                           config.get("defaultProfile"))

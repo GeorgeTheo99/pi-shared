@@ -300,6 +300,23 @@ Neither helper signs in or copies credentials.
   generation preserves the selection in the existing recognized launcher;
   a fresh installation defaults to off. The installer also accepts
   `PI_SHARED_DIRECT_LAUNCHERS=1` or `0`; explicit CLI flags take precedence.
+
+`--claude-bridge-only` (JSON `--cli-out` routing only) keeps Claude on the Claude
+subscription through claude-bridge: it omits the direct `anthropic` route and every
+catalog model that is Anthropic-hosted or Claude-family (`claude-*` model ids, as
+subagent routing uses) from both the launcher routes and the generated `models.json`
+provider. The flag is stored in the launcher's generation args, so
+`--launcher-refresh` and `pi-shared update` keep it. Enable it on an existing
+installation by re-rendering with the saved arguments (`--no-claude-bridge-only`
+turns it off):
+
+```bash
+jq -c .generation.args ~/.pi/launcher.json | pi-catalog --args-stdin --claude-bridge-only --cli-out ~/.pi/launcher.json
+```
+
+It covers only generated routes and models: Pi's built-in `anthropic` provider stays
+reachable through `/model`, `--provider anthropic`, or a saved default while that
+profile holds an Anthropic login or key. Direct-only launchers do not support the flag.
 - `--ls99-extras` and `PI_SHARED_LS99_EXTRAS` remain deprecated compatibility
   aliases. The canonical environment variable takes precedence over the old
   one. Regenerated `pi-regen` commands always use the portable spelling.

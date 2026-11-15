@@ -29,6 +29,9 @@ Inputs:
   --direct-launchers include pi-default + pi-openai + pi-anthropic on any machine
   --no-direct-launchers omit them (otherwise preserve the existing selection)
   --ls99-extras  deprecated alias for --direct-launchers
+  --claude-bridge-only  omit Claude models and the direct Anthropic route, so
+                 Claude runs only through claude-bridge (requires --cli-out)
+  --no-claude-bridge-only  include them again (otherwise preserve the existing selection)
   --check        drift check only; exit 1 when outputs are stale
 
 Modes:
@@ -150,6 +153,8 @@ def resolve_gateway_api_key(value: str | None, gateway_url: str) -> str:
 THINKING_VALUES = {"optional", "always"}
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 ANTHROPIC_PROVIDERS = {"anthropic"}
+# claude-x, anthropic/claude-x, us.anthropic.claude-x (Bedrock), claude-x@date; not *-Claude-Distill.
+_CLAUDE_ID_RE = re.compile(r"(?:^|[/.:@])claude(?:[-_.@]|\d|$)", re.IGNORECASE)
 _ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _RESERVED_ALIASES = {"default", "list", "long", "openai", "regen", "restart", "shared", "shared-update"}
 
@@ -199,6 +204,15 @@ def _is_anthropic_shape(key: str, meta: dict) -> bool:
     if (meta.get("protocol") or "").strip().lower() == "anthropic":
         return True
     return str(meta.get("name", "")).lower().startswith("claude")
+
+
+def _is_claude(key: str, meta: dict) -> bool:
+    """Anthropic-hosted or Claude-family entry, whichever provider serves it."""
+    ids = (_model_id_for(key, meta), str(meta.get("provider_model_id") or ""))
+    names = (str(meta.get("name") or ""), str(_pi_hints(meta).get("name") or ""))
+    return (_norm_provider(meta) in ANTHROPIC_PROVIDERS
+            or any(_CLAUDE_ID_RE.search(value) for value in ids)
+            or any(name.lower().startswith("claude") for name in names))
 
 
 def _is_qwen_family(key: str, meta: dict) -> bool:
@@ -458,7 +472,7 @@ def _cost() -> dict:
     return {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
 
 
-def _eligible_entries(aliases: dict) -> list[tuple[str, dict]]:
+def _eligible_entries(aliases: dict, *, claude_bridge_only: bool = False) -> list[tuple[str, dict]]:
     """Yield (key, meta) for catalog entries both render_models and render_launchers
     include — the single eligibility + dedup rule so launcher ids and models.json
     ids can never disagree.
@@ -468,6 +482,7 @@ def _eligible_entries(aliases: dict) -> list[tuple[str, dict]]:
       - skip `provider: gguf` entries
       - cloud entries: skip if no `provider_model_id` or a duplicate one
       - local entries: skip duplicate keys
+      - with claude_bridge_only: skip Claude entries (see _is_claude)
     Order: alias-file iteration order is preserved; local entries come out in
     file order, cloud entries in file order. (render_models concatenates
     local + cloud; render_launchers sorts by alias, so order doesn't matter for
@@ -482,7 +497,7 @@ def _eligible_entries(aliases: dict) -> list[tuple[str, dict]]:
         if not meta.get("alias") or meta.get("supported") is False:
             continue
         provider = _norm_provider(meta)
-        if provider == "gguf":
+        if provider == "gguf" or (claude_bridge_only and _is_claude(key, meta)):
             continue
         if _is_cloud_key(key):
             pm = meta.get("provider_model_id")
@@ -546,6 +561,7 @@ def render_models(
     gateway_url: str = "http://localhost:9111",
     gateway_api_key: str = LEGACY_GATEWAY_API_KEY,
     omlx_status: dict | None = None,
+    claude_bridge_only: bool = False,
 ) -> dict:
     """Render a Pi models.json targeting the gateway from an alias catalog.
 
@@ -557,7 +573,7 @@ def render_models(
     local_models: list[dict] = []
     cloud_models: list[dict] = []
 
-    for key, meta in _eligible_entries(aliases):
+    for key, meta in _eligible_entries(aliases, claude_bridge_only=claude_bridge_only):
         status = omlx_status.get(key, {})
         ctx = int(
             meta.get("context")
@@ -1240,7 +1256,8 @@ def _existing_direct_launchers(path: Path | None) -> bool:
 
 def _cli_generation_args(*, aliases, provider_name, direct_launchers, pi_agent_dir,
                          shared_dir, aliases_path, models_out, omlx_status_path,
-                         gateway_url, gateway_api_key, allow_empty_catalog) -> list[str]:
+                         gateway_url, gateway_api_key, allow_empty_catalog,
+                         claude_bridge_only=False) -> list[str]:
     """Build the data-only generation args embedded in the pi-launch CLI config.
 
     These are consumed (and re-validated) by lib/pi_cli.py; they describe how the
@@ -1261,6 +1278,8 @@ def _cli_generation_args(*, aliases, provider_name, direct_launchers, pi_agent_d
         args += ["--omlx-status", omlx_status_path]
     if allow_empty_catalog:
         args += ["--allow-empty-catalog"]
+    if claude_bridge_only:
+        args += ["--claude-bridge-only"]
     args += ["--direct-launchers" if direct_launchers else "--no-direct-launchers"]
     return args
 
@@ -1287,6 +1306,7 @@ def _render_cli_config(aliases, *, args, provider_name, direct_launchers, pi_age
         models_out=models_out, omlx_status_path=omlx_status_path,
         gateway_url=args.gateway_url, gateway_api_key=args.gateway_api_key,
         allow_empty_catalog=args.allow_empty_catalog,
+        claude_bridge_only=args.claude_bridge_only,
     )
     default_profile = None
     if args.cli_out.exists():
@@ -1331,6 +1351,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="include pi-default + pi-openai + pi-anthropic on any machine (--ls99-extras is a deprecated alias)")
     parser.add_argument("--no-direct-launchers", dest="direct_launchers", action="store_false",
                         help="omit direct launchers (default: preserve existing output; off for a new file)")
+    parser.add_argument("--claude-bridge-only", dest="claude_bridge_only", action="store_true", default=None,
+                        help="omit Claude models and the direct Anthropic route so Claude runs only through claude-bridge (requires --cli-out)")
+    parser.add_argument("--no-claude-bridge-only", dest="claude_bridge_only", action="store_false",
+                        help="include Claude models again (default: preserve the existing --cli-out selection)")
     parser.add_argument("--allow-empty-catalog", action="store_true",
                         help="bootstrap management launchers for missing/empty aliases; never write models.json in this state")
     parser.add_argument("--legacy-launchers", type=Path,
@@ -1369,9 +1393,16 @@ def main(argv: list[str] | None = None) -> int:
                         raise ValueError(f"refusing to replace existing configured/custom launchers with an unconfigured catalog: {existing}")
         provider_name = args.provider_name if args.provider_name is not None else _existing_provider_name(args.models_out, args.gateway_url)
         direct_launchers = args.direct_launchers if args.direct_launchers is not None else _existing_direct_launchers(args.launchers_out)
-        if args.direct_launchers is None and args.cli_out and args.cli_out.exists():
+        if (args.direct_launchers is None or args.claude_bridge_only is None) and args.cli_out and args.cli_out.exists():
             import pi_cli
-            direct_launchers = "--direct-launchers" in pi_cli.load_config(args.cli_out)["generation"]["args"]
+            previous_args = pi_cli.load_config(args.cli_out)["generation"]["args"]
+            if args.direct_launchers is None:
+                direct_launchers = "--direct-launchers" in previous_args
+            if args.claude_bridge_only is None:
+                args.claude_bridge_only = "--claude-bridge-only" in previous_args
+        args.claude_bridge_only = bool(args.claude_bridge_only)
+        if args.claude_bridge_only and args.launchers_out:
+            raise ValueError("--claude-bridge-only applies to --cli-out routing, not legacy --launchers-out")
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
 
@@ -1399,6 +1430,7 @@ def main(argv: list[str] | None = None) -> int:
             gateway_url=args.gateway_url,
             gateway_api_key=args.gateway_api_key,
             omlx_status=omlx_status,
+            claude_bridge_only=args.claude_bridge_only,
         )
         target = _resolve_write_target(args.models_out)
         try:
