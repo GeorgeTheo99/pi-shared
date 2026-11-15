@@ -29,14 +29,15 @@ import {
 	utf8Bytes,
 } from "./interactive-protocol.ts";
 
-// GPT-family subagents use a ChatGPT subscription: Sign in with ChatGPT on the
-// openai provider, else the legacy openai-codex login. With neither, they go to
-// openai-codex and fail rather than silently bill an OpenAI API key.
+// GPT-family subagents use a ChatGPT subscription when any candidate profile has
+// one: Sign in with ChatGPT on the openai provider, else the legacy openai-codex
+// login. Without any, they run as requested.
 const GPT_SUBSCRIPTION_PROVIDERS = ["openai", "openai-codex"];
 const LEGACY_GPT_SUBSCRIPTION_PROVIDER = "openai-codex";
 // Claude-family subagents use the Claude subscription through claude-bridge
-// (Claude Code). The built-in anthropic provider bills an API key, or extra
-// usage when signed in, so without the bridge they fail rather than bill it.
+// (Claude Code) when any candidate profile loads it; the built-in anthropic
+// provider bills an API key, or extra usage when signed in. Without the bridge
+// they run as requested.
 const CLAUDE_SUBSCRIPTION_PROVIDER = "claude-bridge";
 const SUBSCRIPTION_AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 export const SUBAGENT_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -518,7 +519,10 @@ export function schedulerResourceKey(model: string | undefined, resourceLimits: 
 /** A subscription child never sees its provider's API key, so a lost login can't fall back to API billing. */
 export function subagentEnv(env: NodeJS.ProcessEnv, model: string | undefined): NodeJS.ProcessEnv {
 	const provider = model ? parseProviderModel(model).provider : undefined;
-	if (provider && GPT_SUBSCRIPTION_PROVIDERS.includes(provider)) {
+	// openai is a subscription only when the child's profile signed in with ChatGPT;
+	// otherwise it is the API route the caller asked for and keeps its key.
+	if (provider === LEGACY_GPT_SUBSCRIPTION_PROVIDER
+		|| (provider === "openai" && gptSubscriptionProvider(env.PI_CODING_AGENT_DIR || undefined) === "openai")) {
 		delete env.OPENAI_API_KEY;
 		delete env.OPENAI_BASE_URL;
 	}
@@ -555,16 +559,18 @@ function subagentProfileForModel(model: string | undefined, requestedAgentDir?: 
 function preferSubscription(model: string | undefined, agentDir: string | undefined): string | undefined {
 	if (!model) return model;
 	const { provider, modelId, suffix } = parseProviderModel(model);
-	let subscription: string;
-	if (isGptModelId(modelId)) subscription = gptSubscriptionProvider(agentDir) ?? LEGACY_GPT_SUBSCRIPTION_PROVIDER;
-	else if (isClaudeModelId(modelId)) subscription = CLAUDE_SUBSCRIPTION_PROVIDER;
-	else return model;
-	return provider === subscription ? model : `${subscription}/${modelId}${suffix}`;
+	// agentDir is the subscription profile when one exists (see subagentProfileForModel).
+	let subscription: string | undefined;
+	if (isGptModelId(modelId)) subscription = agentDir ? gptSubscriptionProvider(agentDir) : undefined;
+	else if (isClaudeModelId(modelId)) subscription = agentDir && loadsClaudeBridge(agentDir) ? CLAUDE_SUBSCRIPTION_PROVIDER : undefined;
+	if (!subscription || provider === subscription) return model;
+	return `${subscription}/${modelId}${suffix}`;
 }
 
 /**
  * The profile and model a subagent runs with: GPT-family models go to a ChatGPT
- * subscription and Claude-family models to the Claude subscription via claude-bridge.
+ * subscription and Claude-family models to the Claude subscription via claude-bridge,
+ * whenever a candidate profile has one; otherwise the requested model is kept.
  */
 export function resolveSubagentModel(
 	requestedModel: string | undefined,
