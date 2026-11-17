@@ -363,6 +363,13 @@ the live goal-ownership transfer provided by `/self-handoff`.
 
 ## Development tools
 
+### Recommended CLIs and provider scoping
+
+pi-shared installs no third-party CLIs. The [toolchain guide](docs/toolchain.md) lists
+the ones worth installing by stack (Postgres, Vercel, Neon, Stripe, Apple, Rust), and
+shows how to enable provider MCP servers and skill packs per project so they do not
+cost context in every session.
+
 ### Managed local commands
 
 `command_start` launches bounded local jobs; status, logs, and cancel tools expose
