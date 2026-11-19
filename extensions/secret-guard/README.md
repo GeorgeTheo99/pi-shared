@@ -10,8 +10,9 @@ variable or a connection string prints the value, and the value lands in the tra
 | Layer | Matches | Replacement |
 |---|---|---|
 | Exact values | Every file in `~/.config/<tool>/secrets/` (for example `cloud-console`, `model-gateway`) and each directory in `PI_SECRET_DIRS` (colon-separated): the whole value, each line, `KEY=VALUE` values, JSON string values, and URL passwords (encoded and decoded). Values under 12 characters are ignored. | `[REDACTED secret:<file>]` |
-| Token formats | Private key blocks, Neon (`napi_`), Stripe and Clerk secret keys (`sk_`/`rk_` live and test), webhook secrets (`whsec_`), Anthropic, OpenAI and OpenRouter keys (`sk-`), GitHub, GitLab, npm and Slack tokens, AWS access key IDs, Google API keys, JWTs | `[REDACTED <kind>]` |
+| Token formats | Private key blocks, Neon API keys (`napi_`) and role passwords (`npg_`), Stripe and Clerk secret keys (`sk_`/`rk_` live and test), webhook secrets (`whsec_`), Anthropic, OpenAI and OpenRouter keys (`sk-`), GitHub, GitLab, npm and Slack tokens, AWS access key IDs, Google API keys, JWTs | `[REDACTED <kind>]` |
 | URL passwords | `scheme://user:password@` (not placeholders such as `<random>`, `...`, `$VAR`) | `[REDACTED password]` |
+| Credential fields | JSON keys ending in password, secret, secret key, encryption key, token (not pagination cursors such as `nextPageToken`), API key, private key or access key; Keeper typed fields (`"type": "password"`, `secret`, `pinCode`, `oneTimeCode`) in either key order; both also inside escaped JSON strings. Keeper text lines such as `Password: …`; dotenv and container-environment lines such as `DB_PASSWORD=…`, `PASSWORD=…`, `- POSTGRES_PASSWORD=…` (upper-case names, no spaces). Key-named values must be at least 12 printable ASCII characters and not a placeholder, reference or readable identifier (`test-api-key`, `OPENROUTER_API_KEY`, paths, letters-only words), so fixtures and source code stay readable. Typed fields are redacted at any length; `Password:` lines from 6 characters, unless masked. | `[REDACTED field]` |
 
 Stores are re-read when a file or directory changes (checked at most every 2 seconds), so a
 rotated key is covered without a restart. Text parts of `content`, every string in
@@ -24,6 +25,9 @@ rotated key is covered without a restart. Text parts of `content`, every string 
   that file on disk keeps the original text; only what reaches the session is redacted.
 - **Live TUI output** streamed while a command runs is display-only and not rewritten.
 - **The model's own messages** are not tool results; never paste a secret into a command.
+- **Field rules are heuristics.** Word-style passphrases under a credential key, YAML `password: …` lines and
+  credentials in prose are not matched; select only the fields you need (`jq '{name, type}'`) instead of
+  deleting the secret ones.
 - **Fixtures that look like tokens** in source files are redacted when read, so an `edit`
   whose `oldText` includes one will not match. Edit around them, or set
   `PI_SECRET_GUARD=off` for that session.

@@ -82,6 +82,123 @@ test("well-known token formats are redacted without a store", () => {
 	assert.match(text, /postgres:\/\/app:\[REDACTED password\]@ep-x\.neon\.tech/);
 });
 
+test("bare Neon role passwords and credential-named fields are redacted", () => {
+	const role = fake("npg_", 12);
+	const opaque = fake("", 18);
+	// The 2026-11-17 leak: Keeper JSON keeps the password in a typed field, not a top-level key.
+	const keeper = JSON.stringify({
+		title: "db owner",
+		fields: [{ type: "login", value: ["neondb_owner"] }, { type: "password", value: [opaque] }],
+		custom: [{ label: "note", value: [opaque], type: "secret" }],
+	}, null, 2);
+	const keeperOut = redactText(keeper, noStore);
+	assert.equal(keeperOut.count, 2);
+	assert.ok(!keeperOut.text.includes(opaque));
+	assert.ok(keeperOut.text.includes("neondb_owner"), "non-secret fields stay");
+
+	const fields = [
+		`role ${role}`,
+		JSON.stringify({ client_secret: opaque, authToken: opaque, apiKey: opaque, max_tokens: 1024, token_type: "Bearer" }),
+		`DB_PASSWORD=${opaque}`,
+		`export GITHUB_TOKEN='${opaque}'`,
+	].join("\n");
+	const out = redactText(fields, noStore);
+	assert.equal(out.count, 6);
+	assert.ok(!out.text.includes(opaque) && !out.text.includes(role));
+	assert.match(out.text, /role \[REDACTED neon role password\]/);
+	assert.match(out.text, /"client_secret":"\[REDACTED field\]"/);
+	assert.match(out.text, /"token_type":"Bearer"/);
+	assert.match(out.text, /^DB_PASSWORD=\[REDACTED field\]$/m);
+});
+
+test("credential-named fields with placeholders, references or source code are left alone", () => {
+	const input = [
+		JSON.stringify({ password: "", api_key: "<your key>", token: "${TOKEN}", secret: "[REDACTED field]", apiKey: "test-key" }),
+		JSON.stringify({ Authorization: "Bearer a long sentence token", OPENAI_API_KEY: "dummy" }),
+		JSON.stringify({ type: "password", value: [] }),
+		"GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}",
+		"API_KEY=$(cat ~/.config/x/secrets/key)",
+		"const DB_PASSWORD = process.env.DB_PASSWORD;",
+		"\tpassword: input.password,",
+		"PI_SECRET_GUARD=off",
+	].join("\n");
+	assert.deepEqual(redactText(input, noStore), { text: input, count: 0 });
+});
+
+test("typed fields keep working with symbol passwords; container, escaped and Keeper text shapes are covered", () => {
+	const opaque = fake("", 18);
+	const symbols = ["ab]cd!ef", 'q"uote~1x', "back\\slash9", "$tart*Pass1", "<angle>pw"];
+	const keeper = JSON.stringify({
+		fields: [
+			...symbols.map((value) => ({ type: "password", value: [value] })),
+			{ value: [opaque], label: "x", complexity: { length: 20 }, type: "secret" },
+		],
+	});
+	const typed = redactText(keeper, noStore);
+	assert.equal(typed.count, symbols.length + 1);
+	for (const value of [...symbols, opaque]) assert.ok(!typed.text.includes(JSON.stringify(value).slice(1, -1)), value.slice(0, 3));
+	assert.doesNotThrow(() => JSON.parse(typed.text), "redacted output is still JSON");
+
+	const shapes = [
+		`PASSWORD=${opaque}`,
+		`  - POSTGRES_PASSWORD=${opaque}`,
+		`      "POSTGRES_PASSWORD=${opaque}",`,
+		JSON.stringify({ result: JSON.stringify({ password: opaque }) }),
+		`Password: ${opaque}`,
+	];
+	for (const shape of shapes) {
+		const out = redactText(shape, noStore);
+		assert.equal(out.count, 1, shape.slice(0, 20));
+		assert.ok(!out.text.includes(opaque), shape.slice(0, 20));
+	}
+	assert.doesNotThrow(() => JSON.parse(JSON.parse(redactText(shapes[3]!, noStore).text).result), "escaped JSON still parses");
+});
+
+test("escaped values, nested typed fields, short PINs and secret-key names are redacted", () => {
+	const opaque = fake("", 18);
+	const cases: [string, string][] = [
+		[JSON.stringify({ password: `aB3"x${opaque}` }), `aB3\\"x${opaque}`],
+		[JSON.stringify({ password: `${opaque}&<>` }).replace(/&/g, "\\u0026"), opaque],
+		[JSON.stringify({ stdout: JSON.stringify({ type: "password", value: [`p]w"${opaque}`] }) }), opaque],
+		[JSON.stringify({ stdout: JSON.stringify({ value: [opaque], type: "secret" }, null, 2) }), opaque],
+		[JSON.stringify({ type: "password", label: "x", complexity: { length: 20 }, value: [opaque] }), opaque],
+		[JSON.stringify({ fields: [{ type: "pinCode", value: ["4821"] }] }), "4821"],
+		[`SECRET_KEY_BASE=${opaque}`, opaque],
+		[`  - 'DB_PASSWORD=${opaque}'`, opaque],
+		[`PASSWORD=aB3"${opaque}`, opaque],
+		[JSON.stringify({ secretKey: opaque }), opaque],
+	];
+	for (const [input, leaked] of cases) {
+		const out = redactText(input, noStore);
+		assert.equal(out.count, 1, input.slice(0, 40));
+		assert.ok(!out.text.includes(leaked), input.slice(0, 40));
+		if (input.startsWith("{")) assert.doesNotThrow(() => JSON.parse(out.text), "still JSON");
+	}
+	const nested = redactText(cases[2]![0], noStore).text;
+	assert.doesNotThrow(() => JSON.parse(JSON.parse(nested).stdout), "inner JSON still parses");
+});
+
+test("readable fixture values under credential keys stay readable", () => {
+	const input = [
+		JSON.stringify({ api_key: "test-api-key-value", apiKey: "OPENROUTER_API_KEY", token: "./fixtures/token.json" }),
+		"DB_PASSWORD=local-dev-password",
+		"Password: ********",
+		JSON.stringify({ nextPageToken: fake("", 24), api_key: fake("", 10), token: "длинное-значение-токена" }),
+		JSON.stringify({ path: "C:\\Users\\me\\secrets\\token.json", api_token: "C:\\keys\\db-password.txt" }),
+	].join("\n");
+	assert.deepEqual(redactText(input, noStore), { text: input, count: 0 });
+});
+
+test("field rules stay linear on large adversarial output", () => {
+	for (const input of ['"type":"password",'.repeat(30_000), '"value":['.repeat(30_000), "\n".repeat(30_000), " \n".repeat(30_000), "a.".repeat(30_000),
+		'"password":"'.repeat(30_000), '\\"password\\":\\"'.repeat(30_000), "Password: ".repeat(30_000),
+		'\\"type\\":\\"password\\",'.repeat(30_000)]) {
+		const started = performance.now();
+		redactText(input, noStore);
+		assert.ok(performance.now() - started < 500, `${JSON.stringify(input.slice(0, 12))} took too long`);
+	}
+});
+
 test("ordinary text, hashes, IDs and documented placeholders are left alone", () => {
 	const input = [
 		"commit 5902a981e2c4b7d1f0a9b8c7d6e5f4a3b2c1d0e9",

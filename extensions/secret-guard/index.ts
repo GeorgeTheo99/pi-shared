@@ -9,7 +9,8 @@ import type * as sdk from "@earendil-works/pi-coding-agent";
  * sends it to the model. Two layers:
  *   1. Exact values from local secret stores (`~/.config/<tool>/secrets/<name>` and
  *      PI_SECRET_DIRS), whatever their format, labelled with the file name.
- *   2. Well-known token formats (API keys, JWTs, private keys, passwords in URLs).
+ *   2. Well-known token formats (API keys, JWTs, private keys, passwords in URLs) and values held
+ *      under credential-named fields (JSON keys, Keeper typed fields, dotenv lines).
  * Images cannot be redacted. PI_SECRET_GUARD=off disables the guard for a session.
  */
 
@@ -28,6 +29,7 @@ export interface KnownSecret {
 export const SECRET_PATTERNS: ReadonlyArray<readonly [kind: string, pattern: RegExp]> = [
 	["private key", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g],
 	["neon api key", /\bnapi_[A-Za-z0-9]{32,}\b/g],
+	["neon role password", /\bnpg_[A-Za-z0-9]{10,}\b/g],
 	["stripe/clerk secret key", /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g],
 	["webhook secret", /\bwhsec_[A-Za-z0-9+/=]{16,}/g],
 	["anthropic key", /\bsk-ant-[A-Za-z0-9_-]{20,}/g],
@@ -42,8 +44,83 @@ export const SECRET_PATTERNS: ReadonlyArray<readonly [kind: string, pattern: Reg
 ];
 
 /** `scheme://user:password@` — the password part, unless it is an obvious placeholder. */
-const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^\s:/@'"`]+:)([^\s@/'"`]+)(@)/gi;
+const URL_PASSWORD = /\b([a-z][a-z0-9+.-]{0,30}:\/\/[^\s:/@'"`]+:)([^\s@/'"`]+)(@)/gi;
 const PLACEHOLDER = /^(?:[<[{$*].*|\.\.\.|x+|password|passwd|pass|secret|redacted|changeme)$/i;
+
+/** A field name that holds a credential: it ends in password, secret, token, API key and the like. */
+const SECRET_KEY = String.raw`[A-Za-z0-9_.-]*(?:password|passwd|passphrase|secret|secret[_-]?key|encryption[_-]?key|token|api[_-]?key|private[_-]?key|access[_-]?key)`;
+/** Pagination cursors end in "token" but are not credentials. */
+const CURSOR_KEY = /(?:next|page|continuation|sync)[a-z_-]*token\\?"\s*:/i;
+const JSON_STRING = String.raw`"(?:[^"\\\n]|\\.)*"`;
+/** A JSON string inside a JSON string: `\"...\"`, with its escapes doubled. */
+const ESCAPED_STRING = String.raw`\\"(?:[^"\\\n]|\\\\(?:\\\\|\\"|[^\\"\n]))*\\"`;
+/** `"<secret key>": "value"` in JSON output. */
+const JSON_FIELD = new RegExp(String.raw`("${SECRET_KEY}"\s*:\s*")((?:[^"\\\n]|\\.)*)(")`, "gi");
+/** The same inside a JSON string: `\"<secret key>\": \"value\"`. */
+const ESCAPED_JSON_FIELD = new RegExp(String.raw`(\\"${SECRET_KEY}\\"\s*:\s*\\")([^"\\\s]+)(\\")`, "gi");
+
+/**
+ * Keeper-style typed fields, `{"type": "password", "value": ["..."]}`, in either key order, plain or
+ * inside a JSON string (`q` is the quote, `string` a string literal, `ws` whitespace). The value array
+ * is matched string by string (a `]` inside a password must not end it) and the gap between the two
+ * keys is bounded, which keeps the match linear on large output.
+ */
+function typedField(q: string, string: string, ws: string): RegExp {
+	const type = String.raw`${q}type${q}${ws}:${ws}${q}(?:password|secret|pinCode|oneTimeCode)${q}`;
+	const array = String.raw`\[${ws}(?:${string}${ws}(?:,${ws})?)*\]`;
+	const siblings = String.raw`(?:[^{}[\]]|\{[^{}[\]]{0,300}\}){0,400}?`;
+	const value = String.raw`${q}value${q}${ws}:${ws}`;
+	return new RegExp(String.raw`(${type}${siblings}${value})(${array})()|(${value})(${array})(${siblings}${type})`, "g");
+}
+const TYPED_FIELDS = [
+	{ pattern: typedField('"', JSON_STRING, String.raw`\s*`), literal: new RegExp(JSON_STRING, "g"), quote: '"' },
+	{ pattern: typedField(String.raw`\\"`, ESCAPED_STRING, String.raw`(?:\s|\\[nrt])*`), literal: new RegExp(ESCAPED_STRING, "g"), quote: '\\"' },
+];
+/** Keeper's text output: a title-case `Password: value` line. */
+const LABEL_FIELD = /^([ \t]*(?:Password|Passphrase|Secret|One-Time Code):[ \t]+)(\S+)([ \t]*)$/gm;
+/**
+ * Dotenv and container-environment lines: `[export ]NAME_PASSWORD=value`, `- PASSWORD=value`,
+ * `"TOKEN=value"`. Upper-case names without spaces, so source code is left alone.
+ */
+const DOTENV_FIELD =
+	/^([ \t]*(?:export[ \t]+|-[ \t]+)?["']?(?:[A-Z][A-Z0-9_]*)?(?:PASSWORD|PASSWD|PASSPHRASE|SECRET|SECRET_KEY(?:_BASE)?|ENCRYPTION_KEY|TOKEN|API_KEY|APIKEY|PRIVATE_KEY|ACCESS_KEY)=)("[^"\n]*"|'[^'\n]*'|\S+?(?=["'],?[ \t]*$|\s|$))/gm;
+
+/**
+ * Words, env-var names, paths and selectors: readable identifiers rather than generated credentials.
+ * Any run of letters counts as a word, so letters-only values are kept too.
+ */
+const WORD = String.raw`(?:[A-Z]?[a-z]+(?:[A-Z][a-z]+)*|\d{1,4})`;
+const READABLE = new RegExp(String.raw`^(?:[A-Z]+(?:_[A-Z0-9]+)+|(?:[A-Za-z]:)?[#./\\]*${WORD}(?:[-_.:/\\]+${WORD})*)$`);
+
+/** Decode a JSON string body (`a\"b` → `a"b`) so escapes do not hide a value's shape. */
+function unescapeJson(value: string): string {
+	try {
+		return JSON.parse(`"${value}"`) as string;
+	} catch {
+		return value;
+	}
+}
+
+/**
+ * True for a value under a credential-named key that looks generated: at least 12 printable ASCII
+ * characters, not a placeholder, reference or readable identifier, not already redacted. Fixture
+ * values such as `test-api-key` stay readable, so edits to test files still match.
+ */
+function isSecretValue(value: string): boolean {
+	const bare = value.replace(/^["']|["']$/g, "");
+	return (
+		bare.length >= MIN_SECRET_LENGTH &&
+		/^[\x21-\x7e]+$/.test(bare) &&
+		!bare.includes("REDACTED") &&
+		!PLACEHOLDER.test(bare) &&
+		!READABLE.test(bare)
+	);
+}
+
+/** The field type already says it is a credential: only length, masks and earlier redaction are checked. */
+function isTypedSecret(value: string, minLength = 1): boolean {
+	return value.length >= minLength && !value.includes("REDACTED") && !/^[*x.…•]*$/i.test(value);
+}
 
 export function defaultSecretDirs(env: NodeJS.ProcessEnv = process.env, home = homedir()): string[] {
 	const dirs = new Set<string>();
@@ -179,6 +256,37 @@ export function redactText(text: string, index: Pick<SecretIndex, "secrets" | "p
 			return `[REDACTED ${kind}]`;
 		});
 	}
+	for (const pattern of [JSON_FIELD, ESCAPED_JSON_FIELD]) {
+		result = result.replace(pattern, (match, head: string, value: string, tail: string) => {
+			if (CURSOR_KEY.test(head) || !isSecretValue(unescapeJson(value))) return match;
+			count++;
+			return `${head}[REDACTED field]${tail}`;
+		});
+	}
+	for (const { pattern, literal, quote } of TYPED_FIELDS) {
+		result = result.replace(pattern, (match, ...groups: (string | undefined)[]) => {
+			const [head, values, tail] = groups[0] !== undefined ? groups.slice(0, 3) : groups.slice(3, 6);
+			let changed = false;
+			const redacted = values!.replace(literal, (string) => {
+				if (!isTypedSecret(string.slice(quote.length, -quote.length))) return string;
+				count++;
+				changed = true;
+				return `${quote}[REDACTED field]${quote}`;
+			});
+			return changed ? `${head}${redacted}${tail}` : match;
+		});
+	}
+	result = result.replace(LABEL_FIELD, (match, head: string, value: string, tail: string) => {
+		// Prose such as "Password: required" also has this shape, so short values are kept.
+		if (!isTypedSecret(value, 6)) return match;
+		count++;
+		return `${head}[REDACTED field]${tail}`;
+	});
+	result = result.replace(DOTENV_FIELD, (match, head: string, value: string) => {
+		if (!isSecretValue(value)) return match;
+		count++;
+		return `${head}[REDACTED field]`;
+	});
 	result = result.replace(URL_PASSWORD, (match, head: string, password: string, at: string) => {
 		if (PLACEHOLDER.test(password) || password.startsWith("[REDACTED")) return match;
 		count++;
