@@ -132,6 +132,12 @@ export default function commandJobs(pi: ExtensionAPI) {
 			const project = projectScope(ctx, signal);
 			const logs = commandLogs(getCommandRunner().store, args.id, project, (args.stream ?? "stdout") as "stdout" | "stderr", args.cursor, args.max_bytes);
 			if ("terminal" in logs && logs.terminal) markJobObserved(args.id);
+			// base64 matters only when the UTF-8 view is lossy; otherwise it repeats the text in a form
+			// the secret guard cannot redact.
+			if (logs.base64 !== undefined && Buffer.from(logs.text, "utf8").toString("base64") === logs.base64) {
+				const { base64: _bytes, ...text } = logs;
+				return evidence(text);
+			}
 			return evidence(logs);
 		},
 	})));

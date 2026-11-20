@@ -64,6 +64,13 @@ test("command start preserves trust and caller-relative cwd; status, list and lo
 	const chunk = await f.call("command_logs", { id, max_bytes: 4 });
 	const rest = await f.call("command_logs", { id, cursor: chunk.details.cursor });
 	assert.equal(chunk.details.text + rest.details.text, log.details.text);
+	// Lossless UTF-8 omits base64 (the secret guard cannot redact it); a split character keeps the bytes.
+	assert.equal(log.details.base64, undefined);
+	assert.doesNotMatch(log.content[0].text, /base64"/);
+	const split = (await f.call("command_start", { command: process.execPath, args: ["-e", "process.stdout.write('abc\\u00e9')"], timeout_seconds: 3 })).details.id;
+	await f.call("wait_for_jobs", { jobs: [split], timeout: 3, poll_interval: 1 });
+	const partial = await f.call("command_logs", { id: split, max_bytes: 4 });
+	assert.deepEqual(Buffer.from(partial.details.base64, "base64"), Buffer.from("abc\u00e9").subarray(0, 4));
 });
 
 test("direct execution rejects malformed arguments before side effects and redacts diagnostics", async t => {

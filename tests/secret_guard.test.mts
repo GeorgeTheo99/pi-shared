@@ -237,3 +237,58 @@ test("the extension rewrites tool results that contain secrets and leaves others
 	assert.equal(patched.details.stdout, "[REDACTED neon api key]");
 	assert.equal(patched.structuredContent.key, "[REDACTED neon api key]");
 });
+
+test("JSON stores yield credentials, not their metadata or lines", () => {
+	const values = valuesOf(JSON.stringify({
+		access_token: OPAQUE,
+		refresh_token: "Readable-Refresh-Token-Value",
+		email: "someone99@example.com",
+		issuer: "https://auth.example.com",
+		scopes: ["openid profile email", "offline_access"],
+		expires_at: 1795204464,
+	}, null, 2));
+	assert.ok(values.includes(OPAQUE));
+	assert.ok(values.includes("Readable-Refresh-Token-Value"), "credential-named keys are taken whatever their shape");
+	for (const metadata of ["someone99@example.com", "https://auth.example.com", "openid profile email", "offline_access", '"scopes": ['])
+		assert.ok(!values.includes(metadata), metadata);
+	assert.ok(!valuesOf(`# vendor API key for the dev project\n${OPAQUE}\n`).includes("# vendor API key for the dev project"), "comment lines");
+});
+
+test("placeholders are template shapes, not values that start with a symbol", () => {
+	for (const value of ["$tart*Pass1234-xY9", "<angle>Pass1234xY9", "{brace}Pass1234xY9", "*star-Pass1234xY9"]) {
+		const out = redactText(JSON.stringify({ password: value }), noStore);
+		assert.equal(out.count, 1, value);
+		assert.equal(redactText(`postgres://app:${value.replace(/[<>{}]/g, "")}@db.example.com/app`, noStore).count, 1, value);
+	}
+	const kept = JSON.stringify({ password: "${DB_PASSWORD_VALUE}", api_key: "<your api key here>", token: "$GITHUB_TOKEN_VALUE", secret: "{{ secrets.SECRET }}" });
+	assert.equal(redactText(kept, noStore).count, 0);
+});
+
+test("URL passwords: empty user is covered, ports followed by a query are not passwords", () => {
+	assert.equal(redactText("redis://:my_redis_password99@127.0.0.1:6379/0", noStore).text, "redis://:[REDACTED password]@127.0.0.1:6379/0");
+	for (const url of ["https://example.com:8443?next=a@b.com", "https://example.com:8443#user@host"])
+		assert.deepEqual(redactText(url, noStore), { text: url, count: 0 });
+	assert.equal(redactText(JSON.stringify({ secret_key_base: OPAQUE }), noStore).count, 1);
+});
+
+test("structured details are redacted by key and typed field, like their serialized form", () => {
+	const value = {
+		password: OPAQUE,
+		nested: { client_secret: OPAQUE, nextPageToken: OPAQUE, apiKey: "test-api-key" },
+		fields: [{ type: "password", value: ["Zq8v-pw"] }, { type: "login", value: ["someone"] }],
+	};
+	const out = redactDeep(value, noStore);
+	assert.equal(out.count, 3);
+	assert.deepEqual(out.value, {
+		password: "[REDACTED field]",
+		nested: { client_secret: "[REDACTED field]", nextPageToken: OPAQUE, apiKey: "test-api-key" },
+		fields: [{ type: "password", value: ["[REDACTED field]"] }, { type: "login", value: ["someone"] }],
+	});
+});
+
+test("an unterminated private-key header does not make the scan quadratic", () => {
+	const input = "-----BEGIN PRIVATE KEY----- ".repeat(20_000);
+	const started = performance.now();
+	redactText(input, noStore);
+	assert.ok(performance.now() - started < 500, "took too long");
+});

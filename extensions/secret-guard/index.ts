@@ -27,7 +27,8 @@ export interface KnownSecret {
 
 /** Token formats, most specific first. Each match becomes `[REDACTED <kind>]`. */
 export const SECRET_PATTERNS: ReadonlyArray<readonly [kind: string, pattern: RegExp]> = [
-	["private key", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g],
+	// The body stops at the next five-dash run, so an unterminated header cannot make the scan quadratic.
+	["private key", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[^-]|-{1,4}(?!-))*-----END [A-Z0-9 ]*PRIVATE KEY-----/g],
 	["neon api key", /\bnapi_[A-Za-z0-9]{32,}\b/g],
 	["neon role password", /\bnpg_[A-Za-z0-9]{10,}\b/g],
 	["stripe/clerk secret key", /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g],
@@ -44,13 +45,20 @@ export const SECRET_PATTERNS: ReadonlyArray<readonly [kind: string, pattern: Reg
 ];
 
 /** `scheme://user:password@` — the password part, unless it is an obvious placeholder. */
-const URL_PASSWORD = /\b([a-z][a-z0-9+.-]{0,30}:\/\/[^\s:/@'"`]+:)([^\s@/'"`]+)(@)/gi;
-const PLACEHOLDER = /^(?:[<[{$*].*|\.\.\.|x+|password|passwd|pass|secret|redacted|changeme)$/i;
+const URL_PASSWORD = /\b([a-z][a-z0-9+.-]{0,30}:\/\/[^\s:/@?#'"`]*:)([^\s@/?#'"`]+)(@)/gi;
+/** Templates, references and masks (`<key>`, `${TOKEN}`, `$(cmd)`, `$ENV_NAME`, `***`), not values that merely start with a symbol. */
+const PLACEHOLDER =
+	/^(?:<[^<>]*>|\[[^[\]]*\]|\{\{?[^{}]*\}\}?|\$\{[^{}]*\}|\$\{\{.*\}\}|\$\(.*\)|\$[A-Z_][A-Z0-9_]*|\.\.\.|[*x.…•]+|password|passwd|pass|secret|redacted|changeme)$/i;
 
 /** A field name that holds a credential: it ends in password, secret, token, API key and the like. */
-const SECRET_KEY = String.raw`[A-Za-z0-9_.-]*(?:password|passwd|passphrase|secret|secret[_-]?key|encryption[_-]?key|token|api[_-]?key|private[_-]?key|access[_-]?key)`;
+const SECRET_KEY = String.raw`[A-Za-z0-9_.-]*(?:password|passwd|passphrase|secret|secret[_-]?key(?:[_-]?base)?|encryption[_-]?key|token|api[_-]?key|private[_-]?key|access[_-]?key)`;
 /** Pagination cursors end in "token" but are not credentials. */
 const CURSOR_KEY = /(?:next|page|continuation|sync)[a-z_-]*token\\?"\s*:/i;
+/** A bare object key that names a credential, and the pagination-cursor exception. */
+const SECRET_KEY_NAME = new RegExp(`^${SECRET_KEY}$`, "i");
+const CURSOR_KEY_NAME = /(?:next|page|continuation|sync)[a-z_-]*token$/i;
+const TYPED_SECRET = /^(?:password|secret|pinCode|oneTimeCode)$/;
+const EMAIL = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
 const JSON_STRING = String.raw`"(?:[^"\\\n]|\\.)*"`;
 /** A JSON string inside a JSON string: `\"...\"`, with its escapes doubled. */
 const ESCAPED_STRING = String.raw`\\"(?:[^"\\\n]|\\\\(?:\\\\|\\"|[^\\"\n]))*\\"`;
@@ -144,20 +152,32 @@ export function valuesOf(text: string): string[] {
 		if (trimmed && trimmed.length >= MIN_SECRET_LENGTH) values.add(trimmed);
 	};
 	add(text);
-	for (const line of text.split(/\r?\n/)) {
-		add(line);
-		const assignment = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.+)$/.exec(line);
-		if (assignment) add(assignment[1]);
-	}
-	// JSON stores (OAuth tokens and the like): every string value.
+	let json: unknown;
 	try {
-		const visit = (node: unknown, depth: number): void => {
-			if (typeof node === "string") add(node);
-			else if (node && typeof node === "object" && depth < MAX_DEPTH) for (const item of Object.values(node)) visit(item, depth + 1);
-		};
-		visit(JSON.parse(text), 0);
+		json = JSON.parse(text);
 	} catch {
 		// Not JSON.
+	}
+	if (json !== null && typeof json === "object") {
+		// JSON stores (OAuth tokens and the like) also hold metadata (email, issuer URL, scopes): take
+		// values under credential-named keys and generated-looking values, never the store's lines.
+		const visit = (node: unknown, key: string, depth: number): void => {
+			if (typeof node === "string") {
+				if ((SECRET_KEY_NAME.test(key) && !CURSOR_KEY_NAME.test(key)) || (isSecretValue(node) && !EMAIL.test(node))) add(node);
+			} else if (Array.isArray(node) && depth < MAX_DEPTH) {
+				for (const item of node) visit(item, key, depth + 1);
+			} else if (node && typeof node === "object" && depth < MAX_DEPTH) {
+				for (const [name, item] of Object.entries(node)) visit(item, name, depth + 1);
+			}
+		};
+		visit(json, "", 0);
+	} else {
+		for (const line of text.split(/\r?\n/)) {
+			if (/^\s*#/.test(line)) continue;
+			add(line);
+			const assignment = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.+)$/.exec(line);
+			if (assignment) add(assignment[1]);
+		}
 	}
 	for (const value of [...values]) {
 		if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) continue;
@@ -312,9 +332,22 @@ export function redactContent(
 	return { value: total ? next : content, count: total };
 }
 
-/** Redact every string inside a JSON-like value; returns the same reference when nothing changed. */
-export function redactDeep<T>(value: T, index: Pick<SecretIndex, "secrets" | "pattern">, depth = 0): { value: T; count: number } {
+/**
+ * Redact every string inside a JSON-like value; returns the same reference when nothing changed.
+ * `key` is the property holding `value`: a credential-named key or a Keeper typed field marks its
+ * strings as secrets, as the text rules do for serialized JSON.
+ */
+export function redactDeep<T>(
+	value: T,
+	index: Pick<SecretIndex, "secrets" | "pattern">,
+	depth = 0,
+	key = "",
+	typed = false,
+): { value: T; count: number } {
 	if (typeof value === "string") {
+		if (typed ? isTypedSecret(value) : SECRET_KEY_NAME.test(key) && !CURSOR_KEY_NAME.test(key) && isSecretValue(value)) {
+			return { value: "[REDACTED field]" as T, count: 1 };
+		}
 		// Base64 payloads (images, files) are not text; a token pattern inside one would corrupt it.
 		if (value.length > 4096 && BASE64.test(value)) return { value, count: 0 };
 		const { text, count } = redactText(value, index);
@@ -324,7 +357,7 @@ export function redactDeep<T>(value: T, index: Pick<SecretIndex, "secrets" | "pa
 	if (Array.isArray(value)) {
 		let total = 0;
 		const next = value.map((item) => {
-			const { value: redacted, count } = redactDeep(item, index, depth + 1);
+			const { value: redacted, count } = redactDeep(item, index, depth + 1, key, typed);
 			total += count;
 			return redacted;
 		});
@@ -333,10 +366,12 @@ export function redactDeep<T>(value: T, index: Pick<SecretIndex, "secrets" | "pa
 	if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) return { value, count: 0 };
 	let total = 0;
 	const next: Record<string, unknown> = {};
-	for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-		const { value: redacted, count } = redactDeep(item, index, depth + 1);
+	const record = value as Record<string, unknown>;
+	const typedRecord = typeof record.type === "string" && TYPED_SECRET.test(record.type);
+	for (const [name, item] of Object.entries(record)) {
+		const { value: redacted, count } = redactDeep(item, index, depth + 1, name, typedRecord && name === "value");
 		total += count;
-		next[key] = redacted;
+		next[name] = redacted;
 	}
 	return { value: (total ? next : value) as T, count: total };
 }

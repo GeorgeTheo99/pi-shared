@@ -72,9 +72,11 @@ wait modes fail promptly. Aborting a wait never cancels its jobs.
   retained for inspection rather than deleting potentially live-process evidence.
 - Output is drained after capture fills; metadata reports omitted bytes. Log write
   errors terminate the job and cannot count as successful evidence capture.
-- `command_logs` returns up to 64 KiB, an opaque cursor bound to job/stream, `base64` of
-  retained bytes, and a UTF-8 text view. Text can split a multibyte character at a
-  cursor boundary; concatenate decoded base64 for exact retained bytes. stdout
+- `command_logs` returns up to 64 KiB, an opaque cursor bound to job/stream, and a
+  UTF-8 text view. When the text is lossy (a multibyte character split at a cursor
+  boundary, or invalid UTF-8) it also returns `base64` of the retained bytes; concatenate
+  decoded base64 for exact bytes. Lossless chunks omit it, so the secret guard can
+  redact the only copy. stdout
   was decoded by the shared process runner, so this is not an arbitrary-binary
   transport. Logs are untrusted and may contain secrets; no automatic uploads.
 - Another session in the same caller workspace can inspect/request cancellation;
