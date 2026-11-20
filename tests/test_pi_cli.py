@@ -997,3 +997,12 @@ def test_claude_bridge_only_refuses_removed_shortcuts_instead_of_prompting(machi
     # Without the policy the shortcut is an ordinary route again.
     assert render(machine, "--no-claude-bridge-only").returncode == 0
     assert invocation(launch(machine, "native"))["argv"][:2] == ["--provider", "model-gateway"]
+
+
+def test_claude_bridge_only_ignores_malformed_removed_claude_entries(machine):
+    # Rendering skips Claude entries before validating them, so the shortcut lookup must too.
+    aliases = {**CLAUDE_ALIASES, "cloud:claude-dup": {"name": "dup", "alias": "other", "provider": "anthropic",
+                                                     "provider_model_id": "claude-dup", "protocol": "anthropic"}}
+    machine["aliases"].write_text(json.dumps(aliases))
+    assert render(machine, "--direct-launchers", "--claude-bridge-only").returncode == 0
+    assert invocation(launch(machine, "hello"))["argv"] == ["hello"]

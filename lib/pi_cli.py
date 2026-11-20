@@ -181,15 +181,20 @@ def removed_claude_shortcut(config, alias):
     """Claude model id behind a shortcut that --claude-bridge-only removed ("" for the
     direct Anthropic preset), else None. Lets the launcher refuse it instead of
     passing the alias to Pi as a prompt."""
-    from pi_catalog import _CLAUDE_ID_RE, _eligible_entries, _is_claude, _model_id_for, _pi_hints
+    from pi_catalog import _CLAUDE_ID_RE, _is_claude, _model_id_for, _pi_hints
     values = generation_values(config["generation"]["args"])
     if "--claude-bridge-only" not in values:
         return None
     if alias == "anthropic":
         return ""
     raw = read_owned(Path(values["--aliases"]), missing=True) if "--aliases" in values else b""
-    for key, meta in _eligible_entries(json.loads(raw) if raw else {}):
-        if _is_claude(key, meta) and alias in [str(meta["alias"]), *(_pi_hints(meta).get("aliases") or [])]:
+    # Scan only the removed Claude entries: they were never validated (rendering skips them),
+    # so full eligibility checks here could fail every launch on a malformed Claude entry.
+    for key, meta in (json.loads(raw) if raw else {}).items():
+        if not meta.get("alias") or meta.get("supported") is False or not _is_claude(key, meta):
+            continue
+        hints = _pi_hints(meta).get("aliases")
+        if alias in [str(meta["alias"]), *(hints if isinstance(hints, list) else [])]:
             model = _model_id_for(key, meta)
             match = _CLAUDE_ID_RE.search(model)  # anthropic/claude-x and Bedrock ids → claude-x
             return model[match.start():].lstrip("/.:@") if match else model
