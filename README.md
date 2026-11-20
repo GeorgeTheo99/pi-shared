@@ -86,8 +86,8 @@ login keeps it, and `pi openai` refuses a stored OpenAI API key rather than bill
 Pi's Claude Pro/Max OAuth usage is billed as **extra usage per token**, not
 against plan limits. Subagents therefore run Claude models through
 [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge) (Claude
-Code on the plan), failing rather than falling back to `anthropic` when no
-profile loads it, and `/panel` prefers it. On setup/update, pi-shared adds missing
+Code on the plan) whenever a profile loads it, running the requested model
+only when none does, and `/panel` prefers it. On setup/update, pi-shared adds missing
 ChatGPT subscription context overrides for verified long-context models (up to
 872K, the ceiling the Sign in with ChatGPT model list reports) to `openai` and
 legacy `openai-codex`; `openai` inherits an existing `openai-codex` choice, and
