@@ -91,6 +91,9 @@ function isUsingSubscription(ctx: ExtensionContext): boolean {
 }
 
 export default function footer(pi: ExtensionAPI) {
+	// Pi before 0.99 lacks getSettings(); a throwing render would crash the TUI every frame,
+	// so older runtimes keep their built-in footer.
+	if (typeof pi.getSettings !== "function") return;
 	pi.on("session_start", (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		let cached: SessionStats | undefined;

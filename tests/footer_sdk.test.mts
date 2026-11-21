@@ -138,3 +138,11 @@ test("layoutStats drops the provider before wrapping and truncates only a model 
 	assert.deepEqual(plain([truncated.model]), ["a-long-m"]);
 	assert.equal(truncated.wrapped, true);
 });
+
+test("runtimes without pi.getSettings (Pi before 0.99) keep the built-in footer instead of crashing", () => {
+	const registered: string[] = [];
+	footer({ on: (event: string) => registered.push(event) } as any);
+	assert.deepEqual(registered, []);
+	footer({ on: (event: string) => registered.push(event), getSettings: () => ({}) } as any);
+	assert.deepEqual(registered, ["session_start"]);
+});
