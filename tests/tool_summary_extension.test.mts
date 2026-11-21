@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
+
+// Model summaries are off inside subagent children; pin a parent session so the
+// suite behaves the same when it runs from a subagent.
+const originalSubagentDepth = process.env.PI_SUBAGENT_DEPTH;
+process.env.PI_SUBAGENT_DEPTH = "0";
+after(() => {
+  if (originalSubagentDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+  else process.env.PI_SUBAGENT_DEPTH = originalSubagentDepth;
+});
 
 import {
   __resetCompleteStub,
@@ -180,7 +189,7 @@ test("an oversized result is raw once, then uses a frozen active-model summary w
   assert.equal(completeCalls.length, 1);
   assert.equal(completeCalls[0].model, harness.ctx.model);
   assert.equal(completeCalls[0].options.reasoningEffort, "low");
-  assert.equal(completeCalls[0].options.maxTokens, 2_048);
+  assert.equal(completeCalls[0].options.maxTokens, 8_000, "summary output is capped by the model limit");
   const completedEntries = harness.getBranch().filter((entry) => entry.customType === COMPLETE_TYPE);
   assert.equal(completedEntries.length, 1);
   assert.equal(completedEntries[0].data.source, "model");
@@ -957,4 +966,183 @@ test("image aging respects pause and the images command persists retention", asy
 
   await command("images 999", harness.ctx);
   assert.equal(harness.notifications.at(-1)?.level, "error");
+});
+
+function userEntry(id: string, text: string) {
+  return {
+    type: "message",
+    id: `entry-${id}`,
+    parentId: null,
+    message: { role: "user", content: [{ type: "text", text }], timestamp: Date.now() },
+  };
+}
+
+test("a completed summary deep in a warm prompt cache is deferred until the cache goes idle", async (t) => {
+  __resetCompleteStub();
+  __setCompleteImplementation(async () => ({ content: [{ type: "text", text: "- deferred summary" }], stopReason: "stop" }));
+  const raw = "prose\n".repeat(5_000);
+  const harness = makeHarness([toolEntry("call-deferred", "read", raw)]);
+  await start(harness, "cache-deferred");
+  const context = harness.handlers.get("context")!;
+  await context({ type: "context", messages: contextMessages(harness) }, harness.ctx);
+  await providerAcceptedRaw(harness);
+  await drain();
+  assert.equal(harness.getBranch().filter((entry) => entry.customType === COMPLETE_TYPE).length, 1);
+  harness.setBranch([...harness.getBranch(), userEntry("later-work", "x".repeat(60_000))]);
+
+  const warm = contextMessages(harness);
+  assert.equal(await context({ type: "context", messages: warm }, harness.ctx), undefined);
+  assert.equal(warm[0].content[0].text, raw, "substituting now would re-bill the whole cached suffix");
+  await harness.commands.get("tool-summary")!.handler("status", harness.ctx);
+  assert.match(harness.notifications.at(-1)!.message, /summaries: 0; deferred for prompt cache: 1/);
+
+  const realNow = Date.now();
+  t.mock.method(Date, "now", () => realNow + 6 * 60_000);
+  const idle = contextMessages(harness);
+  assert.ok(await context({ type: "context", messages: idle }, harness.ctx));
+  assert.match(idle[0].content[0].text, /deferred summary/);
+  t.mock.restoreAll();
+
+  const stable = contextMessages(harness);
+  await context({ type: "context", messages: stable }, harness.ctx);
+  assert.match(stable[0].content[0].text, /deferred summary/, "an applied summary stays applied");
+  assert.equal(completeCalls.length, 1);
+});
+
+test("deferred summaries apply once the context nears the model window", async () => {
+  __resetCompleteStub();
+  const raw = "prose\n".repeat(5_000);
+  const harness = makeHarness([toolEntry("call-pressure", "read", raw)], { ...model(), contextWindow: 40_000 });
+  await start(harness, "cache-pressure");
+  const context = harness.handlers.get("context")!;
+  await context({ type: "context", messages: contextMessages(harness) }, harness.ctx);
+  await providerAcceptedRaw(harness);
+  await drain();
+  harness.setBranch([...harness.getBranch(), userEntry("pressure-work", "x".repeat(60_000))]);
+  const messages = contextMessages(harness);
+  await context({ type: "context", messages }, harness.ctx);
+  assert.match(messages[0].content[0].text, /Stored summary of oversized tool result/);
+});
+
+test("image aging deep in a warm prompt cache is deferred like summaries", async (t) => {
+  __resetCompleteStub();
+  const harness = makeHarness([
+    imageToolEntry("call-old-shot", "app_screenshot", 1),
+    userEntry("image-work", "x".repeat(60_000)),
+  ]);
+  await start(harness, "cache-images");
+  const context = harness.handlers.get("context")!;
+  await context({ type: "context", messages: contextMessages(harness) }, harness.ctx);
+  harness.setBranch([...harness.getBranch(), imageToolEntry("call-new-shots", "app_screenshot", 4)]);
+  const imageCount = (messages: any[]) =>
+    messages.flatMap((message) => message.content.filter((part: any) => part.type === "image")).length;
+
+  const warm = contextMessages(harness);
+  await context({ type: "context", messages: warm }, harness.ctx);
+  assert.equal(imageCount(warm), 5);
+
+  const realNow = Date.now();
+  t.mock.method(Date, "now", () => realNow + 6 * 60_000);
+  const idle = contextMessages(harness);
+  await context({ type: "context", messages: idle }, harness.ctx);
+  assert.equal(imageCount(idle), 4);
+  assert.match(idle[0].content[0].text, /Aged-out image/);
+});
+
+test("subagent children skip model summaries but keep deterministic reductions", async () => {
+  __resetCompleteStub();
+  const previous = process.env.PI_SUBAGENT_DEPTH;
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  try {
+    const prose = "prose\n".repeat(5_000);
+    const log = `${"ordinary log\n".repeat(1_500)}ERROR exit code 23 at /tmp/build.log\nFINAL\n`;
+    const harness = makeHarness([toolEntry("call-child-read", "read", prose), toolEntry("call-child-bash", "bash", log)]);
+    await start(harness, "subagent-child");
+    const context = harness.handlers.get("context")!;
+    await context({ type: "context", messages: contextMessages(harness) }, harness.ctx);
+    await providerAcceptedRaw(harness);
+    await drain();
+    const messages = contextMessages(harness);
+    await context({ type: "context", messages }, harness.ctx);
+    await drain();
+    assert.equal(completeCalls.length, 0);
+    assert.equal(messages[0].content[0].text, prose);
+    assert.match(messages[1].content[0].text, /summary source: deterministic/);
+    assert.deepEqual(
+      harness.getBranch().filter((entry) => entry.customType === EXPOSURE_TYPE).map((entry) => entry.data.toolCallId),
+      ["call-child-bash"],
+    );
+    await harness.commands.get("tool-summary")!.handler("status", harness.ctx);
+    assert.match(harness.notifications.at(-1)!.message, /model summaries: off in subagents/);
+  } finally {
+    if (previous === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+    else process.env.PI_SUBAGENT_DEPTH = previous;
+  }
+});
+
+async function deferredSummaryHarness(label: string) {
+  __resetCompleteStub();
+  const raw = "prose\n".repeat(5_000);
+  const harness = makeHarness([toolEntry(`call-${label}`, "read", raw)]);
+  await start(harness, label);
+  const context = harness.handlers.get("context")!;
+  await context({ type: "context", messages: contextMessages(harness) }, harness.ctx);
+  await providerAcceptedRaw(harness);
+  await drain();
+  harness.setBranch([...harness.getBranch(), userEntry(`${label}-work`, "x".repeat(60_000))]);
+  const warm = contextMessages(harness);
+  await context({ type: "context", messages: warm }, harness.ctx);
+  assert.equal(warm[0].content[0].text, raw, "precondition: the summary is deferred");
+  return { harness, context };
+}
+
+test("compaction and model switches let deferred summaries apply on the next call", async () => {
+  for (const event of ["session_compact", "model_select"]) {
+    const { harness, context } = await deferredSummaryHarness(`cold-${event}`);
+    await harness.handlers.get(event)!({ type: event }, harness.ctx);
+    const messages = contextMessages(harness);
+    await context({ type: "context", messages }, harness.ctx);
+    assert.match(messages[0].content[0].text, /Stored summary of oversized tool result/, event);
+  }
+});
+
+test("a policy change re-stages edits and applies them together on the next call", async () => {
+  const { harness, context } = await deferredSummaryHarness("cold-policy");
+  await harness.commands.get("tool-summary")!.handler("images 8", harness.ctx);
+  const messages = contextMessages(harness);
+  await context({ type: "context", messages }, harness.ctx);
+  assert.match(messages[0].content[0].text, /Stored summary of oversized tool result/);
+});
+
+test("summarizer output falls back to 8,192 tokens without a smaller model limit", async () => {
+  for (const maxTokens of [0, 100_000]) {
+    __resetCompleteStub();
+    const harness = makeHarness([toolEntry(`call-max-${maxTokens}`, "read", "prose\n".repeat(5_000))], { ...model(), maxTokens });
+    await start(harness, `max-tokens-${maxTokens}`);
+    await harness.handlers.get("context")!({ type: "context", messages: contextMessages(harness) }, harness.ctx);
+    await providerAcceptedRaw(harness);
+    await drain();
+    assert.equal(completeCalls[0].options.maxTokens, 8_192);
+  }
+});
+
+test("a formerly image-bearing result is summarized once its images age out", async () => {
+  __resetCompleteStub();
+  const prose = "prose\n".repeat(7_000);
+  const harness = makeHarness([
+    imageToolEntry("call-image-read", "read", 1, prose),
+    imageToolEntry("call-image-new", "app_screenshot", 4),
+  ]);
+  await start(harness, "aged-image-summary");
+  const context = harness.handlers.get("context")!;
+  const aged = contextMessages(harness);
+  await context({ type: "context", messages: aged }, harness.ctx);
+  assert.match(aged[0].content[0].text, /Aged-out image/);
+  await context({ type: "context", messages: contextMessages(harness) }, harness.ctx);
+  await providerAcceptedRaw(harness);
+  await drain();
+  assert.equal(completeCalls.length, 1);
+  const summarized = contextMessages(harness);
+  await context({ type: "context", messages: summarized }, harness.ctx);
+  assert.match(summarized[0].content[0].text, /Stored summary of oversized tool result/);
 });

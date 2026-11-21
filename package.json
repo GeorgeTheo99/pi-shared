@@ -14,7 +14,7 @@
     "test:goal": "node --no-warnings --experimental-loader ./tests/fixtures/goal_test_loader.mjs --test tests/goal_abort.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/integration_bundles_test_loader.mjs --test tests/goal_sdk.test.mts",
     "test:ask-user": "node --no-warnings --experimental-loader ./tests/fixtures/ask_user_test_loader.mjs --test tests/ask_user.test.mts",
     "test:self-handoff": "node --no-warnings --test tests/self_handoff.test.mts tests/self_handoff_peer_requests.test.mts",
-    "test:tool-summary": "node --no-warnings --test tests/tool_summary_policy.test.mts tests/tool_summary_json_query.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/tool_summary_test_loader.mjs --test tests/tool_summary_extension.test.mts",
+    "test:tool-summary": "node --no-warnings --test tests/tool_summary_policy.test.mts tests/tool_summary_json_query.test.mts tests/tool_summary_cache_batching.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/tool_summary_test_loader.mjs --test tests/tool_summary_extension.test.mts",
     "test:panel": "node --no-warnings --experimental-loader ./tests/fixtures/panel_test_loader.mjs --test tests/panel_models.test.mts",
     "test:subagents": "node --no-warnings --experimental-loader ./tests/fixtures/subagent_test_loader.mjs --test tests/subagent_*.test.mts",
     "test:session-coordinator": "node --no-warnings --test tests/session_coordinator_state.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/session_coordinator_test_loader.mjs --test tests/session_coordinator_extension.test.mts && node --no-warnings --experimental-loader ./tests/fixtures/integration_bundles_test_loader.mjs --test tests/session_coordinator_sdk.test.mts",

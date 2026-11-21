@@ -12,7 +12,10 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+	ageImageRef,
 	ageToolResultImages,
+	agingToolResultImages,
+	imagePlaceholderText,
 	candidateForToolResult,
 	deterministicReduce,
 	deterministicReductionCanPreserve,
@@ -45,9 +48,20 @@ import {
 	type ToolSummaryConfig,
 	updatedConfig,
 } from "./state.ts";
-import { executeRecall, isToolResultMessage, type ToolResultMessageLike } from "./recall.ts";
+import { executeRecall, isToolResultMessage } from "./recall.ts";
+import {
+	CACHE_IDLE_MS,
+	contextUnderPressure,
+	IMAGE_CONTEXT_CHARS,
+	messageContextChars,
+	selectEditsToApply,
+	type PendingEdit,
+} from "./cache-batching.ts";
 
 const MAX_SUMMARIZER_INPUT_CHARS = 60_000;
+// Room for low reasoning plus a ~3,000-character summary; reasoning models hit
+// a 2,048-token cap often enough that the summary was lost and retried.
+const SUMMARY_MAX_OUTPUT_TOKENS = 8_192;
 const SUMMARY_TIMEOUT_MS = 90_000;
 const SUMMARY_RETRY_BASE_MS = 30_000;
 const SUMMARY_RETRY_MAX_MS = 30 * 60_000;
@@ -86,6 +100,21 @@ type PendingExposure = {
 	origin: JobOrigin;
 };
 
+type StagedEdit = PendingEdit & { apply: () => void };
+
+/**
+ * Subagent children are short-lived, so a model summary rarely repays its own
+ * uncached summarizer call plus the prompt-cache miss its substitution causes.
+ */
+function modelSummariesDisabled() {
+	return Number(process.env.PI_SUBAGENT_DEPTH ?? 0) > 0;
+}
+
+function summaryMaxTokens(model: Model<any>) {
+	const limit = Number(model.maxTokens);
+	return Number.isFinite(limit) && limit > 0 ? Math.min(SUMMARY_MAX_OUTPUT_TOKENS, limit) : SUMMARY_MAX_OUTPUT_TOKENS;
+}
+
 function formatChars(value: number) {
 	if (value < 1_000) return `${value} chars`;
 	if (value < 1_000_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K chars`;
@@ -96,6 +125,7 @@ function statusText(
 	state: RestoredToolSummaryState,
 	inFlight: number,
 	activeSummaries: Iterable<CompletedSummaryRecord> = state.summaries.values(),
+	deferred = 0,
 ) {
 	const savings = estimatedContextSavings(activeSummaries);
 	const imageRetention =
@@ -106,8 +136,9 @@ function statusText(
 		`tool-summary ${state.config.mode}`,
 		`thresholds: standard ${formatChars(state.config.standardThreshold)}, high-fidelity ${formatChars(state.config.highFidelityThreshold)}`,
 		`image retention: ${imageRetention}`,
-		`summaries: ${savings.count}; raw exposures: ${state.exposures.size}; retries cooling down: ${state.retries.size}; not worthwhile: ${state.skips.size}; in flight: ${inFlight}`,
+		`summaries: ${savings.count}; deferred for prompt cache: ${deferred}; raw exposures: ${state.exposures.size}; retries cooling down: ${state.retries.size}; not worthwhile: ${state.skips.size}; in flight: ${inFlight}`,
 		`estimated active-branch savings: ${formatChars(savings.savedChars)}`,
+		...(modelSummariesDisabled() ? ["model summaries: off in subagents (deterministic reductions only)"] : []),
 	].join("\n");
 }
 
@@ -227,7 +258,7 @@ async function modelSummary(
 			apiKey: auth.apiKey,
 			headers: auth.headers,
 			env: auth.env,
-			maxTokens: 2_048,
+			maxTokens: summaryMaxTokens(model),
 			maxRetries: 1,
 			timeoutMs: SUMMARY_TIMEOUT_MS,
 			signal,
@@ -270,6 +301,10 @@ function findSourceEntryId(ctx: ExtensionContext, candidate: SummaryCandidate) {
 		if (entry?.type !== "message" || !entry.id || !isToolResultMessage(entry.message)) continue;
 		if (entry.message.toolCallId !== candidate.toolCallId) continue;
 		if (toolContentHash(entry.message.content) === candidate.rawHash) return entry.id;
+		// A formerly image-bearing result is a candidate only after all of its
+		// images aged out of provider context; compare the same aged form.
+		const aged = structuredClone(entry.message);
+		if (ageToolResultImages([aged], 0) > 0 && toolContentHash(aged.content) === candidate.rawHash) return entry.id;
 	}
 	return undefined;
 }
@@ -281,6 +316,15 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 	let summaryQueue: Promise<unknown> = Promise.resolve();
 	const inFlight = new Map<string, InFlightJob>();
 	const pendingExposures = new Map<string, PendingExposure>();
+	// Provider-visible context edits (summary keys and aged image keys). Once
+	// applied, an edit stays applied so the prompt prefix remains stable.
+	const appliedEdits = new Set<string>();
+	let lastContextAt: number | undefined;
+
+	const resetCacheTracking = () => {
+		appliedEdits.clear();
+		lastContextAt = undefined;
+	};
 
 	const abortJobs = (reason: string) => {
 		for (const job of inFlight.values()) {
@@ -300,6 +344,9 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 
 	const persistConfig = (ctx: ExtensionContext, config: ToolSummaryConfig) => {
 		state.config = config;
+		// Policy changes already alter the prefix; the next call re-stages and
+		// applies every edit at once instead of trusting stale applied keys.
+		resetCacheTracking();
 		pi.appendEntry(TOOL_SUMMARY_CONFIG_TYPE, { ...config });
 		setStatus(ctx, config);
 	};
@@ -430,6 +477,7 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 		const existing = inFlight.get(candidate.key);
 		if (existing) return existing.promise;
 		if (state.config.mode !== "on") return Promise.resolve(undefined);
+		if (candidate.policy.method === "llm" && modelSummariesDisabled()) return Promise.resolve(undefined);
 		const retry = state.retries.get(candidate.key);
 		if (retry && Date.now() < retry.retryAfter) return Promise.resolve(undefined);
 
@@ -507,13 +555,25 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 		disposed = false;
 		generation += 1;
 		abortJobs("session started or reloaded");
+		resetCacheTracking();
 		restore(ctx);
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
 		generation += 1;
 		abortJobs("session branch changed");
+		resetCacheTracking();
 		restore(ctx);
+	});
+
+	// Compaction and model switches change or invalidate the cached prefix, so
+	// the next call can apply every pending edit for free.
+	pi.on("session_compact", async () => {
+		lastContextAt = undefined;
+	});
+
+	pi.on("model_select", async () => {
+		lastContextAt = undefined;
 	});
 
 	pi.on("session_shutdown", async () => {
@@ -523,20 +583,51 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("context", async (event, ctx) => {
+		const now = Date.now();
+		const cacheCold = lastContextAt === undefined || now - lastContextAt >= CACHE_IDLE_MS;
+		lastContextAt = now;
 		if (state.config.mode === "off") return;
 		let changed = false;
+		// Edits already sent to the provider are reapplied unchanged; new ones wait
+		// until they are worth a prompt-cache miss (see cache-batching.ts).
+		const pending: StagedEdit[] = [];
+		const stage = (key: string, messageIndex: number, savedChars: number, apply: () => void) => {
+			if (appliedEdits.has(key)) {
+				apply();
+				changed = true;
+			} else {
+				pending.push({ key, messageIndex, savedChars, apply });
+			}
+		};
 		// Age older tool-result images before summary policy so a formerly
 		// image-bearing message never blocks text summarization forever.
-		if (state.config.mode === "on" && ageToolResultImages(event.messages, state.config.imageRetention) > 0) {
-			changed = true;
+		if (state.config.mode === "on") {
+			for (const ref of agingToolResultImages(event.messages, state.config.imageRetention)) {
+				const part = ref.content[ref.index] as { mimeType: string; data: string };
+				const placeholder = imagePlaceholderText(ref.toolName, ref.toolCallId, part.mimeType, part.data.length);
+				stage(ref.key, ref.messageIndex, Math.max(0, IMAGE_CONTEXT_CHARS - placeholder.length), () => ageImageRef(ref));
+			}
 		}
+		const stageSummary = (
+			message: { content: unknown },
+			messageIndex: number,
+			candidate: SummaryCandidate,
+			completed: CompletedSummaryRecord | undefined,
+		) => {
+			if (!completed || !replacementIsWorthwhile(candidate.rawChars, completed.replacement)) return false;
+			stage(candidate.key, messageIndex, candidate.rawChars - completed.replacement.length, () => {
+				message.content = [{ type: "text", text: completed.replacement }];
+			});
+			return true;
+		};
 		const deterministicPending: Array<{
-			message: ToolResultMessageLike;
+			message: { content: unknown };
+			messageIndex: number;
 			candidate: SummaryCandidate;
 			promise: Promise<CompletedSummaryRecord | undefined>;
 		}> = [];
 
-		for (const rawMessage of event.messages) {
+		for (const [messageIndex, rawMessage] of event.messages.entries()) {
 			if (!isToolResultMessage(rawMessage)) continue;
 			const candidate = candidateForToolResult(rawMessage, {
 				standard: state.config.standardThreshold,
@@ -544,13 +635,9 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 			});
 			if (!candidate) continue;
 
-			const completed = state.summaries.get(candidate.key);
-			if (completed && replacementIsWorthwhile(candidate.rawChars, completed.replacement)) {
-				rawMessage.content = [{ type: "text", text: completed.replacement }];
-				changed = true;
-				continue;
-			}
+			if (stageSummary(rawMessage, messageIndex, candidate, state.summaries.get(candidate.key))) continue;
 			if (state.skips.has(candidate.key) || state.config.mode === "pause") continue;
+			if (candidate.policy.method === "llm" && modelSummariesDisabled()) continue;
 
 			const sourceEntryId = findSourceEntryId(ctx, candidate);
 			if (!sourceEntryId) continue;
@@ -574,7 +661,7 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 
 			const promise = startSummary(ctx, candidate, sourceEntryId);
 			if (candidate.policy.method === "deterministic") {
-				deterministicPending.push({ message: rawMessage, candidate, promise });
+				deterministicPending.push({ message: rawMessage, messageIndex, candidate, promise });
 			}
 			// Model summaries remain background-only. If one is unfinished or cooling
 			// down after a failure, this provider call keeps the exact raw result.
@@ -583,9 +670,18 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 		if (deterministicPending.length > 0) {
 			await Promise.allSettled([...new Set(deterministicPending.map((item) => item.promise))]);
 			for (const item of deterministicPending) {
-				const completed = state.summaries.get(item.candidate.key);
-				if (!completed || !replacementIsWorthwhile(item.candidate.rawChars, completed.replacement)) continue;
-				item.message.content = [{ type: "text", text: completed.replacement }];
+				stageSummary(item.message, item.messageIndex, item.candidate, state.summaries.get(item.candidate.key));
+			}
+		}
+
+		if (pending.length > 0) {
+			const messageChars = event.messages.map(messageContextChars);
+			const flushAll = cacheCold || contextUnderPressure(messageChars, ctx.model?.contextWindow);
+			const selected = selectEditsToApply(pending, messageChars, flushAll);
+			for (const edit of pending) {
+				if (!selected.has(edit.key)) continue;
+				edit.apply();
+				appliedEdits.add(edit.key);
 				changed = true;
 			}
 		}
@@ -637,12 +733,16 @@ export default function toolSummaryExtension(pi: ExtensionAPI) {
 			const args = rawArgs.trim().split(/\s+/).filter(Boolean);
 			const action = (args.shift() ?? "status").toLowerCase();
 			if (action === "status") {
-				notify(ctx, statusText(state, inFlight.size, activeSummaryRecords(ctx)));
+				const active = [...activeSummaryRecords(ctx)];
+				const applied = active.filter((record) => appliedEdits.has(record.key));
+				notify(ctx, statusText(state, inFlight.size, applied, active.length - applied.length));
 				return;
 			}
 			if (action === "on" || action === "pause" || action === "off") {
 				if (action === "pause" || action === "off") {
-					const savings = estimatedContextSavings(activeSummaryRecords(ctx));
+					const savings = estimatedContextSavings(
+						[...activeSummaryRecords(ctx)].filter((record) => appliedEdits.has(record.key)),
+					);
 					generation += 1;
 					abortJobs(`tool summaries turned ${action}`);
 					if (action === "off") {

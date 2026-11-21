@@ -418,6 +418,8 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
 
 - `extensions/tool-summary` — raw-first oversized tool-result summaries:
   - leaves exact originals intact in session JSONL/history and substitutes only through Pi's ephemeral `context` hook after one raw provider exposure
+  - stages summary and image-aging substitutions so they never re-bill a long cached prefix one edit at a time: applied edits stay applied; new ones apply together once their savings reach half of the re-billed suffix, after 5 idle minutes, or near half the context window
+  - skips model summaries in subagent children (`PI_SUBAGENT_DEPTH` > 0); deterministic reductions still apply
   - runs active-session-model summaries in the background through `@earendil-works/pi-ai/compat` with low summarizer reasoning where supported; unfinished or cooling-down work leaves provider context raw and never changes the main session thinking level
   - freezes the first valid model/deterministic summary by tool-call ID, raw SHA-256, and policy version; model failures leave raw context and persist exponential retry cooldowns instead of terminal deterministic fallbacks; stale branch/session completions are rejected
   - defaults to 16K standard and 24K high-fidelity thresholds; exempts `memory_read`; deterministic reductions reserve every recognized non-2xx HTTP status and diff file header or keep the result raw when they cannot fit; retains a 3K target, 4K hard cap, and 40% minimum savings requirement

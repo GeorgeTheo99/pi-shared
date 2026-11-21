@@ -8,14 +8,28 @@
 2. Raw exposure is committed only when that provider call's non-error assistant response finishes; failed auth, serialization, aborted/error responses, and pre-response attempts therefore retry with raw content.
 3. The extension creates one stable summary keyed by `toolCallId + raw SHA-256 + policy version`.
 4. Model summaries run only in the background. If one is unfinished or cooling down after a failure, the next provider call remains raw instead of waiting.
-5. Later provider calls receive a completed stored summary through Pi's ephemeral `context` hook.
+5. Later provider calls receive a completed stored summary through Pi's ephemeral `context` hook once it is worth a prompt-cache miss (see [Prompt-cache batching](#prompt-cache-batching)). After that it is sent on every call.
 6. The original `toolResult` message is never patched, so its exact content remains in session JSONL and the TUI transcript.
 7. A replacement is used only when it is at least 40% smaller than the original. Summary bodies target 3,000 characters; the complete replacement is hard-capped at 4,000. A non-worthwhile result is persisted as a terminal marker so later calls remain raw without repeatedly summarizing it.
 8. Tool-result **images age out of provider context**: only the newest 4 image parts across the active branch are sent to the provider; older ones are replaced by a small deterministic text placeholder naming the tool, `toolCallId`, MIME type, and approximate size. Aging runs only in `on` mode, mutates provider copies only (stored entries and JSONL keep the exact images), and a formerly image-bearing result becomes eligible for normal text summarization once its images age out. Control it with `/tool-summary images <0-64>|off|reset`.
 
-Model summaries use the active session model (`ctx.model`) through `complete()` from `@earendil-works/pi-ai/compat`. Reasoning is requested at `low` only for APIs that support it. The extension never changes Pi's main-session thinking level. Failed model summaries leave the exact result raw and append a bounded retry cooldown: 30 seconds initially, doubling to a 30-minute cap. They never freeze a deterministic fallback as the permanent summary.
+Model summaries use the active session model (`ctx.model`) through `complete()` from `@earendil-works/pi-ai/compat`. Reasoning is requested at `low` only for APIs that support it, with up to 8,192 output tokens (capped by the model's limit) so reasoning cannot crowd out the summary. The extension never changes Pi's main-session thinking level. Failed model summaries leave the exact result raw and append a bounded retry cooldown: 30 seconds initially, doubling to a 30-minute cap. They never freeze a deterministic fallback as the permanent summary.
 
 Summaries, retry cooldowns, raw-exposure markers, mode, thresholds, and reset epochs are append-only non-context custom entries. They survive `/reload`, resume, and active-branch navigation without copying raw tool output into extension state. The first valid model or deterministic completion for a key is frozen to avoid prompt-cache churn. Policy v2 intentionally ignores v1 summary/exposure state so eligible historical results receive one fresh raw exposure under the safer rules. Persisted configs using the exact former default pair (`8K` standard / `16K` high-fidelity) migrate to `16K` / `24K`; other custom threshold pairs are preserved.
+
+## Prompt-cache batching
+
+Swapping an earlier tool result for its summary, or an older image for its placeholder, changes the prompt prefix. Providers then bill every later token at the uncached input price on the next call (for example $3/M instead of $0.15/M), which can cost far more than the summary saves. Context edits are therefore staged:
+
+- An edit already sent to the provider is reapplied unchanged on every later call, so the prefix stays stable. A `/tool-summary` policy change (mode, thresholds, image retention, reset) starts over: the next call re-stages and applies every edit together.
+- A new edit waits until the combined savings of pending edits from some message onward reach 50% of the context from that message to the end. Edits near the tail apply right away; edits deep in a long, cached history wait and then apply together, costing one cache miss instead of one per edit.
+- All pending edits apply at once when the cache is probably cold anyway (no provider call for 5 minutes, or the first call after start, reload, branch change, compaction, model switch, or a `/tool-summary` policy change) or when the estimated context reaches half of the model's context window.
+
+`/tool-summary status` reports summaries deferred this way; right after a reload, every stored summary counts as deferred until the next provider call applies them.
+
+## Subagent children
+
+In subagent child processes (`PI_SUBAGENT_DEPTH` > 0) model summaries are off: a short-lived child rarely recovers the cost of an uncached summarizer call plus the cache miss its substitution causes. Deterministic reductions and image aging still run under the batching rules above.
 
 ## Default policy
 

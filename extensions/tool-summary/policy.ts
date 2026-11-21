@@ -187,24 +187,27 @@ type AgeableMessageLike = {
 	content?: unknown;
 };
 
+export type AgingImageRef = {
+	/** Stable identity of this image part across provider calls. */
+	key: string;
+	messageIndex: number;
+	content: ToolContentLike[];
+	index: number;
+	toolName: string;
+	toolCallId: string;
+};
+
 /**
- * Replace all but the newest `retention` tool-result image parts with
- * deterministic text placeholders. Mutates only the provided message copies
- * (Pi context messages), never stored session entries. Returns the number of
- * replaced image parts. A negative retention disables aging.
+ * Return all but the newest `retention` tool-result image parts, oldest first,
+ * without mutating anything. A negative retention disables aging.
  */
-export function ageToolResultImages(
+export function agingToolResultImages(
 	messages: readonly AgeableMessageLike[],
 	retention: number,
-) {
-	if (!Number.isInteger(retention) || retention < 0) return 0;
-	const imageRefs: Array<{
-		content: ToolContentLike[];
-		index: number;
-		toolName: string;
-		toolCallId: string;
-	}> = [];
-	for (const message of messages) {
+): AgingImageRef[] {
+	if (!Number.isInteger(retention) || retention < 0) return [];
+	const imageRefs: AgingImageRef[] = [];
+	for (const [messageIndex, message] of messages.entries()) {
 		if (!message || message.role !== "toolResult") continue;
 		if (typeof message.toolCallId !== "string" || typeof message.toolName !== "string") continue;
 		if (!Array.isArray(message.content)) continue;
@@ -219,6 +222,8 @@ export function ageToolResultImages(
 				typeof part.mimeType === "string"
 			) {
 				imageRefs.push({
+					key: `image:${JSON.stringify(message.toolCallId)}:${index}`,
+					messageIndex,
 					content,
 					index,
 					toolName: message.toolName,
@@ -227,16 +232,30 @@ export function ageToolResultImages(
 			}
 		}
 	}
-	const excess = imageRefs.length - retention;
-	if (excess <= 0) return 0;
-	for (const ref of imageRefs.slice(0, excess)) {
-		const part = ref.content[ref.index] as ImageContentLike;
-		ref.content[ref.index] = {
-			type: "text",
-			text: imagePlaceholderText(ref.toolName, ref.toolCallId, part.mimeType, part.data.length),
-		};
-	}
-	return excess;
+	return imageRefs.slice(0, Math.max(0, imageRefs.length - retention));
+}
+
+/** Replace one image part with its deterministic placeholder; returns the placeholder length. */
+export function ageImageRef(ref: AgingImageRef) {
+	const part = ref.content[ref.index] as ImageContentLike;
+	const text = imagePlaceholderText(ref.toolName, ref.toolCallId, part.mimeType, part.data.length);
+	ref.content[ref.index] = { type: "text", text };
+	return text.length;
+}
+
+/**
+ * Replace all but the newest `retention` tool-result image parts with
+ * deterministic text placeholders. Mutates only the provided message copies
+ * (Pi context messages), never stored session entries. Returns the number of
+ * replaced image parts. A negative retention disables aging.
+ */
+export function ageToolResultImages(
+	messages: readonly AgeableMessageLike[],
+	retention: number,
+) {
+	const refs = agingToolResultImages(messages, retention);
+	for (const ref of refs) ageImageRef(ref);
+	return refs.length;
 }
 
 export function toolContentHash(content: readonly ToolContentLike[]) {
