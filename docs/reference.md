@@ -399,6 +399,8 @@ owned, non-shared-writable files/directories are accepted. It sends arguments to
 `pi-catalog --args-stdin` to avoid exposing stored gateway keys in process argv.
 Generated outputs are mode 0600. Automatic refresh is offline; minimal cached
 previously observed context/output/thinking hints are retained, not re-probed.
+The one exception is a saved remote gateway connection: `pi` launches start a
+detached, throttled `pi-gateway auto-sync` (see `docs/existing-gateway.md`).
 `pi-catalog --offline` is also available explicitly.
 
 A generated model-output digest prevents automatic overwriting of manual model

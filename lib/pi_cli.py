@@ -1,4 +1,4 @@
-"""Data-only model shortcuts for the stock Pi CLI. No shell evaluation or discovery."""
+"""Data-only model shortcuts for the stock Pi CLI. No shell evaluation; remote discovery only via a detached, throttled pi-gateway auto-sync."""
 from __future__ import annotations
 
 import hashlib
@@ -798,6 +798,14 @@ def main(argv=None):
                 result = subprocess.run([str(ROOT / "bin/pi-omlx-repair")], env=repair_env, stdout=sys.stderr)
                 if result.returncode:
                     return result.returncode
+        if config and path.with_name(path.stem + ".gateway-aliases.json").exists():
+            # A remote gateway's catalog is read in the background at most every
+            # 15 minutes; new models appear from the next launch. Never blocks.
+            try:
+                from pi_gateway import start_auto_sync
+                start_auto_sync(path, config)
+            except Exception:
+                pass
         os.execve(executable, [executable, *argv], env)
     except (OSError, ValueError, TypeError, KeyError) as exc:
         print(f"pi-launch: {exc}", file=sys.stderr)

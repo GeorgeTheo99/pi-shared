@@ -117,6 +117,8 @@ Apple Silicon/macOS 15+; selecting it does not download model weights.
 an already-running compatible gateway without installing one locally. Setup needs
 a private client-key file and performs catalog discovery, not inference. Network
 access, TLS/Tailscale, server credentials, and server maintenance remain separate.
+`pi` re-reads the remote catalog in the background at most every 15 minutes, so
+new gateway models appear from the next launch.
 [Remote-gateway contract and catalog refresh](docs/existing-gateway.md).
 
 ### Combining model access
@@ -541,7 +543,8 @@ upgrade. Changes can restart selected services and are not rolled back as a unit
 `pi-shared status` checks selected components, including trusted extension imports
 and applicable local-service probes. It is not an inference or browser-execution
 test; an external gateway's client configuration is checked offline, then one
-authenticated catalog read warns about a rejected key or stale catalog. Run `/reload`
+authenticated catalog read warns about a rejected key or stale catalog
+(`pi-shared update` applies the current catalog instead). Run `/reload`
 after resource-only changes; restart Pi after runtime/Node changes. Legacy shell
 launcher migrations may also require a new shell.
 

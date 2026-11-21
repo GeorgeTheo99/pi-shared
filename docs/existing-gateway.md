@@ -102,35 +102,50 @@ does not require regenerating model files (coordinate server rotation separately
 
 ## Refresh, updates, and checks
 
-`pi-shared update` updates this Mac's installed components and preserves the
-remote connection. It does not update/restart the server or rewrite the catalog.
-`pi-shared update` and `pi-shared status` check local artifacts and credential-file
-safety offline, then run `pi-gateway probe`: one authenticated catalog read with
-no writes and no inference. It reports one of:
+**Automatic refresh.** Each `pi` launch that uses the managed launcher starts a
+detached `pi-gateway auto-sync` when the last catalog read for that launcher is at
+least 15 minutes old. It reads `GET /v1/models/canonical` once with the saved
+endpoint and key-file reference, rewrites the generated catalog files only when the
+catalog changed, and never blocks or fails the launch. New gateway models therefore
+appear from the next launch. Auto-sync only adds and updates models: a model the
+gateway stops listing keeps its route until an explicit `pi-gateway sync` or
+`pi-shared update`, so a brief availability blip cannot remove it. The outcome
+(`refreshed`, `current`, `auth-rejected`, `unreachable`, `skipped-update-running`
+or `error`, with added and no-longer-listed IDs) is recorded in
+`<launcher-stem>.gateway-sync.json` beside the launcher. It never writes while
+`pi-shared setup`/`update` holds the update lock (it retries at the next launch),
+and an unreachable or rejecting gateway leaves the saved catalog in place. Set `PI_GATEWAY_AUTO_SYNC=0` to disable
+it; `pi --launcher-refresh`, `pi models` and utility commands stay offline.
+
+`pi-shared update` updates this Mac's installed components, preserves the remote
+connection and applies the current remote catalog with `pi-gateway sync`; it does
+not update or restart the server. `pi-shared status` checks local artifacts and
+credential-file safety offline, then runs `pi-gateway probe`: one authenticated
+catalog read with no writes and no inference. Both report one of:
 
 | Exit | Meaning | Fix |
 |---|---|---|
-| `0` | Key accepted; local catalog matches | — |
-| `3` | Key accepted; gateway models were added/removed | Rerun `pi-gateway connect` |
-| `4` | Gateway rejected the key (HTTP 401/403), e.g. rotated or retired | Write a new consumer key into the key file, then `pi-gateway connect` |
+| `0` | Key accepted; local catalog matches (or was refreshed by `sync`, removals included) | — |
+| `3` | `probe` only: gateway models were added/removed | `pi-gateway sync`, or launch `pi` |
+| `4` | Gateway rejected the key (HTTP 401/403), e.g. rotated or retired | Write a new consumer key into the key file, then `pi-gateway sync` |
 | `5` | Gateway unreachable (TLS, Tailscale, endpoint) | Check connectivity |
 
-Status exits nonzero on `4`; update only warns. `pi --launcher-refresh` still
-regenerates from the saved local catalog only.
+Status exits nonzero on `4`; update only warns.
 
-For an explicit remote catalog refresh, rerun the existing-gateway setup with the
-same options, or use the installed client helper:
+To refresh now, use the installed client helper with the saved connection:
 
 ```bash
-pi-gateway connect \
+pi-gateway sync \
   --url https://server.example-tailnet.ts.net \
   --key-file "$HOME/.config/pi-shared/gateway.key" \
   --cli-out "$HOME/.pi/launcher.json"
 ```
 
-Use the same `--allow-private-http` opt-in for private HTTP. Replace `connect`
-with `check` for an offline check against that exact endpoint/key-file reference,
-or with `probe` for the read-only authenticated check above.
+`sync` refuses an endpoint or key file different from the saved connection; to
+change either, rerun the existing-gateway setup or use `connect` with the same
+options. Use the same `--allow-private-http` opt-in for private HTTP. Replace
+`sync` with `check` for an offline check against that exact endpoint/key-file
+reference, or with `probe` for the read-only authenticated check above.
 If you customized launcher output, use that path instead.
 
 The helper requires a managed JSON launcher prepared by setup. It preserves

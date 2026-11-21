@@ -1,7 +1,9 @@
-"""Explicit remote gateway discovery; routine launcher refresh stays offline."""
+"""Remote gateway discovery: explicit connect/probe/sync, plus a throttled background
+auto-sync that pi-launch starts for a saved connection. Launcher refresh stays offline."""
 from __future__ import annotations
 
 import argparse
+import fcntl
 import http.client
 import ipaddress
 import json
@@ -12,6 +14,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +32,8 @@ PRIVATE_NETWORKS = tuple(ipaddress.ip_network(net) for net in (
 ))
 # probe exit codes; argparse owns 2 for usage errors.
 DRIFT, AUTH_REJECTED, UNREACHABLE = 3, 4, 5
+# Minimum seconds between background catalog reads for one launcher.
+AUTO_SYNC_INTERVAL = 15 * 60
 
 
 class GatewayError(ValueError):
@@ -230,18 +235,11 @@ def artifact_paths(cli, values, credential):
     return aliases
 
 
-def connect(args):
-    url = gateway_url(args.url, args.allow_private_http)
-    read_key(args.key_file)
-    cli, config, values = configuration(args.cli_out)
-    aliases_path = artifact_paths(cli, values, args.key_file)
-    if aliases_path.exists() and values["--aliases"] != str(aliases_path):
-        raise ValueError("Refusing to replace an existing unmanaged gateway catalog")
-    aliases = aliases_from_catalog(discover(url, args.key_file, args.allow_private_http))
-    # Perform all discovery and rendering validation before changing artifacts.
+def write_catalog(cli, config, values, aliases_path, url, key_file, aliases):
+    """Render everything in memory, then replace the three managed files."""
     alias_text = dump(aliases)
-    values.update({"--aliases": str(aliases_path), "--gateway-url": url,
-                   "--gateway-api-key": key_reference(args.key_file)})
+    values = {**values, "--aliases": str(aliases_path), "--gateway-url": url,
+              "--gateway-api-key": key_reference(key_file)}
     values.pop("--omlx-status", None)
     values.pop("--omlx-status-url", None)
     argv = [part for flag, value in values.items() for part in ([flag] if value is True else [flag, value])]
@@ -260,6 +258,18 @@ def connect(args):
     atomic_write(aliases_path, alias_text)
     atomic_write(models_path, models)
     atomic_write(cli, dump(updated))
+
+
+def connect(args):
+    url = gateway_url(args.url, args.allow_private_http)
+    read_key(args.key_file)
+    cli, config, values = configuration(args.cli_out)
+    aliases_path = artifact_paths(cli, values, args.key_file)
+    if aliases_path.exists() and values["--aliases"] != str(aliases_path):
+        raise ValueError("Refusing to replace an existing unmanaged gateway catalog")
+    # Perform all discovery and rendering validation before changing artifacts.
+    aliases = aliases_from_catalog(discover(url, args.key_file, args.allow_private_http))
+    write_catalog(cli, config, values, aliases_path, url, args.key_file, aliases)
     print(f"Configured {len(aliases)} remote model routes. Catalog/auth read succeeded; inference was not tested.")
 
 
@@ -272,7 +282,22 @@ def saved_connection(args):
             or values.get("--aliases") != str(aliases_path)
             or not any(route["gateway"] for route in config["routes"].values())):
         raise ValueError("Saved gateway connection does not match the managed launcher")
-    return url, aliases_path
+    return url, aliases_path, cli, config, values
+
+
+def catalog_ids(aliases):
+    return {a.get("provider_model_id") for a in aliases.values() if isinstance(a, dict)}
+
+
+def saved_ids(aliases_path):
+    saved = json.loads(read_owned(aliases_path, missing=True) or b"{}")
+    return catalog_ids(saved) if isinstance(saved, dict) else set()
+
+
+def describe_drift(added, removed):
+    for label, models in (("new on gateway", added), ("no longer available", removed)):
+        if models:
+            print(f"  {len(models)} {label}: " + ", ".join(models[:8]) + (", …" if len(models) > 8 else ""))
 
 
 def check(args):
@@ -282,34 +307,170 @@ def check(args):
 
 def probe(args):
     """One authenticated catalog read: no writes, no inference."""
-    url, aliases_path = saved_connection(args)
-    remote = {a["provider_model_id"] for a in
-              aliases_from_catalog(discover(url, args.key_file, args.allow_private_http)).values()}
-    saved = json.loads(read_owned(aliases_path, missing=True) or b"{}")
-    local = {a.get("provider_model_id") for a in saved.values() if isinstance(a, dict)}
+    url, aliases_path, *_ = saved_connection(args)
+    remote = catalog_ids(aliases_from_catalog(discover(url, args.key_file, args.allow_private_http)))
+    local = saved_ids(aliases_path)
     added, removed = sorted(remote - local), sorted(local - remote)
     if not (added or removed):
         print(f"Remote gateway OK: client key accepted; local catalog matches {len(remote)} available models. "
               "Inference not tested.")
         return 0
-    for label, models in (("new on gateway", added), ("no longer available", removed)):
-        if models:
-            print(f"  {len(models)} {label}: " + ", ".join(models[:8]) + (", …" if len(models) > 8 else ""))
-    print("Remote gateway OK, but the local catalog is stale. Refresh it with pi-gateway connect "
+    describe_drift(added, removed)
+    print("Remote gateway OK, but the local catalog is stale. Refresh it with pi-gateway sync "
           "(same --url/--key-file/--cli-out).")
     return DRIFT
+
+
+def apply_sync(args, *, keep_missing=False, before_write=None):
+    """Apply the remote catalog to the saved connection; writes only when it changed.
+
+    keep_missing retains saved models the gateway no longer lists, so a brief
+    availability blip cannot remove routes between explicit syncs.
+    """
+    url, aliases_path, cli, config, values = saved_connection(args)
+    remote = aliases_from_catalog(discover(url, args.key_file, args.allow_private_http))
+    raw = read_owned(aliases_path, missing=True)
+    saved = json.loads(raw or b"{}")
+    saved = saved if isinstance(saved, dict) else {}
+    aliases = dict(remote)
+    if keep_missing:
+        for key, value in saved.items():
+            aliases.setdefault(key, value)
+    local, current = catalog_ids(saved), catalog_ids(remote)
+    added, missing = sorted(current - local), sorted(local - current)
+    if raw == dump(aliases).encode():
+        return len(aliases), added, missing, False
+    if before_write:
+        before_write()
+    write_catalog(cli, config, values, aliases_path, url, args.key_file, aliases)
+    return len(aliases), added, missing, True
+
+
+def sync(args):
+    count, added, removed, changed = apply_sync(args)
+    if changed:
+        describe_drift(added, removed)
+        print(f"Remote gateway catalog refreshed: {count} available models. Inference not tested.")
+    else:
+        print(f"Remote gateway catalog current: {count} available models. Inference not tested.")
+    return 0
+
+
+def saved_arguments(cli_out):
+    """Recover --url/--key-file from a managed launcher; never from user input."""
+    cli = Path(cli_out).expanduser().absolute()
+    values = generation_values(load_config(cli)["generation"]["args"])
+    url, reference = values.get("--gateway-url"), values.get("--gateway-api-key") or ""
+    parts = shlex.split(reference[1:]) if reference.startswith("!") else []
+    # Only the exact reference connect writes, so ROOT and the flag layout match.
+    if (len(parts) != 4 or parts[1:3] != ["key", "--key-file"] or not url
+            or values.get("--aliases") != str(cli.with_name(cli.stem + ".gateway-aliases.json"))
+            or key_reference(parts[3]) != reference):
+        raise ValueError("Launcher has no saved remote gateway connection")
+    # connect accepted plain HTTP only with the private-network opt-in.
+    return argparse.Namespace(url=url, key_file=parts[3], cli_out=str(cli),
+                              allow_private_http=urllib.parse.urlsplit(url).scheme == "http")
+
+
+def auto_sync_state(cli):
+    return cli.with_name(cli.stem + ".gateway-sync.json")
+
+
+def auto_sync_due(cli):
+    try:
+        checked = auto_sync_state(cli).stat().st_mtime
+    except FileNotFoundError:
+        return True
+    return time.time() - checked >= AUTO_SYNC_INTERVAL
+
+
+def auto_sync(args):
+    """Background child of pi-launch: at most one catalog read per interval and launcher."""
+    cli = Path(args.cli_out).expanduser().absolute()
+    held = []
+
+    def update_idle():
+        # Never write launcher files halfway through pi-shared setup/update; the
+        # lock is held only around writes so an update never waits on the network.
+        try:
+            fd = os.open(Path.home() / ".config/pi-shared/update.lock", os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return
+        held.append(fd)
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+
+    try:
+        state = os.open(auto_sync_state(cli), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        held.append(state)
+        fcntl.flock(state, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        for fd in held:
+            os.close(fd)
+        return 0  # another auto-sync runs, or the state path is unusable
+    try:
+        info = os.fstat(state)
+        # An empty file was just created or never finished; otherwise honor the interval.
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or (
+                info.st_size and time.time() - info.st_mtime < AUTO_SYNC_INTERVAL):
+            return 0
+        os.utime(state)  # throttle from the attempt, so an outage is not retried every launch
+        try:
+            count, added, missing, changed = apply_sync(saved_arguments(cli), keep_missing=True,
+                                                        before_write=update_idle)
+            result = {"result": "refreshed" if changed else "current", "models": count,
+                      "added": added, "notListed": missing}
+        except BlockingIOError:
+            result = {"result": "skipped-update-running"}
+        except GatewayError as exc:
+            result = {"result": "auth-rejected" if exc.code == AUTH_REJECTED else "unreachable"}
+        except Exception as exc:  # a background child has no one to report a traceback to
+            result = {"result": "error", "detail": (str(exc) if isinstance(exc, (ValueError, OSError))
+                                                    else type(exc).__name__)[:500]}
+        result["checkedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        os.ftruncate(state, 0)
+        os.pwrite(state, dump(result).encode(), 0)
+        if result["result"] == "skipped-update-running":
+            os.utime(state, (0, 0))  # retry at the next launch
+        return 0 if result["result"] in {"refreshed", "current"} else 1
+    finally:
+        for fd in held:
+            os.close(fd)
+
+
+def remote_launcher(cli, values):
+    return values.get("--aliases") == str(cli.with_name(cli.stem + ".gateway-aliases.json")) \
+        and "--gateway-url" in values
+
+
+def start_auto_sync(cli, config):
+    """Called by pi-launch: cheap checks, then a fully detached grandchild."""
+    if os.environ.get("PI_GATEWAY_AUTO_SYNC") == "0":
+        return False
+    try:
+        if not remote_launcher(cli, generation_values(config["generation"]["args"])) or not auto_sync_due(cli):
+            return False
+        # The launcher execs into Pi next, which would never reap a direct child:
+        # a short-lived sh backgrounds the job and exits, so launchd adopts it.
+        subprocess.run(["/bin/sh", "-c", 'exec </dev/null >/dev/null 2>&1; "$0" "$@" &',
+                        sys.executable, str(ROOT / "bin/pi-gateway"), "auto-sync", "--cli-out", str(cli)],
+                       stdin=subprocess.DEVNULL, start_new_session=True, cwd="/", close_fds=True,
+                       timeout=5, check=True)
+        return True
+    except Exception:
+        return False  # never block or fail a launch on background refresh
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
-    for action in ("connect", "check", "probe", "_discover", "key"):
+    for action in ("connect", "check", "probe", "sync", "_discover", "key", "auto-sync"):
         command = commands.add_parser(action)
-        command.add_argument("--key-file", required=True)
-        if action != "key":
+        if action != "auto-sync":
+            command.add_argument("--key-file", required=True)
+        if action not in {"key", "auto-sync"}:
             command.add_argument("--url", required=True)
             command.add_argument("--allow-private-http", action="store_true")
-        if action in {"connect", "check", "probe"}:
+        if action in {"connect", "check", "probe", "sync", "auto-sync"}:
             command.add_argument("--cli-out", required=True)
     args = parser.parse_args(argv)
     try:
@@ -321,6 +482,10 @@ def main(argv=None):
             connect(args)
         elif args.action == "probe":
             return probe(args)
+        elif args.action == "sync":
+            return sync(args)
+        elif args.action == "auto-sync":
+            return auto_sync(args)
         else:
             check(args)
         return 0

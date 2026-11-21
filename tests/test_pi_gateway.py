@@ -465,3 +465,152 @@ def test_probe_requires_saved_connection(machine, server):
     result = invoke(machine, server, "probe")
     assert result.returncode == 1
     assert server["requests"] == []
+
+
+def test_sync_writes_only_on_change_and_lists_drift(machine, server):
+    assert invoke(machine, server, "sync").returncode == 1  # requires a saved connection
+    assert server["requests"] == []
+    assert invoke(machine, server).returncode == 0
+    before = [p.stat().st_mtime_ns for p in (machine["cli"], machine["models"])]
+    result = invoke(machine, server, "sync")
+    assert result.returncode == 0, result.stderr
+    assert "catalog current: 2 available models" in result.stdout
+    assert [p.stat().st_mtime_ns for p in (machine["cli"], machine["models"])] == before
+
+    server["body"] = copy.deepcopy(CATALOG)
+    server["body"]["data"][1]["id"] = "org/new-model"
+    result = invoke(machine, server, "sync")
+    assert result.returncode == 0, result.stderr
+    assert "1 new on gateway: org/new-model" in result.stdout
+    assert "1 no longer available: vision" in result.stdout
+    models = json.loads(machine["models"].read_text())["providers"]["model-gateway"]["models"]
+    assert [m["id"] for m in models] == ["org/model-x", "org/new-model"]
+    assert invoke(machine, server, "probe").returncode == 0
+    assert "private-test-token" not in result.stdout + result.stderr
+
+    server.update(status=401, body=b"SECRET")
+    before = (machine["cli"].read_bytes(), machine["models"].read_bytes())
+    assert invoke(machine, server, "sync").returncode == gateway.AUTH_REJECTED
+    assert (machine["cli"].read_bytes(), machine["models"].read_bytes()) == before
+
+
+def auto_sync(machine, **env):
+    return subprocess.run([str(ROOT / "bin/pi-gateway"), "auto-sync", "--cli-out", str(machine["cli"])],
+                          capture_output=True, text=True, timeout=25, env={**os.environ, **env})
+
+
+def test_auto_sync_uses_saved_connection_throttles_and_records_result(machine, server):
+    state = machine["cli"].with_name("launcher.gateway-sync.json")
+    assert auto_sync(machine).returncode == 1  # no saved remote connection yet
+    assert json.loads(state.read_text())["result"] == "error"
+    assert server["requests"] == []
+    state.unlink()
+    assert invoke(machine, server).returncode == 0
+    server["body"] = copy.deepcopy(CATALOG)
+    server["body"]["data"][1]["id"] = "org/new-model"
+    result = auto_sync(machine)
+    assert result.returncode == 0, result.stderr
+    recorded = json.loads(state.read_text())
+    assert recorded["result"] == "refreshed" and recorded["added"] == ["org/new-model"]
+    assert recorded["notListed"] == ["vision"]  # kept until an explicit sync
+    assert state.stat().st_mode & 0o777 == 0o600
+    models = json.loads(machine["models"].read_text())["providers"]["model-gateway"]["models"]
+    assert [m["id"] for m in models] == ["org/model-x", "org/new-model", "vision"]
+    assert len(server["requests"]) == 2
+
+    assert auto_sync(machine).returncode == 0  # throttled: no catalog read
+    assert len(server["requests"]) == 2
+    old = state.stat().st_mtime - gateway.AUTO_SYNC_INTERVAL - 1
+    os.utime(state, (old, old))
+    assert auto_sync(machine).returncode == 0
+    assert json.loads(state.read_text())["result"] == "current"
+    assert len(server["requests"]) == 3
+
+    os.utime(state, (old, old))
+    server.update(status=401, body=b"SECRET")
+    before = (machine["cli"].read_bytes(), machine["models"].read_bytes())
+    assert auto_sync(machine).returncode == 1
+    assert json.loads(state.read_text())["result"] == "auth-rejected"
+    assert (machine["cli"].read_bytes(), machine["models"].read_bytes()) == before
+    assert "private-test-token" not in state.read_text()
+
+
+def test_auto_sync_never_writes_during_a_running_update(machine, server):
+    import fcntl
+    assert invoke(machine, server).returncode == 0
+    state = machine["cli"].with_name("launcher.gateway-sync.json")
+    server["body"] = copy.deepcopy(CATALOG)
+    server["body"]["data"][1]["id"] = "org/new-model"
+    before = (machine["cli"].read_bytes(), machine["models"].read_bytes())
+    lock = machine["home"] / ".config/pi-shared/update.lock"
+    lock.parent.mkdir(parents=True, mode=0o700)
+    lock.touch(mode=0o600)
+    with lock.open("rb") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert auto_sync(machine).returncode == 1
+    assert json.loads(state.read_text())["result"] == "skipped-update-running"
+    assert (machine["cli"].read_bytes(), machine["models"].read_bytes()) == before
+    assert gateway.auto_sync_due(machine["cli"])  # retried at the next launch
+    assert auto_sync(machine).returncode == 0
+    assert json.loads(state.read_text())["result"] == "refreshed"
+    assert len(server["requests"]) == 3
+
+
+def test_explicit_sync_removes_what_auto_sync_kept(machine, server):
+    assert invoke(machine, server).returncode == 0
+    server["body"] = copy.deepcopy(CATALOG)
+    del server["body"]["data"][1]
+    assert auto_sync(machine).returncode == 0
+    assert "\"vision\"" in machine["models"].read_text()
+    result = invoke(machine, server, "sync")
+    assert result.returncode == 0 and "1 no longer available: vision" in result.stdout
+    assert "\"vision\"" not in machine["models"].read_text()
+
+
+def test_start_auto_sync_leaves_no_child_to_reap(machine, server, monkeypatch):
+    from pi_cli import load_config
+    assert invoke(machine, server).returncode == 0
+    monkeypatch.delenv("PI_GATEWAY_AUTO_SYNC", raising=False)
+    assert gateway.start_auto_sync(machine["cli"], load_config(machine["cli"])) is True
+    with pytest.raises(ChildProcessError):
+        os.waitpid(-1, os.WNOHANG)
+    state = machine["cli"].with_name("launcher.gateway-sync.json")
+    import time
+    deadline = time.time() + 15
+    while not (state.exists() and state.stat().st_size) and time.time() < deadline:
+        time.sleep(0.1)
+    assert json.loads(state.read_text())["result"] == "current"
+    assert gateway.start_auto_sync(machine["cli"], load_config(machine["cli"])) is False  # throttled
+
+
+def test_launch_starts_background_sync_only_for_a_remote_connection(machine, server, tmp_path):
+    import time
+    stub = tmp_path / "stock-pi"
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    env = {**os.environ, "HOME": str(machine["home"]), "PI_LAUNCHER_CONFIG": str(machine["cli"]),
+           "PI_UPSTREAM_BIN": str(stub)}
+    env.pop("PI_CODING_AGENT_DIR", None)
+    state = machine["cli"].with_name("launcher.gateway-sync.json")
+
+    def launch(*argv, **extra):
+        result = subprocess.run([str(ROOT / "bin/pi-launch"), *argv], env={**env, **extra},
+                                capture_output=True, text=True, timeout=25)
+        assert result.returncode == 0, result.stderr
+
+    launch("-p", "hi")  # local/empty catalog launcher: nothing to sync
+    time.sleep(0.5)
+    assert not state.exists() and server["requests"] == []
+    assert invoke(machine, server).returncode == 0
+    launch("-p", "hi", PI_GATEWAY_AUTO_SYNC="0")
+    time.sleep(0.5)
+    assert not state.exists()
+    launch("--version")  # utilities stay offline
+    time.sleep(0.5)
+    assert not state.exists()
+    launch("-p", "hi")
+    deadline = time.time() + 15
+    while not (state.exists() and state.stat().st_size) and time.time() < deadline:
+        time.sleep(0.1)
+    assert json.loads(state.read_text())["result"] == "current"
+    assert len(server["requests"]) == 2
