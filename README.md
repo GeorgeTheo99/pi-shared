@@ -384,8 +384,9 @@ confirmed cleanup.
 ### Scheduled agent jobs
 
 With a [pi-jobs](https://github.com/GeorgeTheo99/pi-jobs) server configured, `jobs_create`,
-`jobs_update`, `jobs_run`, `jobs_runs` and `jobs_list` schedule unattended coding-agent runs
-(cron, webhook or on demand) from any session. pi-jobs is a separate install; runs happen on
+`jobs_update`, `jobs_run`, `jobs_runs`, `jobs_list` and `jobs_approve` schedule unattended
+coding-agent runs (cron, webhook, watch command or on demand) and approve the ones waiting for it
+from any session. pi-jobs is a separate install; runs happen on
 its server in fresh worktrees and leave branches, never merges or deploys. Interactive sessions
 confirm each change; the tools are absent inside pi-jobs runs and read-only for subagents.
 [Configuration and repository matching](extensions/pi-jobs/README.md).

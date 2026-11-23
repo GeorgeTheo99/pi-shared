@@ -135,6 +135,9 @@ interface Job {
 	timeoutMinutes: number;
 	checkCommand: string | null;
 	pushBranch: boolean;
+	/** Absent on servers from before watch commands and approval. */
+	watchCommand?: string | null;
+	approveRuns?: boolean;
 	enabled: boolean;
 	lastRun: Run | null;
 }
@@ -159,7 +162,8 @@ const jobSchema = Type.Object({
 	id: Type.Integer(), name: Type.String(), repoPath: Type.String(), baseRef: Type.String(), prompt: Type.String(),
 	agent: Type.String(), schedule: Type.String({ type: ["string", "null"] }), nextRunAt: Type.String({ type: ["string", "null"] }),
 	webhook: Type.Boolean(), timeoutMinutes: Type.Integer(), checkCommand: Type.String({ type: ["string", "null"] }),
-	pushBranch: Type.Boolean(), enabled: Type.Boolean(), lastRunStatus: Type.String({ type: ["string", "null"] }), url: Type.String(),
+	pushBranch: Type.Boolean(), watchCommand: Type.String({ type: ["string", "null"] }), approveRuns: Type.Boolean(),
+	enabled: Type.Boolean(), lastRunStatus: Type.String({ type: ["string", "null"] }), url: Type.String(),
 }, { additionalProperties: false });
 
 const runSchema = Type.Object({
@@ -173,7 +177,8 @@ const runSchema = Type.Object({
 const jobData = (client: PiJobsClient, job: Job) => ({
 	id: job.id, name: job.name, repoPath: job.repoPath, baseRef: job.baseRef, prompt: job.prompt, agent: job.effectiveAgent,
 	schedule: job.schedule, nextRunAt: job.nextRunAt, webhook: job.webhookToken !== null, timeoutMinutes: job.timeoutMinutes,
-	checkCommand: job.checkCommand, pushBranch: job.pushBranch, enabled: job.enabled, lastRunStatus: job.lastRun?.status ?? null,
+	checkCommand: job.checkCommand, pushBranch: job.pushBranch, watchCommand: job.watchCommand ?? null, approveRuns: job.approveRuns ?? false,
+	enabled: job.enabled, lastRunStatus: job.lastRun?.status ?? null,
 	url: client.link(`/jobs/${job.id}`),
 });
 
@@ -184,16 +189,21 @@ const runData = (client: PiJobsClient, run: Run) => ({
 });
 
 function jobLine(client: PiJobsClient, job: Job): string {
-	const triggers = [job.schedule ? `cron \`${job.schedule}\`${job.nextRunAt ? ` (next ${job.nextRunAt})` : ""}` : null, job.webhookToken ? "webhook" : null]
-		.filter(Boolean).join(", ") || "manual only";
+	const triggers = [
+		job.schedule ? `cron \`${job.schedule}\`${job.nextRunAt ? ` (next ${job.nextRunAt})` : ""}` : null,
+		job.webhookToken ? "webhook" : null,
+		job.watchCommand ? "watch" : null,
+	].filter(Boolean).join(", ") || "manual only";
+	const approval = job.approveRuns ? ", approve before running" : "";
 	const last = job.lastRun ? `last run #${job.lastRun.id} ${job.lastRun.status}` : "never run";
-	return `#${job.id} ${job.name}${job.enabled ? "" : " [paused]"}: ${job.repoPath} @ ${job.baseRef}, ${job.effectiveAgent}, ${triggers}; ${last}. ${client.link(`/jobs/${job.id}`)}`;
+	return `#${job.id} ${job.name}${job.enabled ? "" : " [paused]"}: ${job.repoPath} @ ${job.baseRef}, ${job.effectiveAgent}, ${triggers}${approval}; ${last}. ${client.link(`/jobs/${job.id}`)}`;
 }
 
 function jobDetail(client: PiJobsClient, job: Job): string {
 	return [
 		jobLine(client, job),
 		`Check command: ${job.checkCommand ?? "none"}; timeout ${job.timeoutMinutes} min; push branch: ${job.pushBranch ? "yes" : "no"}.`,
+		...(job.watchCommand ? [`Watch command (on each scheduled time, instead of the agent): ${job.watchCommand}`] : []),
 		...(job.webhookToken ? [`Webhook: POST ${client.link(job.webhookPath)} with "Authorization: Bearer <job webhook token>" (shown on the job page).`] : []),
 		"Instructions:",
 		job.prompt,
@@ -244,14 +254,17 @@ const jobFields = {
 	timeoutMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 1440, description: "Run time limit. Default 30." })),
 	webhook: Type.Optional(Type.Boolean({ description: "Let other services start runs by POSTing to the job's webhook URL. The body becomes {{payload}} in the instructions." })),
 	pushBranch: Type.Optional(Type.Boolean({ description: "Push a succeeded run's branch to the repository's origin so other machines can fetch it." })),
-	enabled: Type.Optional(Type.Boolean({ description: "false pauses the schedule and webhook." })),
+	watchCommand: Type.Optional(Type.String({ description: "Shell command run in the repository on each scheduled time instead of the agent. Each JSON line it prints with an \"id\" not seen before starts one run with that line as {{payload}}. For sources that can't send webhooks. Empty string removes it." })),
+	approveRuns: Type.Optional(Type.Boolean({ description: "Runs from the schedule, webhook or watch wait as Needs approval until approved with jobs_approve or in the UI. Manual runs start right away." })),
+	enabled: Type.Optional(Type.Boolean({ description: "false pauses the schedule, webhook and watch." })),
 	repo: Type.Optional(Type.String({ description: "Local checkout the job is for. Default: the session's working directory." })),
 	serverRepoPath: Type.Optional(Type.String({ description: "Absolute path of the checkout on the pi-jobs server. Only needed when the server can't match repo by its git remotes." })),
 };
 
 interface JobChanges {
 	name?: string; prompt?: string; schedule?: string; agent?: string; baseRef?: string; checkCommand?: string;
-	timeoutMinutes?: number; webhook?: boolean; pushBranch?: boolean; enabled?: boolean; repo?: string; serverRepoPath?: string;
+	timeoutMinutes?: number; webhook?: boolean; pushBranch?: boolean; watchCommand?: string; approveRuns?: boolean; enabled?: boolean;
+	repo?: string; serverRepoPath?: string;
 }
 
 /** The server's full job draft: existing values (when updating) overlaid with the requested changes. */
@@ -269,6 +282,8 @@ async function buildDraft(client: PiJobsClient, ctx: ExtensionContext, changes: 
 		timeoutMinutes: changes.timeoutMinutes ?? existing?.timeoutMinutes ?? 30,
 		checkCommand: changes.checkCommand ?? existing?.checkCommand ?? "",
 		pushBranch: changes.pushBranch ?? existing?.pushBranch ?? false,
+		watchCommand: changes.watchCommand ?? existing?.watchCommand ?? "",
+		approveRuns: changes.approveRuns ?? existing?.approveRuns ?? false,
 		enabled: changes.enabled ?? existing?.enabled ?? true,
 	};
 }
@@ -280,6 +295,8 @@ function describeDraft(draft: Awaited<ReturnType<typeof buildDraft>>): string {
 		`Agent: ${draft.agent ?? "server default"}`,
 		`Schedule: ${draft.schedule || "none"}${draft.webhookEnabled ? "; webhook on" : ""}${draft.enabled ? "" : "; paused"}`,
 		`Check: ${draft.checkCommand || "none"}; timeout ${draft.timeoutMinutes} min; push branch: ${draft.pushBranch ? "yes" : "no"}`,
+		...(draft.watchCommand ? [`Watch: ${draft.watchCommand}`] : []),
+		...(draft.approveRuns ? ["Runs from the schedule, webhook or watch wait for approval"] : []),
 		"",
 		draft.prompt,
 	].join("\n");
@@ -300,7 +317,7 @@ export default function piJobs(pi: ExtensionAPI) {
 		name: "jobs_list",
 		label: "List Jobs",
 		description: "List scheduled/webhook coding-agent jobs on the pi-jobs server, or show one job with its full instructions.",
-		promptSnippet: "jobs_list / jobs_create / jobs_update / jobs_run / jobs_runs to schedule and inspect unattended coding-agent jobs (pi-jobs)",
+		promptSnippet: "jobs_list / jobs_create / jobs_update / jobs_run / jobs_runs / jobs_approve to schedule, inspect and approve unattended coding-agent jobs (pi-jobs)",
 		promptGuidelines: [
 			"Use the jobs_* tools when the user wants recurring, scheduled or event-triggered (webhook) coding work, e.g. \"every morning check for new models\" or \"fix bugs as they are filed\". Jobs run unattended on the pi-jobs server in a fresh git worktree and leave changes on a branch; they never merge or deploy.",
 			"Before jobs_create, ground the job in the repository: learn its layout, AGENTS.md and real test command, then write self-contained instructions and a checkCommand. Offer jobs_run to try the job once before relying on its schedule.",
@@ -361,6 +378,30 @@ export default function piJobs(pi: ExtensionAPI) {
 			}
 			const run: Run = await client.request("POST", `/api/jobs/${args.jobId}/run`, {}, signal);
 			return { content: text(`Started run #${run.id}.\n${fence(runLine(client, run))}`), details: { run: runData(client, run) } };
+		},
+	})), Type.Object({ run: Type.Optional(runSchema) }, { additionalProperties: false }), (result) => ({ data: result.details })));
+
+	pi.registerTool(structuredTool(operationTool(defineTool({
+		...TOOL_DEFAULTS,
+		name: "jobs_approve",
+		label: "Approve Run",
+		description: "Approve or dismiss a pi-jobs run that is waiting for approval (status awaiting_approval, from a job with approveRuns). Approving starts an unattended agent; dismissing cancels the run without running it. The user confirms first.",
+		parameters: Type.Object({
+			runId: Type.Integer({ minimum: 1 }),
+			decision: Type.String({ enum: ["approve", "dismiss"] }),
+		}, { additionalProperties: false }),
+		async execute(_id, args, signal, _update, ctx) {
+			refuseSubagents();
+			const run: Run = await client.request("GET", `/api/runs/${args.runId}`, undefined, signal);
+			if (run.status !== "awaiting_approval") throw new PiJobsError(`Run #${run.id} isn't waiting for approval (it is ${run.status}).`);
+			const verb = args.decision === "approve" ? "Approve" : "Dismiss";
+			const effect = args.decision === "approve" ? "An unattended agent runs with this payload." : "The run is canceled without running.";
+			if (!(await approve(ctx, `${verb} pi-jobs run #${run.id}?`, `${runLine(client, run)}\n\n${effect}`))) {
+				return { content: text("The user declined; the run was left waiting."), details: {} };
+			}
+			const action = args.decision === "approve" ? "approve" : "cancel";
+			const updated: Run = await client.request("POST", `/api/runs/${run.id}/${action}`, {}, signal);
+			return { content: text(`${args.decision === "approve" ? "Approved" : "Dismissed"} run #${updated.id}.\n${fence(runLine(client, updated))}`), details: { run: runData(client, updated) } };
 		},
 	})), Type.Object({ run: Type.Optional(runSchema) }, { additionalProperties: false }), (result) => ({ data: result.details })));
 

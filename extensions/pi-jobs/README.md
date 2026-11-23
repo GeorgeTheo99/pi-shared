@@ -16,15 +16,22 @@ jobs_run({jobId:3})            // try it once now
 jobs_runs({runId:41})          // status, branch and the end of the log
 jobs_update({jobId:3, enabled:false})
 jobs_list({})
+jobs_approve({runId:42, decision:"approve"})   // or "dismiss"
 ```
 
 | Tool | Required fields | Optional fields |
 | --- | --- | --- |
 | `jobs_list` | None | `jobId` (one job, with its full instructions) |
-| `jobs_create` | `name`, `prompt` | `schedule`, `agent`, `baseRef`, `checkCommand`, `timeoutMinutes`, `webhook`, `pushBranch`, `enabled`, `repo`, `serverRepoPath` |
+| `jobs_create` | `name`, `prompt` | `schedule`, `agent`, `baseRef`, `checkCommand`, `timeoutMinutes`, `webhook`, `pushBranch`, `watchCommand`, `approveRuns`, `enabled`, `repo`, `serverRepoPath` |
 | `jobs_update` | `jobId` | Same as `jobs_create`; only given fields change |
 | `jobs_run` | `jobId` | None |
 | `jobs_runs` | None | `jobId`, `runId`, `limit`, `logChars` |
+| `jobs_approve` | `runId`, `decision` (`approve` or `dismiss`) | None |
+
+`watchCommand` makes each scheduled time run a command instead of the agent; every JSON line it
+prints with a new `id` starts one run with that line as the payload. With `approveRuns`, runs from
+the schedule, webhook or watch wait as `awaiting_approval` until `jobs_approve` or the UI decides.
+Both need pi-jobs 0.3.0 or later; older servers ignore them.
 
 Deleting jobs, managing tokens and webhook tokens stay in the pi-jobs UI.
 
@@ -55,7 +62,7 @@ for its main checkout.
 
 ## Safeguards
 
-- **Confirmation:** in interactive sessions `jobs_create`, `jobs_update` and `jobs_run` show the
+- **Confirmation:** in interactive sessions `jobs_create`, `jobs_update`, `jobs_run` and `jobs_approve` show the
   job and act only after the user confirms. Non-interactive sessions (print mode, scripts) change
   nothing unless `PI_JOBS_AUTO_APPROVE=1` declares their prompt trusted.
 - **Not offered inside runs:** nothing is registered inside a pi-jobs run (`PI_JOBS_RUN_ID` set).

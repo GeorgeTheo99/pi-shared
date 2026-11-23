@@ -12,7 +12,7 @@ import { readClientConfig } from "../extensions/pi-jobs/config.ts";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
 const TOKEN = "pjt_fixture";
-const TOOLS = ["jobs_create", "jobs_list", "jobs_run", "jobs_runs", "jobs_update"];
+const TOOLS = ["jobs_approve", "jobs_create", "jobs_list", "jobs_run", "jobs_runs", "jobs_update"];
 
 interface Received { method: string; path: string; body: any }
 
@@ -52,6 +52,10 @@ async function fakeServer(t: any, options: { apiVersion?: number } = {}) {
 		if (/^\/api\/jobs\/\d+\/run$/.test(url.pathname)) return send(200, run);
 		if (url.pathname === "/api/runs") return send(200, [run]);
 		if (url.pathname === "/api/runs/9") return send(200, { ...run, status: "succeeded", branch: "pi-jobs/x/run-9", commits: 1 });
+		const waiting = { ...run, id: 10, trigger: "watch", status: "awaiting_approval" };
+		if (url.pathname === "/api/runs/10" && req.method === "GET") return send(200, waiting);
+		if (url.pathname === "/api/runs/10/approve") return send(200, { ...waiting, status: "queued" });
+		if (url.pathname === "/api/runs/10/cancel") return send(200, { ...waiting, status: "canceled" });
 		if (url.pathname === "/api/runs/9/log") return send(200, { text: "[pi-jobs] Finished: succeeded\n", offset: 30, size: 30, done: true });
 		if (url.pathname === "/api/repos/resolve") return send(200, { path: "/server/local_code/demo" });
 		send(404, { error: "Not found" });
@@ -116,7 +120,7 @@ test("client config: URL and token come together from the environment or the fil
 	assert.match((readClientConfig({}, file) as { warning: string }).warning, /not valid JSON/);
 });
 
-test("registers five closed-schema tools when configured, and none inside a pi-jobs run", async (t) => {
+test("registers six closed-schema tools when configured, and none inside a pi-jobs run", async (t) => {
 	const server = await fakeServer(t);
 	const { tools } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined });
 	assert.deepEqual([...tools.keys()].sort(), TOOLS);
@@ -235,4 +239,30 @@ test("a linked worktree schedules its main checkout", async (t) => {
 	execFileSync("git", ["-C", checkout, "worktree", "add", "-q", worktree]);
 	await call(tools, "jobs_create", { name: "J", prompt: "P" }, ctx(worktree));
 	assert.equal(server.received.find((r) => r.method === "POST")!.body.repoPath, fs.realpathSync(checkout));
+});
+
+test("watch commands and approval round-trip; waiting runs are approved or dismissed after confirmation", async (t) => {
+	const server = await fakeServer(t);
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
+	const created = await call(tools, "jobs_create", { name: "Triage", prompt: "P", schedule: "*/10 * * * *", watchCommand: "node feed.mjs", approveRuns: true }, ctx(checkout));
+	const post = server.received.find((r) => r.method === "POST" && r.path === "/api/jobs")!;
+	assert.deepEqual([post.body.watchCommand, post.body.approveRuns], ["node feed.mjs", true]);
+	assert.deepEqual([created.structuredContent.data.job.watchCommand, created.structuredContent.data.job.approveRuns], ["node feed.mjs", true]);
+	await call(tools, "jobs_update", { jobId: 1, name: "Triage 2" }, ctx(checkout));
+	const put = server.received.find((r) => r.method === "PUT")!;
+	assert.deepEqual([put.body.watchCommand, put.body.approveRuns], ["node feed.mjs", true], "updates keep them");
+	assert.match((await call(tools, "jobs_list", {}, ctx(checkout))).content[0].text, /watch, approve before running/);
+
+	const prompts: string[] = [];
+	const declined = await call(tools, "jobs_approve", { runId: 10, decision: "approve" }, ctx(checkout, { hasUI: true, ui: { confirm: async (_t: string, body: string) => { prompts.push(body); return false; } } }));
+	assert.match(declined.content[0].text, /left waiting/);
+	assert.match(prompts[0]!, /An unattended agent runs/);
+	assert.ok(!server.received.some((r) => r.path === "/api/runs/10/approve"));
+	const approved = await call(tools, "jobs_approve", { runId: 10, decision: "approve" }, ctx(checkout));
+	assert.equal(approved.structuredContent.data.run.status, "queued");
+	const dismissed = await call(tools, "jobs_approve", { runId: 10, decision: "dismiss" }, ctx(checkout));
+	assert.equal(dismissed.structuredContent.data.run.status, "canceled");
+	await assert.rejects(call(tools, "jobs_approve", { runId: 9, decision: "approve" }, ctx(checkout)), /isn't waiting for approval/);
+	process.env.PI_SUBAGENT_DEPTH = "1";
+	await assert.rejects(call(tools, "jobs_approve", { runId: 10, decision: "approve" }, ctx(checkout)), /not available to subagents/);
 });
