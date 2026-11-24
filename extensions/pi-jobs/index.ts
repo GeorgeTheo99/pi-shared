@@ -138,6 +138,8 @@ interface Job {
 	/** Absent on servers from before watch commands and approval. */
 	watchCommand?: string | null;
 	approveRuns?: boolean;
+	/** Absent on servers from before Ship (pi-jobs 0.6.0). */
+	shipCommand?: string | null;
 	enabled: boolean;
 	lastRun: Run | null;
 }
@@ -148,6 +150,10 @@ interface Run {
 	trigger: string;
 	status: string;
 	agent: string;
+	/** "change", "ask" or "ship"; absent on older servers. */
+	mode?: string;
+	followUpOf?: number | null;
+	itemId?: number;
 	branch: string | null;
 	commits: number | null;
 	checkStatus: string | null;
@@ -163,11 +169,13 @@ const jobSchema = Type.Object({
 	agent: Type.String(), schedule: Type.String({ type: ["string", "null"] }), nextRunAt: Type.String({ type: ["string", "null"] }),
 	webhook: Type.Boolean(), timeoutMinutes: Type.Integer(), checkCommand: Type.String({ type: ["string", "null"] }),
 	pushBranch: Type.Boolean(), watchCommand: Type.String({ type: ["string", "null"] }), approveRuns: Type.Boolean(),
+	shipCommand: Type.String({ type: ["string", "null"] }),
 	enabled: Type.Boolean(), lastRunStatus: Type.String({ type: ["string", "null"] }), url: Type.String(),
 }, { additionalProperties: false });
 
 const runSchema = Type.Object({
 	id: Type.Integer(), jobId: Type.Integer(), trigger: Type.String(), status: Type.String(), agent: Type.String(),
+	mode: Type.String(),
 	branch: Type.String({ type: ["string", "null"] }), commits: Type.Integer({ type: ["integer", "null"] }),
 	checkStatus: Type.String({ type: ["string", "null"] }), pushedTo: Type.String({ type: ["string", "null"] }),
 	error: Type.String({ type: ["string", "null"] }), createdAt: Type.String(), finishedAt: Type.String({ type: ["string", "null"] }),
@@ -178,12 +186,12 @@ const jobData = (client: PiJobsClient, job: Job) => ({
 	id: job.id, name: job.name, repoPath: job.repoPath, baseRef: job.baseRef, prompt: job.prompt, agent: job.effectiveAgent,
 	schedule: job.schedule, nextRunAt: job.nextRunAt, webhook: job.webhookToken !== null, timeoutMinutes: job.timeoutMinutes,
 	checkCommand: job.checkCommand, pushBranch: job.pushBranch, watchCommand: job.watchCommand ?? null, approveRuns: job.approveRuns ?? false,
-	enabled: job.enabled, lastRunStatus: job.lastRun?.status ?? null,
+	shipCommand: job.shipCommand ?? null, enabled: job.enabled, lastRunStatus: job.lastRun?.status ?? null,
 	url: client.link(`/jobs/${job.id}`),
 });
 
 const runData = (client: PiJobsClient, run: Run) => ({
-	id: run.id, jobId: run.jobId, trigger: run.trigger, status: run.status, agent: run.agent, branch: run.branch,
+	id: run.id, jobId: run.jobId, trigger: run.trigger, status: run.status, agent: run.agent, mode: run.mode ?? "change", branch: run.branch,
 	commits: run.commits, checkStatus: run.checkStatus, pushedTo: run.pushedTo, error: run.error, createdAt: run.createdAt,
 	finishedAt: run.finishedAt, url: client.link(`/runs/${run.id}`),
 });
@@ -194,7 +202,7 @@ function jobLine(client: PiJobsClient, job: Job): string {
 		job.webhookToken ? "webhook" : null,
 		job.watchCommand ? "watch" : null,
 	].filter(Boolean).join(", ") || "manual only";
-	const approval = job.approveRuns ? ", approve before running" : "";
+	const approval = `${job.approveRuns ? ", approve before running" : ""}${job.shipCommand ? ", ships" : ""}`;
 	const last = job.lastRun ? `last run #${job.lastRun.id} ${job.lastRun.status}` : "never run";
 	return `#${job.id} ${job.name}${job.enabled ? "" : " [paused]"}: ${job.repoPath} @ ${job.baseRef}, ${job.effectiveAgent}, ${triggers}${approval}; ${last}. ${client.link(`/jobs/${job.id}`)}`;
 }
@@ -204,6 +212,7 @@ function jobDetail(client: PiJobsClient, job: Job): string {
 		jobLine(client, job),
 		`Check command: ${job.checkCommand ?? "none"}; timeout ${job.timeoutMinutes} min; push branch: ${job.pushBranch ? "yes" : "no"}.`,
 		...(job.watchCommand ? [`Watch command (on each scheduled time, instead of the agent): ${job.watchCommand}`] : []),
+		...(job.shipCommand ? [`Ship command (only when the owner ships an item, with jobs_ship or the UI): ${job.shipCommand}`] : []),
 		...(job.webhookToken ? [`Webhook: POST ${client.link(job.webhookPath)} with "Authorization: Bearer <job webhook token>" (shown on the job page).`] : []),
 		"Instructions:",
 		job.prompt,
@@ -213,7 +222,8 @@ function jobDetail(client: PiJobsClient, job: Job): string {
 function runLine(client: PiJobsClient, run: Run): string {
 	const outcome = run.branch ? `${run.commits ?? 0} commit(s) on ${run.branch}${run.pushedTo ? ` (pushed to ${run.pushedTo})` : ""}` : run.status === "succeeded" ? "no changes" : (run.error ?? "");
 	const check = run.checkStatus ? `, check ${run.checkStatus}` : "";
-	return `Run #${run.id} of job #${run.jobId} (${run.trigger}, ${run.agent}): ${run.status}${check}${outcome ? `; ${outcome}` : ""}. ${client.link(`/runs/${run.id}`)}`;
+	const kind = run.mode === "ship" ? "ship" : `${run.trigger}, ${run.agent}`;
+	return `Run #${run.id} of job #${run.jobId} (${kind}): ${run.status}${check}${outcome ? `; ${outcome}` : ""}. ${client.link(`/runs/${run.id}`)}`;
 }
 
 /** Delegated subagents may read jobs but never change or start them. */
@@ -256,6 +266,7 @@ const jobFields = {
 	pushBranch: Type.Optional(Type.Boolean({ description: "Push a succeeded run's branch to the repository's origin so other machines can fetch it." })),
 	watchCommand: Type.Optional(Type.String({ description: "Shell command run in the repository on each scheduled time instead of the agent. Each JSON line it prints with an \"id\" not seen before starts one run with that line as {{payload}}. For sources that can't send webhooks. Empty string removes it." })),
 	approveRuns: Type.Optional(Type.Boolean({ description: "Runs from the schedule, webhook or watch wait as Needs approval until approved with jobs_approve or in the UI. Manual runs start right away." })),
+	shipCommand: Type.Optional(Type.String({ description: "The repository's own merge/release/deploy command, e.g. \"scripts/ship.sh\". It runs only when the owner ships a finished item (jobs_ship or Ship in the UI), in a checkout of the item's result with PI_JOBS_SHIP_COMMIT, PI_JOBS_SHIP_BRANCH, PI_JOBS_BASE_REF and PI_JOBS_REPO set; it should fail closed before anything irreversible. Empty string removes it. Needs pi-jobs 0.6.0." })),
 	enabled: Type.Optional(Type.Boolean({ description: "false pauses the schedule, webhook and watch." })),
 	repo: Type.Optional(Type.String({ description: "Local checkout the job is for. Default: the session's working directory." })),
 	serverRepoPath: Type.Optional(Type.String({ description: "Absolute path of the checkout on the pi-jobs server. Only needed when the server can't match repo by its git remotes." })),
@@ -263,7 +274,7 @@ const jobFields = {
 
 interface JobChanges {
 	name?: string; prompt?: string; schedule?: string; agent?: string; baseRef?: string; checkCommand?: string;
-	timeoutMinutes?: number; webhook?: boolean; pushBranch?: boolean; watchCommand?: string; approveRuns?: boolean; enabled?: boolean;
+	timeoutMinutes?: number; webhook?: boolean; pushBranch?: boolean; watchCommand?: string; approveRuns?: boolean; shipCommand?: string; enabled?: boolean;
 	repo?: string; serverRepoPath?: string;
 }
 
@@ -284,6 +295,7 @@ async function buildDraft(client: PiJobsClient, ctx: ExtensionContext, changes: 
 		pushBranch: changes.pushBranch ?? existing?.pushBranch ?? false,
 		watchCommand: changes.watchCommand ?? existing?.watchCommand ?? "",
 		approveRuns: changes.approveRuns ?? existing?.approveRuns ?? false,
+		shipCommand: changes.shipCommand ?? existing?.shipCommand ?? "",
 		enabled: changes.enabled ?? existing?.enabled ?? true,
 	};
 }
@@ -297,6 +309,7 @@ function describeDraft(draft: Awaited<ReturnType<typeof buildDraft>>): string {
 		`Check: ${draft.checkCommand || "none"}; timeout ${draft.timeoutMinutes} min; push branch: ${draft.pushBranch ? "yes" : "no"}`,
 		...(draft.watchCommand ? [`Watch: ${draft.watchCommand}`] : []),
 		...(draft.approveRuns ? ["Runs from the schedule, webhook or watch wait for approval"] : []),
+		...(draft.shipCommand ? [`Ship (only when the owner ships an item): ${draft.shipCommand}`] : []),
 		"",
 		draft.prompt,
 	].join("\n");
@@ -317,9 +330,9 @@ export default function piJobs(pi: ExtensionAPI) {
 		name: "jobs_list",
 		label: "List Jobs",
 		description: "List scheduled/webhook coding-agent jobs on the pi-jobs server, or show one job with its full instructions.",
-		promptSnippet: "jobs_list / jobs_create / jobs_update / jobs_run / jobs_runs / jobs_approve to schedule, inspect and approve unattended coding-agent jobs (pi-jobs)",
+		promptSnippet: "jobs_list / jobs_create / jobs_update / jobs_run / jobs_runs / jobs_approve / jobs_ship to schedule, inspect, approve and ship unattended coding-agent jobs (pi-jobs)",
 		promptGuidelines: [
-			"Use the jobs_* tools when the user wants recurring, scheduled or event-triggered (webhook) coding work, e.g. \"every morning check for new models\" or \"fix bugs as they are filed\". Jobs run unattended on the pi-jobs server in a fresh git worktree and leave changes on a branch; they never merge or deploy.",
+			"Use the jobs_* tools when the user wants recurring, scheduled or event-triggered (webhook) coding work, e.g. \"every morning check for new models\" or \"fix bugs as they are filed\". Jobs run unattended on the pi-jobs server in a fresh git worktree and leave changes on a branch; they never merge or deploy by themselves. A job with a shipCommand (the repository's own merge/release/deploy script) can ship a finished item when the user asks: use jobs_ship, which the user confirms.",
 			"Before jobs_create, ground the job in the repository: learn its layout, AGENTS.md and real test command, then write self-contained instructions and a checkCommand. Offer jobs_run to try the job once before relying on its schedule.",
 		],
 		parameters: Type.Object({ jobId: Type.Optional(Type.Integer({ minimum: 1, description: "Show this job in full." })) }, { additionalProperties: false }),
@@ -402,6 +415,27 @@ export default function piJobs(pi: ExtensionAPI) {
 			const action = args.decision === "approve" ? "approve" : "cancel";
 			const updated: Run = await client.request("POST", `/api/runs/${run.id}/${action}`, {}, signal);
 			return { content: text(`${args.decision === "approve" ? "Approved" : "Dismissed"} run #${updated.id}.\n${fence(runLine(client, updated))}`), details: { run: runData(client, updated) } };
+		},
+	})), Type.Object({ run: Type.Optional(runSchema) }, { additionalProperties: false }), (result) => ({ data: result.details })));
+
+	pi.registerTool(structuredTool(operationTool(defineTool({
+		...TOOL_DEFAULTS,
+		name: "jobs_ship",
+		label: "Ship Item",
+		description: "Ship a finished pi-jobs item: run its job's ship command (the repository's own merge/release/deploy script) on the item's newest result. Only for jobs with a shipCommand, once the item's work succeeded. It may do things that can't be undone, so it always needs the user's confirmation in an interactive session, even with PI_JOBS_AUTO_APPROVE. Returns immediately; follow it with jobs_runs. If it fails, the next follow-up on the item gets its output.",
+		parameters: Type.Object({ runId: Type.Integer({ minimum: 1, description: "Any run of the item to ship." }) }, { additionalProperties: false }),
+		async execute(_id, args, signal, _update, ctx) {
+			refuseSubagents();
+			const run: Run = await client.request("GET", `/api/runs/${args.runId}`, undefined, signal);
+			const job: Job = await client.request("GET", `/api/jobs/${run.jobId}`, undefined, signal);
+			if (!job.shipCommand) throw new PiJobsError(`Job #${job.id} has no ship command; set shipCommand with jobs_update first.`);
+			if (!ctx.hasUI) throw new PiJobsError("Shipping needs the user's confirmation in an interactive session; ship from the pi-jobs UI instead.");
+			const summary = `${runLine(client, run)}\n\nRuns as the server's owner, with their credentials, on this item's newest result:\n${job.shipCommand}\n\nIt may merge, release or deploy, and may not be undoable.`;
+			if (!(await ctx.ui.confirm(`Ship pi-jobs job #${job.id}'s item?`, summary))) {
+				return { content: text("The user declined; nothing was shipped."), details: {} };
+			}
+			const shipped: Run = await client.request("POST", `/api/runs/${run.id}/ship`, {}, signal);
+			return { content: text(`Started ship run #${shipped.id}.\n${fence(runLine(client, shipped))}`), details: { run: runData(client, shipped) } };
 		},
 	})), Type.Object({ run: Type.Optional(runSchema) }, { additionalProperties: false }), (result) => ({ data: result.details })));
 

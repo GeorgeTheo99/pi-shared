@@ -12,7 +12,7 @@ import { readClientConfig } from "../extensions/pi-jobs/config.ts";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
 const TOKEN = "pjt_fixture";
-const TOOLS = ["jobs_approve", "jobs_create", "jobs_list", "jobs_run", "jobs_runs", "jobs_update"];
+const TOOLS = ["jobs_approve", "jobs_create", "jobs_list", "jobs_run", "jobs_runs", "jobs_ship", "jobs_update"];
 
 interface Received { method: string; path: string; body: any }
 
@@ -56,6 +56,7 @@ async function fakeServer(t: any, options: { apiVersion?: number } = {}) {
 		if (url.pathname === "/api/runs/10" && req.method === "GET") return send(200, waiting);
 		if (url.pathname === "/api/runs/10/approve") return send(200, { ...waiting, status: "queued" });
 		if (url.pathname === "/api/runs/10/cancel") return send(200, { ...waiting, status: "canceled" });
+		if (url.pathname === "/api/runs/9/ship") return send(200, { ...run, id: 11, status: "queued", mode: "ship", followUpOf: 9 });
 		if (url.pathname === "/api/runs/9/log") return send(200, { text: "[pi-jobs] Finished: succeeded\n", offset: 30, size: 30, done: true });
 		if (url.pathname === "/api/repos/resolve") return send(200, { path: "/server/local_code/demo" });
 		send(404, { error: "Not found" });
@@ -120,7 +121,7 @@ test("client config: URL and token come together from the environment or the fil
 	assert.match((readClientConfig({}, file) as { warning: string }).warning, /not valid JSON/);
 });
 
-test("registers six closed-schema tools when configured, and none inside a pi-jobs run", async (t) => {
+test("registers seven closed-schema tools when configured, and none inside a pi-jobs run", async (t) => {
 	const server = await fakeServer(t);
 	const { tools } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined });
 	assert.deepEqual([...tools.keys()].sort(), TOOLS);
@@ -265,4 +266,30 @@ test("watch commands and approval round-trip; waiting runs are approved or dismi
 	await assert.rejects(call(tools, "jobs_approve", { runId: 9, decision: "approve" }, ctx(checkout)), /isn't waiting for approval/);
 	process.env.PI_SUBAGENT_DEPTH = "1";
 	await assert.rejects(call(tools, "jobs_approve", { runId: 10, decision: "approve" }, ctx(checkout)), /not available to subagents/);
+});
+
+test("ship commands round-trip; jobs_ship needs a ship command and an interactive confirmation, even with auto-approve", async (t) => {
+	const server = await fakeServer(t);
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
+	await call(tools, "jobs_create", { name: "Release", prompt: "P" }, ctx(checkout));
+	await assert.rejects(call(tools, "jobs_ship", { runId: 9 }, ctx(checkout, { hasUI: true, ui: { confirm: async () => true } })), /has no ship command/);
+
+	const updated = await call(tools, "jobs_update", { jobId: 1, shipCommand: "scripts/ship.sh" }, ctx(checkout));
+	assert.equal(updated.structuredContent.data.job.shipCommand, "scripts/ship.sh");
+	await call(tools, "jobs_update", { jobId: 1, name: "Release 2" }, ctx(checkout));
+	assert.equal(server.received.filter((r) => r.method === "PUT").at(-1)!.body.shipCommand, "scripts/ship.sh", "updates keep it");
+	assert.match((await call(tools, "jobs_list", { jobId: 1 }, ctx(checkout))).content[0].text, /Ship command \(only when the owner ships an item/);
+
+	await assert.rejects(call(tools, "jobs_ship", { runId: 9 }, ctx(checkout)), /needs the user's confirmation in an interactive session/);
+	const prompts: string[] = [];
+	const ui = (answer: boolean) => ({ hasUI: true, ui: { confirm: async (_t: string, body: string) => { prompts.push(body); return answer; } } });
+	const declined = await call(tools, "jobs_ship", { runId: 9 }, ctx(checkout, ui(false)));
+	assert.match(declined.content[0].text, /nothing was shipped/);
+	assert.match(prompts[0]!, /scripts\/ship\.sh/);
+	assert.ok(!server.received.some((r) => r.path === "/api/runs/9/ship"));
+	const shipped = await call(tools, "jobs_ship", { runId: 9 }, ctx(checkout, ui(true)));
+	assert.equal(shipped.structuredContent.data.run.mode, "ship");
+	assert.match(shipped.content[0].text, /Run #11 of job #1 \(ship\): queued/);
+	process.env.PI_SUBAGENT_DEPTH = "1";
+	await assert.rejects(call(tools, "jobs_ship", { runId: 9 }, ctx(checkout, ui(true))), /not available to subagents/);
 });

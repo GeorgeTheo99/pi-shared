@@ -7,7 +7,8 @@ with tests" becomes a job without leaving the conversation.
 This extension is only a client. pi-jobs is a separate install that owns jobs, schedules, runs,
 worktrees and its web UI; these tools call its HTTP API with an API token. Runs happen on the
 server, in a fresh git worktree from the pushed tip of the base branch, and leave changes on a
-branch. They never merge or deploy.
+branch. They never merge or deploy by themselves: a job's `shipCommand` (the repository's own
+merge, release or deploy script) runs only when the user ships a finished item.
 
 ```javascript
 jobs_create({name:"Gateway model check", prompt:"…self-contained instructions…",
@@ -17,21 +18,28 @@ jobs_runs({runId:41})          // status, branch and the end of the log
 jobs_update({jobId:3, enabled:false})
 jobs_list({})
 jobs_approve({runId:42, decision:"approve"})   // or "dismiss"
+jobs_ship({runId:41})          // run the job's shipCommand on that item's result
 ```
 
 | Tool | Required fields | Optional fields |
 | --- | --- | --- |
 | `jobs_list` | None | `jobId` (one job, with its full instructions) |
-| `jobs_create` | `name`, `prompt` | `schedule`, `agent`, `baseRef`, `checkCommand`, `timeoutMinutes`, `webhook`, `pushBranch`, `watchCommand`, `approveRuns`, `enabled`, `repo`, `serverRepoPath` |
+| `jobs_create` | `name`, `prompt` | `schedule`, `agent`, `baseRef`, `checkCommand`, `timeoutMinutes`, `webhook`, `pushBranch`, `watchCommand`, `approveRuns`, `shipCommand`, `enabled`, `repo`, `serverRepoPath` |
 | `jobs_update` | `jobId` | Same as `jobs_create`; only given fields change |
 | `jobs_run` | `jobId` | None |
 | `jobs_runs` | None | `jobId`, `runId`, `limit`, `logChars` |
 | `jobs_approve` | `runId`, `decision` (`approve` or `dismiss`) | None |
+| `jobs_ship` | `runId` (any run of the item) | None |
 
 `watchCommand` makes each scheduled time run a command instead of the agent; every JSON line it
 prints with a new `id` starts one run with that line as the payload. With `approveRuns`, runs from
 the schedule, webhook or watch wait as `awaiting_approval` until `jobs_approve` or the UI decides.
 Both need pi-jobs 0.3.0 or later; older servers ignore them.
+
+`shipCommand` (pi-jobs 0.6.0) adds Ship: `jobs_ship` or the UI runs it in a checkout of a finished
+item's result, with `PI_JOBS_SHIP_COMMIT`, `PI_JOBS_SHIP_BRANCH`, `PI_JOBS_BASE_REF` and
+`PI_JOBS_REPO` set. It is never retried; when it fails, the item's next follow-up gives the agent
+its output. See pi-jobs' README, Ship.
 
 Deleting jobs, managing tokens and webhook tokens stay in the pi-jobs UI.
 
@@ -64,7 +72,9 @@ for its main checkout.
 
 - **Confirmation:** in interactive sessions `jobs_create`, `jobs_update`, `jobs_run` and `jobs_approve` show the
   job and act only after the user confirms. Non-interactive sessions (print mode, scripts) change
-  nothing unless `PI_JOBS_AUTO_APPROVE=1` declares their prompt trusted.
+  nothing unless `PI_JOBS_AUTO_APPROVE=1` declares their prompt trusted. `jobs_ship` always asks
+  the user in an interactive session, and is refused without one, auto-approve or not: a ship may
+  not be undoable.
 - **Not offered inside runs:** nothing is registered inside a pi-jobs run (`PI_JOBS_RUN_ID` set).
   This keeps scheduled agents from reaching for these tools; it is not a sandbox, since an
   unsandboxed agent runs as the owner and could read a token file.
