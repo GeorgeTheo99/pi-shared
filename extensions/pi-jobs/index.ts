@@ -142,6 +142,8 @@ interface Job {
 	/** Absent on servers from before agent releases (pi-jobs 0.8.0). */
 	releaseInstructions?: string | null;
 	autoRelease?: boolean;
+	/** Absent on servers from before release checks (pi-jobs 0.9.0). */
+	verifyCommand?: string | null;
 	enabled: boolean;
 	lastRun: Run | null;
 }
@@ -172,7 +174,7 @@ const jobSchema = Type.Object({
 	webhook: Type.Boolean(), timeoutMinutes: Type.Integer(), checkCommand: Type.String({ type: ["string", "null"] }),
 	pushBranch: Type.Boolean(), watchCommand: Type.String({ type: ["string", "null"] }), approveRuns: Type.Boolean(),
 	shipCommand: Type.String({ type: ["string", "null"] }), releaseInstructions: Type.String({ type: ["string", "null"] }),
-	autoRelease: Type.Boolean(),
+	autoRelease: Type.Boolean(), verifyCommand: Type.String({ type: ["string", "null"] }),
 	enabled: Type.Boolean(), lastRunStatus: Type.String({ type: ["string", "null"] }), url: Type.String(),
 }, { additionalProperties: false });
 
@@ -190,6 +192,7 @@ const jobData = (client: PiJobsClient, job: Job) => ({
 	schedule: job.schedule, nextRunAt: job.nextRunAt, webhook: job.webhookToken !== null, timeoutMinutes: job.timeoutMinutes,
 	checkCommand: job.checkCommand, pushBranch: job.pushBranch, watchCommand: job.watchCommand ?? null, approveRuns: job.approveRuns ?? false,
 	shipCommand: job.shipCommand ?? null, releaseInstructions: job.releaseInstructions ?? null, autoRelease: job.autoRelease ?? false,
+	verifyCommand: job.verifyCommand ?? null,
 	enabled: job.enabled, lastRunStatus: job.lastRun?.status ?? null,
 	url: client.link(`/jobs/${job.id}`),
 });
@@ -218,6 +221,7 @@ function jobDetail(client: PiJobsClient, job: Job): string {
 		`Check command: ${job.checkCommand ?? "none"}; timeout ${job.timeoutMinutes} min; push branch: ${job.pushBranch ? "yes" : "no"}.`,
 		...(job.watchCommand ? [`Watch command (on each scheduled time, instead of the agent): ${job.watchCommand}`] : []),
 		...(job.releaseInstructions ? [`Release instructions (the agent follows them, and may push, when ${job.autoRelease ? "a run succeeds with changes, automatically" : "the owner releases an item with jobs_ship or the UI"}):`, job.releaseInstructions] : []),
+		...(job.verifyCommand ? [`Verify command (must pass after a release): ${job.verifyCommand}`] : []),
 		...(job.shipCommand ? [`Ship command (${job.autoRelease ? "runs automatically when a run succeeds with changes" : "only when the owner releases an item, with jobs_ship or the UI"}): ${job.shipCommand}`] : []),
 		...(job.webhookToken ? [`Webhook: POST ${client.link(job.webhookPath)} with "Authorization: Bearer <job webhook token>" (shown on the job page).`] : []),
 		"Instructions:",
@@ -230,6 +234,31 @@ function runLine(client: PiJobsClient, run: Run): string {
 	const check = run.checkStatus ? `, check ${run.checkStatus}` : "";
 	const kind = run.mode === "ship" ? "ship" : run.mode === "release" ? `release, ${run.agent}` : `${run.trigger}, ${run.agent}`;
 	return `Run #${run.id} of job #${run.jobId} (${kind}): ${run.status}${check}${outcome ? `; ${outcome}` : ""}. ${client.link(`/runs/${run.id}`)}`;
+}
+
+/** What a release would release (pi-jobs 0.9.0's release preview). */
+interface ReleasePreview {
+	head: string;
+	headLabel: string;
+	base: string;
+	ahead: number;
+	behind: number;
+	conflicts: boolean;
+	files: number;
+	additions: number;
+	deletions: number;
+	checkCommand: string | null;
+	checkStatus: string | null;
+	verifyCommand: string | null;
+}
+
+function previewLines(preview: ReleasePreview): string[] {
+	const check = preview.checkStatus ? `check ${preview.checkStatus}` : preview.checkCommand ? "check didn't run" : "no check configured";
+	const base = preview.behind === 0 ? `up to date with ${preview.base}` : `${preview.base} has ${preview.behind} newer commit(s); ${preview.conflicts ? "it CONFLICTS with them" : "merges cleanly"}`;
+	return [
+		`Releases ${preview.head.slice(0, 12)} (${preview.headLabel}): ${preview.ahead} commit(s), ${preview.files} file(s), +${preview.additions} -${preview.deletions}`,
+		`Base: ${base}; ${check}${preview.verifyCommand ? `; then verifies with: ${preview.verifyCommand}` : ""}`,
+	];
 }
 
 /** Delegated subagents may read jobs but never change or start them. */
@@ -274,7 +303,8 @@ const jobFields = {
 	approveRuns: Type.Optional(Type.Boolean({ description: "Runs from the schedule, webhook or watch wait as Needs approval until approved with jobs_approve or in the UI. Manual runs start right away." })),
 	shipCommand: Type.Optional(Type.String({ description: "The repository's own merge/release/deploy command, e.g. \"scripts/ship.sh\". It runs only when the owner ships a finished item (jobs_ship or Ship in the UI), in a checkout of the item's result with PI_JOBS_SHIP_COMMIT, PI_JOBS_SHIP_BRANCH, PI_JOBS_BASE_REF and PI_JOBS_REPO set; it should fail closed before anything irreversible. Empty string removes it. Needs pi-jobs 0.6.0." })),
 	releaseInstructions: Type.Optional(Type.String({ description: "How the job's agent releases a finished item when the owner approves it (jobs_ship or Approve & release in the UI): in that run only it may merge, push, deploy and publish. Say how the repository releases, or point to its AGENTS.md, e.g. \"Release the way AGENTS.md says, then check /api/health\". Use this or shipCommand, not both. Empty string removes it. Needs pi-jobs 0.8.0." })),
-	autoRelease: Type.Optional(Type.Boolean({ description: "Release every run that succeeds with changes at once, without the owner's approval. Needs releaseInstructions or shipCommand. Default off. Needs pi-jobs 0.8.0." })),
+	autoRelease: Type.Optional(Type.Boolean({ description: "Release a run at once, without the owner's approval, when its check passed and its report says the work was implemented or fixed. Needs releaseInstructions or shipCommand, and a checkCommand (pi-jobs 0.9.0). Default off." })),
+	verifyCommand: Type.Optional(Type.String({ description: "Shell command run after a release (a health check, say); the release fails unless it exits 0. Needs releaseInstructions or shipCommand. Empty string removes it. Needs pi-jobs 0.9.0." })),
 	enabled: Type.Optional(Type.Boolean({ description: "false pauses the schedule, webhook and watch." })),
 	repo: Type.Optional(Type.String({ description: "Local checkout the job is for. Default: the session's working directory." })),
 	serverRepoPath: Type.Optional(Type.String({ description: "Absolute path of the checkout on the pi-jobs server. Only needed when the server can't match repo by its git remotes." })),
@@ -283,7 +313,7 @@ const jobFields = {
 interface JobChanges {
 	name?: string; prompt?: string; schedule?: string; agent?: string; baseRef?: string; checkCommand?: string;
 	timeoutMinutes?: number; webhook?: boolean; pushBranch?: boolean; watchCommand?: string; approveRuns?: boolean; shipCommand?: string;
-	releaseInstructions?: string; autoRelease?: boolean; enabled?: boolean;
+	releaseInstructions?: string; autoRelease?: boolean; verifyCommand?: string; enabled?: boolean;
 	repo?: string; serverRepoPath?: string;
 }
 
@@ -307,6 +337,7 @@ async function buildDraft(client: PiJobsClient, ctx: ExtensionContext, changes: 
 		shipCommand: changes.shipCommand ?? existing?.shipCommand ?? "",
 		releaseInstructions: changes.releaseInstructions ?? existing?.releaseInstructions ?? "",
 		autoRelease: changes.autoRelease ?? existing?.autoRelease ?? false,
+		verifyCommand: changes.verifyCommand ?? existing?.verifyCommand ?? "",
 		enabled: changes.enabled ?? existing?.enabled ?? true,
 	};
 }
@@ -445,11 +476,16 @@ export default function piJobs(pi: ExtensionAPI) {
 			const how = job.releaseInstructions
 				? `The job's agent (${job.effectiveAgent}) follows its release instructions:\n${job.releaseInstructions}`
 				: `Runs:\n${job.shipCommand}`;
-			const summary = `${runLine(client, run)}\n\nOn this item's newest result, as the server's owner, with their credentials. ${how}\n\nIt may merge, push, deploy or publish, and may not be undoable.`;
+			// pi-jobs 0.9.0 says exactly what would go out, and refuses if the item moves on before it starts.
+			const preview: ReleasePreview | null = await client.request("GET", `/api/runs/${run.id}/release-preview`, undefined, signal).catch(() => null);
+			const facts = preview ? `\n\n${previewLines(preview).join("\n")}` : "";
+			const summary = `${runLine(client, run)}${facts}\n\nOn this item's newest result, as the server's owner, with their credentials. ${how}\n\nIt may merge, push, deploy or publish, and may not be undoable.`;
 			if (!(await ctx.ui.confirm(`Release pi-jobs job #${job.id}'s item?`, summary))) {
-				return { content: text("The user declined; nothing was shipped."), details: {} };
+				return { content: text("The user declined; nothing was released."), details: {} };
 			}
-			const shipped: Run = await client.request("POST", `/api/runs/${run.id}/ship`, {}, signal);
+			const shipped: Run = preview
+				? await client.request("POST", `/api/runs/${run.id}/release`, { expectedHead: preview.head }, signal)
+				: await client.request("POST", `/api/runs/${run.id}/ship`, {}, signal);
 			return { content: text(`Started ${shipped.mode === "release" ? "release" : "ship"} run #${shipped.id}.\n${fence(runLine(client, shipped))}`), details: { run: runData(client, shipped) } };
 		},
 	})), Type.Object({ run: Type.Optional(runSchema) }, { additionalProperties: false }), (result) => ({ data: result.details })));

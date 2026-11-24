@@ -17,7 +17,7 @@ const TOOLS = ["jobs_approve", "jobs_create", "jobs_list", "jobs_run", "jobs_run
 interface Received { method: string; path: string; body: any }
 
 /** A minimal pi-jobs server: records requests and answers from canned state. */
-async function fakeServer(t: any, options: { apiVersion?: number } = {}) {
+async function fakeServer(t: any, options: { apiVersion?: number; preview?: boolean } = {}) {
 	const received: Received[] = [];
 	const jobs = new Map<number, any>();
 	const job = (id: number, draft: any) => ({
@@ -56,9 +56,13 @@ async function fakeServer(t: any, options: { apiVersion?: number } = {}) {
 		if (url.pathname === "/api/runs/10" && req.method === "GET") return send(200, waiting);
 		if (url.pathname === "/api/runs/10/approve") return send(200, { ...waiting, status: "queued" });
 		if (url.pathname === "/api/runs/10/cancel") return send(200, { ...waiting, status: "canceled" });
-		if (url.pathname === "/api/runs/9/ship") {
+		if (url.pathname === "/api/runs/9/ship" || url.pathname === "/api/runs/9/release") {
 			const releases = Boolean(jobs.get(1)?.releaseInstructions);
 			return send(200, { ...run, id: 11, status: "queued", mode: releases ? "release" : "ship", followUpOf: 9 });
+		}
+		// Servers from 0.9.0 preview a release; older ones don't have the route.
+		if (url.pathname === "/api/runs/9/release-preview" && options.preview) {
+			return send(200, { head: "a".repeat(40), headLabel: "run #9", base: "origin/main", ahead: 1, behind: 2, conflicts: false, files: 3, additions: 5, deletions: 1, checkCommand: null, checkStatus: null, verifyCommand: "curl -f localhost" });
 		}
 		if (url.pathname === "/api/runs/9/log") return send(200, { text: "[pi-jobs] Finished: succeeded\n", offset: 30, size: 30, done: true });
 		if (url.pathname === "/api/repos/resolve") return send(200, { path: "/server/local_code/demo" });
@@ -287,7 +291,7 @@ test("ship commands round-trip; jobs_ship needs a ship command and an interactiv
 	const prompts: string[] = [];
 	const ui = (answer: boolean) => ({ hasUI: true, ui: { confirm: async (_t: string, body: string) => { prompts.push(body); return answer; } } });
 	const declined = await call(tools, "jobs_ship", { runId: 9 }, ctx(checkout, ui(false)));
-	assert.match(declined.content[0].text, /nothing was shipped/);
+	assert.match(declined.content[0].text, /nothing was released/);
 	assert.match(prompts[0]!, /scripts\/ship\.sh/);
 	assert.ok(!server.received.some((r) => r.path === "/api/runs/9/ship"));
 	const shipped = await call(tools, "jobs_ship", { runId: 9 }, ctx(checkout, ui(true)));
@@ -316,4 +320,17 @@ test("release instructions, autoRelease and added agents round-trip; jobs_ship h
 	assert.equal(shipped.structuredContent.data.run.mode, "release");
 	assert.match(shipped.content[0].text, /Started release run #11/);
 	assert.match(shipped.content[0].text, /\(release, pi\): queued/);
+});
+
+test("jobs_ship on pi-jobs 0.9.0 shows the release preview and pins the release to its commit; verifyCommand round-trips", async (t) => {
+	const server = await fakeServer(t, { preview: true });
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
+	const created = await call(tools, "jobs_create", { name: "Triage", prompt: "P", releaseInstructions: "Release it", verifyCommand: "curl -f localhost" }, ctx(checkout));
+	assert.equal(created.structuredContent.data.job.verifyCommand, "curl -f localhost");
+	const prompts: string[] = [];
+	await call(tools, "jobs_ship", { runId: 9 }, ctx(checkout, { hasUI: true, ui: { confirm: async (_t: string, body: string) => { prompts.push(body); return true; } } }));
+	assert.match(prompts[0]!, /Releases aaaaaaaaaaaa \(run #9\): 1 commit\(s\), 3 file\(s\), \+5 -1/);
+	assert.match(prompts[0]!, /origin\/main has 2 newer commit\(s\); merges cleanly; no check configured; then verifies with: curl -f localhost/);
+	const posted = server.received.find((r) => r.path === "/api/runs/9/release")!;
+	assert.deepEqual(posted.body, { expectedHead: "a".repeat(40) });
 });

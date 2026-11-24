@@ -49,6 +49,12 @@ publish. `autoRelease` releases every run that succeeds with changes without ask
 `pi`, `claude`, `codex` or any agent added in the server's Settings, such as a Pi launcher with its
 own model (`pi-claude`). Older servers ignore the new fields.
 
+With pi-jobs 0.9.0, `jobs_ship` shows what the release would release (commit, size, how far the
+base branch moved and whether it merges cleanly, the check) in its confirmation and pins the
+release to that commit, so a follow-up that lands meanwhile makes it refuse. `verifyCommand` runs
+after a release and must pass; `autoRelease` then also needs a `checkCommand`, and releases only
+runs whose check passed and whose report says implemented or fixed.
+
 Deleting jobs, managing tokens and webhook tokens stay in the pi-jobs UI.
 
 ## Configuration
