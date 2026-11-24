@@ -6,6 +6,8 @@ Use it when the assistant needs a user decision, or a step only the user can per
 
 The dialog is the only part of the turn the user is sure to see: model reasoning and tool output are hidden, and most tool calls arrive without accompanying text. A call therefore has to stand alone. When it asks the user to run, do, or approve something, the exact commands or steps go in `details`, which is shown under the question and stays in the transcript after the dialog closes.
 
+The dialog has to fit on screen, or the terminal redraw glitches. A call whose question, details and custom prompt together exceed 12 lines or 800 characters is refused without showing anything, and the model is told to write the explanation as a normal reply ending with `Reply "proceed" (with any adjustments) when you want me to do this.` instead.
+
 ## Tool
 
 `ask_user`

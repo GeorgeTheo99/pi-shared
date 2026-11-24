@@ -117,3 +117,26 @@ test("ask_user leaves the details in the transcript after the dialog closes", ()
     "ask_user Did the sshd check pass?\n  sudo sshd -t\n  Expected: no output\n  Options: 1. Yes, 2. No",
   );
 });
+
+test("ask_user refuses a dialog too long for the screen and points the model to a chat reply", async () => {
+  let opened = false;
+  const open = async () => {
+    opened = true;
+    return "Yes";
+  };
+  const longDetails = Array.from({ length: 20 }, (_, index) => `Step ${index + 1}: change something`).join("\n");
+
+  for (const params of [
+    { question: "Apply this plan?", details: longDetails, options: ["Yes", "No"] },
+    { question: "Apply this plan?", details: "x".repeat(900), options: ["Yes", "No"] },
+  ]) {
+    const result = await runAskUser(params, { select: open, input: open });
+    assert.equal(result.details.error, "question too long for a dialog");
+    assert.match(result.content[0].text, /Reply "proceed"/);
+  }
+  assert.equal(opened, false);
+
+  const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+  const rendered = registerAskUser().renderCall({ question: "Apply this plan?", details: longDetails }, theme);
+  assert.equal(rendered.text, "ask_user Apply this plan?\n  (too long for a dialog; not shown)");
+});

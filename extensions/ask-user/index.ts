@@ -4,6 +4,10 @@ import { Text } from "@earendil-works/pi-tui";
 
 const MAX_OPTIONS = 12;
 const CUSTOM_OPTION_BASE_LABEL = "✎ Type something else";
+// A dialog taller than the terminal makes the TUI redraw glitch, so longer explanations belong in chat.
+const MAX_DIALOG_LINES = 12;
+const MAX_DIALOG_CHARS = 800;
+const LONG_DIALOG_ERROR = `The question, details and custom prompt together exceed ${MAX_DIALOG_LINES} lines or ${MAX_DIALOG_CHARS} characters, which is too long for a dialog`;
 
 interface AskUserDetails {
 	question: string;
@@ -31,6 +35,10 @@ function dialogText(...parts: (string | undefined)[]): string {
 	return parts.filter(Boolean).join("\n\n");
 }
 
+function isTooLong(text: string): boolean {
+	return text.length > MAX_DIALOG_CHARS || text.split("\n").length > MAX_DIALOG_LINES;
+}
+
 function textResult(text: string, details: AskUserDetails) {
 	return {
 		content: [{ type: "text" as const, text }],
@@ -51,12 +59,13 @@ const askUserTool = defineTool({
 	name: "ask_user",
 	label: "Ask User",
 	description:
-		"Ask the user an interactive multiple-choice question and return their answer. Use only when progress is blocked by a necessary user decision, preference, missing fact, or approval, or by a step only the user can perform. The user sees only this call's question, details, and options, never your reasoning or tool output, so the call must stand alone: when it asks the user to run, do, or approve something, put the exact commands or steps in details. If the user declines, dismisses, or times out the prompt, the agent loop is aborted and control is returned to the user — the agent must wait for the user's next message and must NEVER assume an answer or continue the prior task.",
+		`Ask the user an interactive multiple-choice question and return their answer. Use only when progress is blocked by a necessary user decision, preference, missing fact, or approval, or by a step only the user can perform. The user sees only this call's question, details, and options, never your reasoning or tool output, so the call must stand alone: when it asks the user to run, do, or approve something, put the exact commands or steps in details. Keep the dialog short (at most ${MAX_DIALOG_LINES} lines and ${MAX_DIALOG_CHARS} characters across question, details and custom_prompt): when the user needs a longer explanation, write it as your normal reply and end the turn by asking them to reply "proceed", with any adjustments, instead of calling this tool. If the user declines, dismisses, or times out the prompt, the agent loop is aborted and control is returned to the user — the agent must wait for the user's next message and must NEVER assume an answer or continue the prior task.`,
 	promptSnippet: "ask_user to ask the user a structured question with selectable options",
 	promptGuidelines: [
 		"Use ask_user when you genuinely need a user decision to proceed and the choices can be made explicit.",
 		"Use ask_user for irreversible tradeoffs, or for product/design decisions where you have no defensible recommendation. For a reversible choice with a clear recommendation, take it and keep working instead of asking.",
 		"Do not use ask_user for routine status updates, rhetorical questions, or information you can safely discover with available tools.",
+		`Keep ask_user dialogs short: at most ${MAX_DIALOG_LINES} lines and ${MAX_DIALOG_CHARS} characters across question, details and custom_prompt, or the call is refused. When a decision needs a substantial explanation (a plan, tradeoffs, several commands), do not call ask_user: write the explanation as your normal reply and end it with "Reply \"proceed\" (with any adjustments) when you want me to do this.", then end the turn.`,
 		"Provide concise, mutually exclusive options. Include a safe/cancel/no-op option when relevant.",
 		"The user sees only the ask_user dialog, not your reasoning or tool output. When the question asks the user to run, do, or approve something, write the exact commands or steps in details. Never ask whether the user ran \"it\" or wants \"this\" run when the call does not spell out what that is.",
 		"If the user dismisses or times out an ask_user prompt, the agent loop is aborted automatically. Do not assume a default answer, do not pick an option on the user's behalf, and do not continue the prior task. Wait for the user's next message before doing anything.",
@@ -68,7 +77,7 @@ const askUserTool = defineTool({
 		}),
 		details: Type.Optional(
 			Type.String({
-				description: "Shown verbatim under the question. Required when the user must run, do, or approve something: the exact commands (one per line, each on a single line where possible), where to run them, and the result to expect; or the exact command or change being approved.",
+				description: "Shown verbatim under the question. Required when the user must run, do, or approve something: the exact commands (one per line, each on a single line where possible), where to run them, and the result to expect; or the exact command or change being approved. Keep it short; a longer explanation belongs in a chat reply that ends by asking the user to reply \"proceed\".",
 			}),
 		),
 		options: Type.Optional(
@@ -129,6 +138,13 @@ const askUserTool = defineTool({
 				...baseDetails,
 				error: "question is required",
 			});
+		}
+
+		if (isTooLong(inputPrompt)) {
+			return textResult(
+				`Error: ${LONG_DIALOG_ERROR}. Nothing was shown to the user. Write the explanation as your normal reply instead, end it with "Reply \"proceed\" (with any adjustments) when you want me to do this.", and end the turn without calling ask_user.`,
+				{ ...baseDetails, error: "question too long for a dialog" },
+			);
 		}
 
 		if (!ctx.hasUI) {
@@ -201,7 +217,12 @@ const askUserTool = defineTool({
 		const lines = [theme.fg("toolTitle", theme.bold("ask_user ")) + theme.fg("muted", args.question ?? "")];
 		// Keeps the commands or steps in the transcript after the dialog closes.
 		const detailsText = args.details?.trim();
-		if (detailsText) lines.push(...detailsText.split("\n").map((line) => `  ${line}`));
+		if (detailsText) {
+			// execute refuses an over-long dialog and the model re-sends it as a chat reply, so don't print it twice.
+			const tooLong = isTooLong(dialogText(args.question?.trim(), detailsText, args.custom_prompt?.trim()));
+			if (tooLong) lines.push(theme.fg("dim", "  (too long for a dialog; not shown)"));
+			else lines.push(...detailsText.split("\n").map((line) => `  ${line}`));
+		}
 		if (options.length) {
 			lines.push(theme.fg("dim", `  Options: ${options.map((option, index) => `${index + 1}. ${option}`).join(", ")}`));
 		}
