@@ -56,7 +56,10 @@ async function fakeServer(t: any, options: { apiVersion?: number } = {}) {
 		if (url.pathname === "/api/runs/10" && req.method === "GET") return send(200, waiting);
 		if (url.pathname === "/api/runs/10/approve") return send(200, { ...waiting, status: "queued" });
 		if (url.pathname === "/api/runs/10/cancel") return send(200, { ...waiting, status: "canceled" });
-		if (url.pathname === "/api/runs/9/ship") return send(200, { ...run, id: 11, status: "queued", mode: "ship", followUpOf: 9 });
+		if (url.pathname === "/api/runs/9/ship") {
+			const releases = Boolean(jobs.get(1)?.releaseInstructions);
+			return send(200, { ...run, id: 11, status: "queued", mode: releases ? "release" : "ship", followUpOf: 9 });
+		}
 		if (url.pathname === "/api/runs/9/log") return send(200, { text: "[pi-jobs] Finished: succeeded\n", offset: 30, size: 30, done: true });
 		if (url.pathname === "/api/repos/resolve") return send(200, { path: "/server/local_code/demo" });
 		send(404, { error: "Not found" });
@@ -272,13 +275,13 @@ test("ship commands round-trip; jobs_ship needs a ship command and an interactiv
 	const server = await fakeServer(t);
 	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
 	await call(tools, "jobs_create", { name: "Release", prompt: "P" }, ctx(checkout));
-	await assert.rejects(call(tools, "jobs_ship", { runId: 9 }, ctx(checkout, { hasUI: true, ui: { confirm: async () => true } })), /has no ship command/);
+	await assert.rejects(call(tools, "jobs_ship", { runId: 9 }, ctx(checkout, { hasUI: true, ui: { confirm: async () => true } })), /has no release instructions or ship command/);
 
 	const updated = await call(tools, "jobs_update", { jobId: 1, shipCommand: "scripts/ship.sh" }, ctx(checkout));
 	assert.equal(updated.structuredContent.data.job.shipCommand, "scripts/ship.sh");
 	await call(tools, "jobs_update", { jobId: 1, name: "Release 2" }, ctx(checkout));
 	assert.equal(server.received.filter((r) => r.method === "PUT").at(-1)!.body.shipCommand, "scripts/ship.sh", "updates keep it");
-	assert.match((await call(tools, "jobs_list", { jobId: 1 }, ctx(checkout))).content[0].text, /Ship command \(only when the owner ships an item/);
+	assert.match((await call(tools, "jobs_list", { jobId: 1 }, ctx(checkout))).content[0].text, /Ship command \(only when the owner releases an item/);
 
 	await assert.rejects(call(tools, "jobs_ship", { runId: 9 }, ctx(checkout)), /needs the user's confirmation in an interactive session/);
 	const prompts: string[] = [];
@@ -292,4 +295,25 @@ test("ship commands round-trip; jobs_ship needs a ship command and an interactiv
 	assert.match(shipped.content[0].text, /Run #11 of job #1 \(ship\): queued/);
 	process.env.PI_SUBAGENT_DEPTH = "1";
 	await assert.rejects(call(tools, "jobs_ship", { runId: 9 }, ctx(checkout, ui(true))), /not available to subagents/);
+});
+
+test("release instructions, autoRelease and added agents round-trip; jobs_ship has the agent release", async (t) => {
+	const server = await fakeServer(t);
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
+	const created = await call(tools, "jobs_create", { name: "Triage", prompt: "P", agent: "pi-claude", releaseInstructions: "Release the way AGENTS.md says.", autoRelease: true }, ctx(checkout));
+	const job = created.structuredContent.data.job;
+	assert.deepEqual([job.agent, job.releaseInstructions, job.autoRelease], ["pi-claude", "Release the way AGENTS.md says.", true]);
+	await call(tools, "jobs_update", { jobId: 1, name: "Triage 2" }, ctx(checkout));
+	const put = server.received.filter((r) => r.method === "PUT").at(-1)!.body;
+	assert.deepEqual([put.agent, put.releaseInstructions, put.autoRelease], ["pi-claude", "Release the way AGENTS.md says.", true], "updates keep them");
+	const listed = (await call(tools, "jobs_list", { jobId: 1 }, ctx(checkout))).content[0].text;
+	assert.match(listed, /pi-claude, manual only, releases automatically/);
+	assert.match(listed, /Release instructions \(the agent follows them, and may push, when a run succeeds with changes, automatically\):\nRelease the way AGENTS\.md says\./);
+
+	const prompts: string[] = [];
+	const shipped = await call(tools, "jobs_ship", { runId: 9 }, ctx(checkout, { hasUI: true, ui: { confirm: async (_t: string, body: string) => { prompts.push(body); return true; } } }));
+	assert.match(prompts[0]!, /The job's agent \(pi-claude\) follows its release instructions:\nRelease the way AGENTS\.md says\./);
+	assert.equal(shipped.structuredContent.data.run.mode, "release");
+	assert.match(shipped.content[0].text, /Started release run #11/);
+	assert.match(shipped.content[0].text, /\(release, pi\): queued/);
 });

@@ -7,8 +7,10 @@ with tests" becomes a job without leaving the conversation.
 This extension is only a client. pi-jobs is a separate install that owns jobs, schedules, runs,
 worktrees and its web UI; these tools call its HTTP API with an API token. Runs happen on the
 server, in a fresh git worktree from the pushed tip of the base branch, and leave changes on a
-branch. They never merge or deploy by themselves: a job's `shipCommand` (the repository's own
-merge, release or deploy script) runs only when the user ships a finished item.
+branch, like a pull request. They never merge or deploy by themselves: a finished item is
+released only when the user approves it (`jobs_ship` or **Approve & release** in the UI), by the
+job's agent following its `releaseInstructions` or by its `shipCommand` script, unless the job
+has `autoRelease`.
 
 ```javascript
 jobs_create({name:"Gateway model check", prompt:"…self-contained instructions…",
@@ -18,13 +20,13 @@ jobs_runs({runId:41})          // status, branch and the end of the log
 jobs_update({jobId:3, enabled:false})
 jobs_list({})
 jobs_approve({runId:42, decision:"approve"})   // or "dismiss"
-jobs_ship({runId:41})          // run the job's shipCommand on that item's result
+jobs_ship({runId:41})          // release that item's result (releaseInstructions or shipCommand)
 ```
 
 | Tool | Required fields | Optional fields |
 | --- | --- | --- |
 | `jobs_list` | None | `jobId` (one job, with its full instructions) |
-| `jobs_create` | `name`, `prompt` | `schedule`, `agent`, `baseRef`, `checkCommand`, `timeoutMinutes`, `webhook`, `pushBranch`, `watchCommand`, `approveRuns`, `shipCommand`, `enabled`, `repo`, `serverRepoPath` |
+| `jobs_create` | `name`, `prompt` | `schedule`, `agent`, `baseRef`, `checkCommand`, `timeoutMinutes`, `webhook`, `pushBranch`, `watchCommand`, `approveRuns`, `shipCommand`, `releaseInstructions`, `autoRelease`, `enabled`, `repo`, `serverRepoPath` |
 | `jobs_update` | `jobId` | Same as `jobs_create`; only given fields change |
 | `jobs_run` | `jobId` | None |
 | `jobs_runs` | None | `jobId`, `runId`, `limit`, `logChars` |
@@ -39,7 +41,13 @@ Both need pi-jobs 0.3.0 or later; older servers ignore them.
 `shipCommand` (pi-jobs 0.6.0) adds Ship: `jobs_ship` or the UI runs it in a checkout of a finished
 item's result, with `PI_JOBS_SHIP_COMMIT`, `PI_JOBS_SHIP_BRANCH`, `PI_JOBS_BASE_REF` and
 `PI_JOBS_REPO` set. It is never retried; when it fails, the item's next follow-up gives the agent
-its output. See pi-jobs' README, Ship.
+its output. See pi-jobs' README, Release.
+
+`releaseInstructions` (pi-jobs 0.8.0, instead of `shipCommand`) has the job's agent release the
+item: it continues the item's conversation and, in that run only, may merge, push, deploy and
+publish. `autoRelease` releases every run that succeeds with changes without asking. `agent` takes
+`pi`, `claude`, `codex` or any agent added in the server's Settings, such as a Pi launcher with its
+own model (`pi-claude`). Older servers ignore the new fields.
 
 Deleting jobs, managing tokens and webhook tokens stay in the pi-jobs UI.
 
