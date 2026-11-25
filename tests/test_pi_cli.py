@@ -82,7 +82,7 @@ def invocation(result):
 
 
 def test_models_command_capability_matches_supported_interface(machine):
-    assert json.loads((ROOT / "lib/pi-launcher-capabilities.json").read_text()) == {"modelsCommand": 1}
+    assert json.loads((ROOT / "lib/pi-launcher-capabilities.json").read_text()) == {"modelsCommand": 1, "directShortcutErrors": 1}
     assert render(machine, "--direct-launchers").returncode == 0
     result = launch(machine, "models", "--direct", "--json", upstream=False)
     assert result.returncode == 0, result.stderr
@@ -148,6 +148,18 @@ def test_unknown_positional_prompt_passes_through_unchanged(machine):
     assert render(machine).returncode == 0
     inv = invocation(launch(machine, "explain this file"))
     assert inv["argv"] == ["explain this file"]
+
+
+@pytest.mark.parametrize("shortcut", ["openai", "anthropic"])
+@pytest.mark.parametrize("args", [("do not send this",), ("-p", "do not send this", "--export", "")])
+def test_disabled_direct_shortcut_is_not_a_literal_prompt(machine, shortcut, args):
+    assert render(machine, "--no-direct-launchers").returncode == 0
+    result = launch(machine, shortcut, *args)
+    assert result.returncode == 1
+    assert f"pi {shortcut} is unavailable" in result.stderr
+    assert "pi models --direct" in result.stderr
+    assert not result.stdout
+    assert invocation(launch(machine, "--", shortcut))["argv"] == ["--", shortcut]
 
 
 def test_double_dash_literal_bypasses_alias_resolution(machine):
