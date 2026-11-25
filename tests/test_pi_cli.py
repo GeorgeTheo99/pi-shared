@@ -151,9 +151,10 @@ def test_unknown_positional_prompt_passes_through_unchanged(machine):
 
 
 @pytest.mark.parametrize("shortcut", ["openai", "anthropic"])
-def test_disabled_direct_shortcut_is_not_a_literal_prompt(machine, shortcut):
+@pytest.mark.parametrize("args", [("do not send this",), ("-p", "do not send this", "--export", "")])
+def test_disabled_direct_shortcut_is_not_a_literal_prompt(machine, shortcut, args):
     assert render(machine, "--no-direct-launchers").returncode == 0
-    result = launch(machine, shortcut, "do not send this")
+    result = launch(machine, shortcut, *args)
     assert result.returncode == 1
     assert f"pi {shortcut} is unavailable" in result.stderr
     assert "pi models --direct" in result.stderr
