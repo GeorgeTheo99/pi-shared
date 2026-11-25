@@ -82,7 +82,7 @@ def invocation(result):
 
 
 def test_models_command_capability_matches_supported_interface(machine):
-    assert json.loads((ROOT / "lib/pi-launcher-capabilities.json").read_text()) == {"modelsCommand": 1}
+    assert json.loads((ROOT / "lib/pi-launcher-capabilities.json").read_text()) == {"modelsCommand": 1, "directShortcutErrors": 1}
     assert render(machine, "--direct-launchers").returncode == 0
     result = launch(machine, "models", "--direct", "--json", upstream=False)
     assert result.returncode == 0, result.stderr
