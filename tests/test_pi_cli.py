@@ -150,6 +150,17 @@ def test_unknown_positional_prompt_passes_through_unchanged(machine):
     assert inv["argv"] == ["explain this file"]
 
 
+@pytest.mark.parametrize("shortcut", ["openai", "anthropic"])
+def test_disabled_direct_shortcut_is_not_a_literal_prompt(machine, shortcut):
+    assert render(machine, "--no-direct-launchers").returncode == 0
+    result = launch(machine, shortcut, "do not send this")
+    assert result.returncode == 1
+    assert f"pi {shortcut} is unavailable" in result.stderr
+    assert "pi models --direct" in result.stderr
+    assert not result.stdout
+    assert invocation(launch(machine, "--", shortcut))["argv"] == ["--", shortcut]
+
+
 def test_double_dash_literal_bypasses_alias_resolution(machine):
     assert render(machine).returncode == 0
     inv = invocation(launch(machine, "--", "test"))

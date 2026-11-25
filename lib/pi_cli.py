@@ -739,6 +739,9 @@ def main(argv=None):
                 if route is None and (model := removed_claude_shortcut(config, argv[0])) is not None:
                     raise ValueError(f"'{argv[0]}' is not available: Claude runs only through claude-bridge here; "
                                      f"use pi --model claude-bridge/{model or '<model>'} (or pi -- {argv[0]} for a literal prompt)")
+        if not utility and not literal and route is None and argv and argv[0] in ("openai", "anthropic"):
+            raise ValueError(f"pi {argv[0]} is unavailable; check pi models --direct or run "
+                             f"pi-shared setup to enable direct shortcuts. For a literal prompt, use pi -- {argv[0]}")
         save = route is not None and argv[1:] == ["--default"]
         if route:
             alias = argv.pop(0)
