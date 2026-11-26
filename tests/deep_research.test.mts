@@ -117,6 +117,15 @@ test("one gap-driven round is bounded and shares source/fetch budgets", async ()
   assert.ok(bundle.fetchAttempts <= 5);
   assert.ok(bundle.sources.filter(s => s.fetched).every(s => s.contentHash && s.retrievedAt));
 });
+test("every search carries the research question as its objective", async () => {
+  const objectives = new Set<unknown>();
+  await runResearch(options({ depth: "quick", fetchCount: 0 }), undefined, undefined, { call: broker((name, args, opts) => {
+    if (name === "web_search") objectives.add(args.objective);
+    return healthy([], name, args, opts);
+  }) });
+  assert.deepEqual([...objectives], ["solar energy storage safety"]);
+});
+
 test("zero fetch means no page calls, even across follow-ups", async () => {
   const bundle = await runResearch(options({ fetchCount: 0 }), undefined, undefined, { call: broker((name, args, opts) => {
     assert.equal(name, "web_search"); return healthy([], name, args, opts);

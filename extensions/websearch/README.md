@@ -2,9 +2,9 @@
 
 Shared Pi extension that provides `web_search` and `web_fetch` through the local-search MCP broker.
 
-- `web_search` calls the broker tool `web_search(query, num_results)`.
+- `web_search` calls the broker tool `web_search(query, num_results)`, adding `objective` when the model supplies one.
 - `web_fetch` calls the broker tool `web_fetch(url, max_chars)`.
-- The broker is the stable entry point and owns backend strategy. The standalone `local_web_search` service uses Brave Search and direct-first page retrieval with optional Decodo/Jina recovery; SearXNG is retired there.
+- The broker is the stable entry point and owns backend strategy. The standalone `local_web_search` service uses Brave Search or Parallel and direct-first page retrieval with optional Decodo/Jina recovery; SearXNG is retired there.
 - Pi clients do **not** fall back directly to search providers. If the broker is down, the tool reports a broker error so reliability issues are fixed at the shared entry point instead of bypassed.
 - For low-risk, reversible local actions, treat strong `web_search` results as execution hints: try the most plausible fix or workflow quickly, verify it directly, and only escalate to deeper research if that concrete path fails.
 
@@ -23,8 +23,13 @@ a different backend, point `websearchMcpUrl` at a compatible broker instead.
 
 This extension does **not** install or run local-search. Using these tools requires a reachable MCP broker exposing the following JSON-RPC tools; unrelated Pi features remain usable without it:
 
-- `web_search(query: str, num_results: int = 8)`
+- `web_search(query: str, num_results: int = 8)`, optionally accepting `objective: str`
 - `web_fetch(url: str, max_chars: int = 20000)`
+
+`objective` is a plain-language goal that goal-aware providers (Parallel in
+`local_web_search`) rank against; `deep_research` sends its question as the
+objective of every search. A broker that rejects the argument as an unexpected
+keyword gets the call again without it, so brokers without `objective` keep working.
 
 Recommended local URL: `http://127.0.0.1:8889/mcp`.
 

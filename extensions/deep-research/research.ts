@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
-  mcpToolCall, readConfiguredMcpUrls, throwIfCallerAborted,
+  mcpToolCall, readConfiguredMcpUrls, throwIfCallerAborted, webSearchCall,
   WEB_FETCH_TIMEOUT_MS, WEB_SEARCH_TIMEOUT_MS,
 } from "../_shared/mcp-client.js";
 
@@ -263,7 +263,9 @@ export async function runResearch(
       const start = Date.now();
       let endpoint: string | undefined;
       try {
-        const result = await call(endpoints, "web_search", { query, num_results: perQueryLimit }, { signal, timeoutMs: WEB_SEARCH_TIMEOUT_MS, requestId: `research-${randomUUID()}` });
+        // Every facet query serves the same question, which goal-aware providers rank against.
+        const result = await webSearchCall(endpoints, { query, num_results: perQueryLimit, objective: options.question },
+          { signal, timeoutMs: WEB_SEARCH_TIMEOUT_MS, requestId: `research-${randomUUID()}` }, call);
         endpoint = result.endpointUrl;
         if (!result.text) throw new Error(result.error ?? "Search returned no text");
         const data = JSON.parse(result.text);

@@ -14,6 +14,8 @@ import {
 	resolveConfiguredMcpUrls,
 	WEB_FETCH_TIMEOUT_MS,
 	WEB_SEARCH_TIMEOUT_MS,
+	webSearchCall,
+	MAX_SEARCH_OBJECTIVE_CHARS,
 } from "../extensions/_shared/mcp-client.ts";
 
 test("broker errors redact known endpoint and header credentials and are bounded", async () => {
@@ -418,4 +420,59 @@ test("fresh client process loads wizard config and token reference from isolated
 		const result = spawnSync(process.execPath, ["--no-warnings", "--input-type=module", "-e", script], { env, encoding: "utf8", timeout: 10000 });
 		assert.equal(result.status, 0, result.stderr);
 	} finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("web search forwards a trimmed, bounded objective and omits a blank one", async () => {
+	const calls: Record<string, unknown>[] = [];
+	const call = (async (_urls, _name, args) => { calls.push(args); return { checked: [], text: "{}" }; }) as typeof mcpToolCall;
+	await webSearchCall(["fwd"], { query: "q", num_results: 3, objective: "  Find the goal  " }, {}, call);
+	await webSearchCall(["fwd"], { query: "q", num_results: 3, objective: "   " }, {}, call);
+	await webSearchCall(["fwd"], { query: "q", num_results: 3, objective: "y".repeat(MAX_SEARCH_OBJECTIVE_CHARS + 50) }, {}, call);
+	assert.deepEqual(calls.slice(0, 2), [{ query: "q", num_results: 3, objective: "Find the goal" }, { query: "q", num_results: 3 }]);
+	assert.equal(calls[2].objective, "y".repeat(MAX_SEARCH_OBJECTIVE_CHARS));
+});
+
+const rejection = "Error calling tool 'web_search': 1 validation error for call[web_search]\nobjective\n  Unexpected keyword argument [type=unexpected_keyword_argument]";
+
+test("web search retries without objective when an older broker rejects it, then stops sending it", async () => {
+	const calls: Record<string, unknown>[] = [];
+	const old = (async (_urls, _name, args) => {
+		calls.push(args);
+		return "objective" in args ? { checked: [], error: rejection } : { checked: [], text: "{\"results\":[]}" };
+	}) as typeof mcpToolCall;
+	const result = await webSearchCall(["old"], { query: "q", num_results: 2, objective: "goal" }, {}, old);
+	assert.equal(result.text, "{\"results\":[]}");
+	await webSearchCall(["old"], { query: "q2", num_results: 2, objective: "goal" }, {}, old);
+	assert.deepEqual(calls, [
+		{ query: "q", num_results: 2, objective: "goal" },
+		{ query: "q", num_results: 2 },
+		{ query: "q2", num_results: 2 },
+	]);
+
+	let attempts = 0;
+	const down = (async () => { attempts++; return { checked: [], error: "HTTP 503" }; }) as typeof mcpToolCall;
+	assert.equal((await webSearchCall(["down"], { query: "q", num_results: 2, objective: "goal" }, {}, down)).error, "HTTP 503");
+	assert.equal(attempts, 1);
+});
+
+test("an older broker's rejection is recognized even when a later endpoint fails differently", async () => {
+	const sent: Record<string, unknown>[] = [];
+	const fetchImpl = (async (url: string, init: RequestInit) => {
+		const args = JSON.parse(String(init.body)).params.arguments;
+		sent.push({ url, ...args });
+		if (url.startsWith("https://old.example")) {
+			return "objective" in args
+				? new Response(JSON.stringify({ result: { isError: true, content: [{ type: "text", text: rejection }] } }))
+				: new Response(JSON.stringify({ result: { content: [{ type: "text", text: "{\"results\":[]}" }] } }));
+		}
+		return new Response("down", { status: 503 });
+	}) as typeof fetch;
+	const result = await webSearchCall(
+		["https://old.example/mcp", "https://backup.example/mcp"],
+		{ query: "q", num_results: 2, objective: "goal" },
+		{ fetchImpl, env: {}, config: {} },
+	);
+	assert.equal(result.text, "{\"results\":[]}");
+	assert.equal(sent.length, 3);
+	assert.ok(!("objective" in sent[2]));
 });

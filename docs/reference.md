@@ -430,9 +430,9 @@ For a machine that does NOT use the local model-gateway (e.g. Pi hitting Databri
   - provides `memory_read` and `memory_write` (`set_section`, `replace`, optional `path` to target another repository) plus `/memory [path|help]`
   - global memory is intentionally not implemented; store only durable facts that are costly to rediscover and not derivable from the repository, never secrets, task progress, logs, or guesses
 - `extensions/websearch` — local-search MCP-backed web tools:
-  - `web_search` calls the MCP broker tool `web_search(query, num_results)`
+  - `web_search` calls the MCP broker tool `web_search(query, num_results)`, plus an optional plain-language `objective` (`deep_research` sends its question); brokers that reject `objective` are retried without it
   - `web_fetch` calls the MCP broker tool `web_fetch(url, max_chars)`
-  - the broker is the stable entry point and owns provider policy. The standalone `local_web_search` service uses Brave Search and its own bounded fetch fallbacks; Pi does not bypass the broker. See `extensions/websearch/README.md`.
+  - the broker is the stable entry point and owns provider policy. The standalone `local_web_search` service uses Brave Search or Parallel and its own bounded fetch fallbacks; Pi does not bypass the broker. See `extensions/websearch/README.md`.
 - `extensions/goal` — durable `/goal` loop for long-running work:
   - `/goal <objective> [--max-turns N]` starts a user-requested goal
   - `/goal status`, `/goal pause`, `/goal resume`, `/goal reclaim`, `/goal clear` control it

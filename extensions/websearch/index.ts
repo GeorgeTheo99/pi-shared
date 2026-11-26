@@ -2,7 +2,7 @@
  * Web Search & Fetch Tools — native Pi wrappers around the local-search MCP broker.
  *
  * The MCP broker is the stable entry point for product/Pi search. It owns the
- * backend strategy (Brave in the standalone local_web_search service)
+ * backend strategy (Brave or Parallel in the standalone local_web_search service)
  * so clients do not bypass broker-level reliability, policy, and observability.
  */
 
@@ -14,6 +14,7 @@ import {
 	webSearchSelection,
 	mcpToolCall,
 	readConfiguredMcpUrls,
+	webSearchCall,
 	WEB_FETCH_TIMEOUT_MS,
 	WEB_SEARCH_TIMEOUT_MS,
 	type McpToolCallResult,
@@ -95,30 +96,33 @@ const webSearch = defineTool({
 	name: "web_search",
 	label: "Web Search",
 	description:
-		"Search the web via the configured local-search MCP broker. The broker owns provider selection and policy (Brave in the standalone service). Use this for ANY question about current events, news, facts, people, places, or any topic that requires up-to-date information. Returns ranked results with titles, URLs, and snippets.",
+		"Search the web via the configured local-search MCP broker. The broker owns provider selection and policy (Brave or Parallel in the standalone service). Use this for ANY question about current events, news, facts, people, places, or any topic that requires up-to-date information. Returns ranked results with titles, URLs, and snippets.",
 	promptSnippet: "web_search for quick web lookups via the local-search MCP broker",
 	promptGuidelines: [
 		"Use web_search for quick facts, current information, or single-page lookups. Use web_fetch to read a specific URL found via web_search.",
+		"Keep web_search's query to a few keywords and put the goal in objective (what you need and why, plus any source or date preference); goal-aware providers rank and excerpt results against it.",
 		"Do NOT use web_search for deep multi-source research — use deep_research instead.",
 		"Do NOT make 3+ sequential web_search + web_fetch calls for the same topic — use deep_research once instead.",
 		"For low-risk, reversible local actions, treat strong web_search results as execution hints: try the most plausible fix quickly, verify it directly, and escalate to deep_research only if that path fails.",
 	],
 	parameters: Type.Object({
-		query: Type.String({ description: "Search query" }),
+		query: Type.String({ description: "Search query: a few keywords" }),
 		num_results: Type.Optional(
 			Type.Number({ description: "Max results to return", default: 8 }),
+		),
+		objective: Type.Optional(
+			Type.String({
+				description: "Optional goal in plain language: what you need to find and why, with any source or date preference (at most 2000 characters)",
+				maxLength: 2000,
+			}),
 		),
 	}),
 
 	async execute(_id, params, signal, _onUpdate, _ctx) {
 		const numResults = normalizeCount(params.num_results ?? 8, 8);
-		const mcp = await mcpToolCall(
+		const mcp = await webSearchCall(
 			readConfiguredMcpUrls(),
-			"web_search",
-			{
-				query: params.query,
-				num_results: numResults,
-			},
+			{ query: params.query, num_results: numResults, objective: params.objective },
 			{ signal, timeoutMs: WEB_SEARCH_TIMEOUT_MS, requestId: "pi-websearch" },
 		);
 

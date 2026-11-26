@@ -18,6 +18,8 @@ export interface McpToolCallResult {
 	text?: string;
 	result?: unknown;
 	error?: string;
+	/** Tool-level (isError) messages from every endpoint tried, redacted like `error`. */
+	toolErrors?: string[];
 }
 
 export interface McpToolCallOptions {
@@ -315,6 +317,38 @@ export function mcpResultText(result: unknown): string | undefined {
 	return undefined;
 }
 
+/** The local_web_search broker's `objective` limit; longer goals are cut rather than refused. */
+export const MAX_SEARCH_OBJECTIVE_CHARS = 2000;
+// Endpoint lists whose broker predates `objective`, so later searches skip it.
+const objectiveUnsupported = new Set<string>();
+
+// Brokers older than the `objective` argument reject it as an unexpected keyword.
+function rejectedObjective(result: McpToolCallResult): boolean {
+	return !result.text && [result.error, ...(result.toolErrors ?? [])]
+		.some((message) => /\bobjective\b[\s\S]*unexpected keyword argument/i.test(message ?? ""));
+}
+
+/**
+ * Call the broker's web_search, adding an optional plain-language objective
+ * (used by goal-aware providers such as Parallel). When an older broker rejects
+ * the argument, retry without it and stop sending it to those endpoints.
+ */
+export async function webSearchCall(
+	endpointUrls: string[],
+	args: { query: string; num_results: number; objective?: string },
+	options: McpToolCallOptions = {},
+	call: typeof mcpToolCall = mcpToolCall,
+): Promise<McpToolCallResult> {
+	const { objective, ...base } = args;
+	const goal = objective?.trim().slice(0, MAX_SEARCH_OBJECTIVE_CHARS).trimEnd();
+	const key = endpointUrls.join("\n");
+	if (!goal || objectiveUnsupported.has(key)) return call(endpointUrls, "web_search", base, options);
+	const result = await call(endpointUrls, "web_search", { ...base, objective: goal }, options);
+	if (!rejectedObjective(result)) return result;
+	objectiveUnsupported.add(key);
+	return call(endpointUrls, "web_search", base, options);
+}
+
 export async function mcpToolCall(
 	endpointUrls: string[],
 	toolName: string,
@@ -330,6 +364,7 @@ export async function mcpToolCall(
 		fetchImpl = fetch,
 	} = options;
 	const checked: string[] = [];
+	const toolErrors: string[] = [];
 	const payload = {
 		jsonrpc: "2.0",
 		id: requestId,
@@ -408,6 +443,7 @@ export async function mcpToolCall(
 					(data.result as { isError?: unknown }).isError === true
 				) {
 					lastError = text || "MCP tool reported an error";
+					toolErrors.push(lastError);
 					continue;
 				}
 				if (!text) {
@@ -424,7 +460,12 @@ export async function mcpToolCall(
 				lastError = error instanceof Error ? error.message : String(error);
 			}
 		}
-		return { checked, error: safeError(lastError ?? "MCP broker unavailable", endpointUrls, env, broker?.token) };
+		const redact = (message: string) => safeError(message, endpointUrls, env, broker?.token);
+		return {
+			checked,
+			error: redact(lastError ?? "MCP broker unavailable"),
+			...(toolErrors.length ? { toolErrors: toolErrors.map(redact) } : {}),
+		};
 	} finally {
 		deadline.dispose();
 	}
