@@ -275,7 +275,7 @@ function refuseSubagents(): void {
  */
 async function approve(ctx: ExtensionContext, title: string, summary: string): Promise<boolean> {
 	refuseSubagents();
-	if (ctx.hasUI) return ctx.ui.confirm(title, summary);
+	if (ctx.hasUI) return ctx.ui.confirm(title, boundDialog(summary));
 	if (process.env.PI_JOBS_AUTO_APPROVE === "1") return true;
 	throw new PiJobsError("pi-jobs changes need confirmation, and this session has no UI. Run it interactively, or set PI_JOBS_AUTO_APPROVE=1 for a session whose prompt you trust.");
 }
@@ -342,7 +342,57 @@ async function buildDraft(client: PiJobsClient, ctx: ExtensionContext, changes: 
 	};
 }
 
-function describeDraft(draft: Awaited<ReturnType<typeof buildDraft>>): string {
+type Draft = Awaited<ReturnType<typeof buildDraft>>;
+
+// Confirmation dialogs taller than the terminal make the TUI glitch, so they stay as small as ask_user's.
+const DIALOG_MAX_LINES = 12;
+const DIALOG_MAX_CHARS = 800;
+const PREVIEW_CHARS = 160;
+
+/** One-line preview of long text (job instructions, release instructions) with its full size. */
+function excerpt(value: string): string {
+	const flat = value.replace(/\s+/g, " ").trim();
+	if (flat.length <= PREVIEW_CHARS && !value.includes("\n")) return flat;
+	const lines = value.trim().split("\n").length;
+	return `${flat.length > PREVIEW_CHARS ? `${flat.slice(0, PREVIEW_CHARS - 1)}…` : flat} (${lines} line(s), ${value.length} chars)`;
+}
+
+/** Hard cap on any confirmation body, whatever the server or the model put in it. */
+function boundDialog(body: string): string {
+	const more = "… (shortened to fit the dialog)";
+	const lines = body.split("\n").map((line) => (line.length > PREVIEW_CHARS * 2 ? `${line.slice(0, PREVIEW_CHARS * 2 - 1)}…` : line));
+	let kept = lines.slice(0, DIALOG_MAX_LINES);
+	while (kept.length > 1 && kept.join("\n").length > DIALOG_MAX_CHARS - more.length) kept = kept.slice(0, -1);
+	return kept.length < lines.length ? [...kept, more].join("\n") : kept.join("\n");
+}
+
+const DRAFT_LABELS: Record<keyof Draft, string> = {
+	name: "Name", repoPath: "Repository", baseRef: "Base branch", prompt: "Instructions", agent: "Agent", schedule: "Schedule",
+	webhookEnabled: "Webhook", timeoutMinutes: "Timeout (min)", checkCommand: "Check", pushBranch: "Push branch", watchCommand: "Watch",
+	approveRuns: "Approve automatic runs first", shipCommand: "Ship", releaseInstructions: "Release instructions",
+	autoRelease: "Release automatically after each run that succeeds with changes", verifyCommand: "Verify", enabled: "Enabled",
+};
+
+function draftValue(key: keyof Draft, value: Draft[keyof Draft]): string {
+	if (typeof value === "boolean") return value ? "yes" : "no";
+	if (value === null) return key === "agent" ? "server default" : "none";
+	if (value === "") return "none";
+	return excerpt(String(value));
+}
+
+/** What a jobs_update changes: only the fields that differ, long text as a preview. */
+function describeChanges(before: Draft, after: Draft): string {
+	const changed = (Object.keys(DRAFT_LABELS) as (keyof Draft)[]).filter((key) => before[key] !== after[key]);
+	if (!changed.length) return "No changes.";
+	return changed.map((key) => {
+		const long = key === "prompt" || key === "releaseInstructions";
+		return long
+			? `${DRAFT_LABELS[key]}: ${after[key] ? `changed to ${draftValue(key, after[key])}` : "removed"}`
+			: `${DRAFT_LABELS[key]}: ${draftValue(key, before[key])} → ${draftValue(key, after[key])}`;
+	}).join("\n");
+}
+
+function describeDraft(draft: Draft): string {
 	return [
 		`Name: ${draft.name}`,
 		`Repository: ${draft.repoPath} @ ${draft.baseRef}`,
@@ -351,10 +401,9 @@ function describeDraft(draft: Awaited<ReturnType<typeof buildDraft>>): string {
 		`Check: ${draft.checkCommand || "none"}; timeout ${draft.timeoutMinutes} min; push branch: ${draft.pushBranch ? "yes" : "no"}`,
 		...(draft.watchCommand ? [`Watch: ${draft.watchCommand}`] : []),
 		...(draft.approveRuns ? ["Runs from the schedule, webhook or watch wait for approval"] : []),
-		...(draft.releaseInstructions ? [`Release (the agent may push, ${draft.autoRelease ? "automatically after each run that succeeds with changes" : "only when the owner releases an item"}): ${draft.releaseInstructions}`] : []),
+		...(draft.releaseInstructions ? [`Release (the agent may push, ${draft.autoRelease ? "automatically after each run that succeeds with changes" : "only when the owner releases an item"}): ${excerpt(draft.releaseInstructions)}`] : []),
 		...(draft.shipCommand ? [`Ship (${draft.autoRelease ? "automatically after each run that succeeds with changes" : "only when the owner releases an item"}): ${draft.shipCommand}`] : []),
-		"",
-		draft.prompt,
+		`Instructions: ${excerpt(draft.prompt)}`,
 	].join("\n");
 }
 
@@ -413,7 +462,8 @@ export default function piJobs(pi: ExtensionAPI) {
 		async execute(_id, { jobId, ...changes }, signal, _update, ctx) {
 			const existing: Job = await client.request("GET", `/api/jobs/${jobId}`, undefined, signal);
 			const draft = await buildDraft(client, ctx, changes, existing, signal);
-			if (!(await approve(ctx, `Update pi-jobs job #${jobId}?`, describeDraft(draft)))) return declined("change");
+			const before = await buildDraft(client, ctx, {}, existing, signal);
+			if (!(await approve(ctx, `Update pi-jobs job #${jobId} "${existing.name}"?`, describeChanges(before, draft)))) return declined("change");
 			const job: Job = await client.request("PUT", `/api/jobs/${jobId}`, draft, signal);
 			return { content: text(`Updated job #${job.id}.\n${fence(jobDetail(client, job))}`), details: { saved: true, job: jobData(client, job) } };
 		},
@@ -474,13 +524,13 @@ export default function piJobs(pi: ExtensionAPI) {
 			if (!job.releaseInstructions && !job.shipCommand) throw new PiJobsError(`Job #${job.id} has no release instructions or ship command; set releaseInstructions or shipCommand with jobs_update first.`);
 			if (!ctx.hasUI) throw new PiJobsError("Releasing needs the user's confirmation in an interactive session; release from the pi-jobs UI instead.");
 			const how = job.releaseInstructions
-				? `The job's agent (${job.effectiveAgent}) follows its release instructions:\n${job.releaseInstructions}`
+				? `The job's agent (${job.effectiveAgent}) follows its release instructions:\n${excerpt(job.releaseInstructions)}`
 				: `Runs:\n${job.shipCommand}`;
 			// pi-jobs 0.9.0 says exactly what would go out, and refuses if the item moves on before it starts.
 			const preview: ReleasePreview | null = await client.request("GET", `/api/runs/${run.id}/release-preview`, undefined, signal).catch(() => null);
 			const facts = preview ? `\n\n${previewLines(preview).join("\n")}` : "";
-			const summary = `${runLine(client, run)}${facts}\n\nOn this item's newest result, as the server's owner, with their credentials. ${how}\n\nIt may merge, push, deploy or publish, and may not be undoable.`;
-			if (!(await ctx.ui.confirm(`Release pi-jobs job #${job.id}'s item?`, summary))) {
+			const summary = `${runLine(client, run)}\nIt may merge, push, deploy or publish, and may not be undoable.${facts}\n\nOn this item's newest result, as the server's owner, with their credentials. ${how}`;
+			if (!(await ctx.ui.confirm(`Release pi-jobs job #${job.id}'s item?`, boundDialog(summary)))) {
 				return { content: text("The user declined; nothing was released."), details: {} };
 			}
 			const shipped: Run = preview

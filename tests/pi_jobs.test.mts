@@ -194,6 +194,30 @@ test("update changes only the given fields; subagents may not change jobs", asyn
 	assert.match(listed.content[0].text, /#1 Job: .* pi, cron `0 8 \* \* 1`/);
 });
 
+test("confirmations stay dialog-sized: updates list only what changes, long text is previewed", async (t) => {
+	const server = await fakeServer(t);
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: undefined });
+	const longPrompt = Array.from({ length: 80 }, (_, i) => `Step ${i}: check the thing carefully and report what changed.`).join("\n");
+	const prompts: string[] = [];
+	const ui = ctx(checkout, { hasUI: true, ui: { confirm: async (_t: string, body: string) => { prompts.push(body); return true; } } });
+	const fits = (body: string) => body.split("\n").length <= 13 && body.length <= 800;
+
+	await call(tools, "jobs_create", { name: "Long", prompt: longPrompt, releaseInstructions: longPrompt, schedule: "0 6 * * *" }, ui);
+	assert.ok(fits(prompts[0]!), prompts[0]);
+	assert.match(prompts[0]!, /Schedule: 0 6 \* \* \*/);
+	assert.match(prompts[0]!, /Instructions: Step 0: check the thing.*… \(80 line\(s\), \d+ chars\)/);
+
+	await call(tools, "jobs_update", { jobId: 1, enabled: false }, ui);
+	assert.equal(prompts[1], "Enabled: yes → no");
+	await call(tools, "jobs_update", { jobId: 1, prompt: `${longPrompt}\nOne more step.`, schedule: "" }, ui);
+	assert.match(prompts[2]!, /^Instructions: changed to Step 0: .*… \(81 line\(s\), \d+ chars\)\nSchedule: 0 6 \* \* \* → none$/);
+	assert.equal(server.received.filter((r) => r.method === "PUT").at(-1)!.body.prompt, `${longPrompt}\nOne more step.`, "the full text is saved");
+
+	await call(tools, "jobs_ship", { runId: 9 }, ui);
+	assert.ok(fits(prompts[3]!), prompts[3]);
+	assert.match(prompts[3]!, /may not be undoable/);
+});
+
 test("runs, log tails, field errors, bad tokens and API versions are reported clearly", async (t) => {
 	const server = await fakeServer(t);
 	const url = `http://127.0.0.1:${server.port}`;

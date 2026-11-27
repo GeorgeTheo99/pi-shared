@@ -88,7 +88,9 @@ for its main checkout.
   job and act only after the user confirms. Non-interactive sessions (print mode, scripts) change
   nothing unless `PI_JOBS_AUTO_APPROVE=1` declares their prompt trusted. `jobs_ship` always asks
   the user in an interactive session, and is refused without one, auto-approve or not: a ship may
-  not be undoable.
+  not be undoable. Confirmations stay dialog-sized (at most 12 lines, 800 characters): `jobs_update`
+  lists only the fields it changes, and instructions and release instructions appear as a one-line
+  excerpt with their size; the full text is saved and shown by `jobs_list`.
 - **Not offered inside runs:** nothing is registered inside a pi-jobs run (`PI_JOBS_RUN_ID` set).
   This keeps scheduled agents from reaching for these tools; it is not a sandbox, since an
   unsandboxed agent runs as the owner and could read a token file.
