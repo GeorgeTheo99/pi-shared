@@ -293,7 +293,7 @@ const jobFields = {
 	name: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: "Short job name, e.g. \"Gateway model check\"." })),
 	prompt: Type.Optional(Type.String({ minLength: 1, description: "Complete, self-contained instructions for the unattended agent: what to check or change, how to verify it, and what to leave alone. It runs in a fresh worktree with no memory of this conversation." })),
 	schedule: Type.Optional(Type.String({ description: "Five-field cron expression in the server's local time, e.g. \"0 6 * * *\" (daily 06:00) or \"0 9 * * 1-5\" (weekdays 09:00). Empty string removes the schedule." })),
-	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent to run: pi, claude, codex, or an agent added in the server's Settings, such as a Pi launcher with its own model (\"pi-claude\"). \"default\" follows the server's default agent." })),
+	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent to run: pi, claude, codex, \"pi:<alias>\" for Pi on one of the server's model aliases (jobs_list shows them; \"pi:claude\" is the Claude bridge), or an agent added in the server's Settings. \"default\" follows the server's default agent." })),
 	baseRef: Type.Optional(Type.String({ description: "Branch runs start from (its pushed tip on origin). Default main." })),
 	checkCommand: Type.Optional(Type.String({ description: "Shell command run in the worktree after the agent, e.g. \"npm test\"; failing fails the run. Empty string removes it." })),
 	timeoutMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 1440, description: "Run time limit. Default 30." })),
@@ -435,7 +435,11 @@ export default function piJobs(pi: ExtensionAPI) {
 			}
 			const jobs: Job[] = await client.request("GET", "/api/jobs", undefined, signal);
 			const body = jobs.length ? fence(jobs.map((job) => jobLine(client, job)).join("\n")) : `No jobs yet. ${client.link("/")}`;
-			return { content: text(body), details: { jobs: jobs.map((job) => jobData(client, job)) } };
+			// pi-jobs 0.11.0 lists Pi's model aliases on the server; older servers don't, and that's fine.
+			const models: { models?: { alias?: unknown }[]; error?: unknown } | null = await client.request("GET", "/api/pi-models", undefined, signal).catch(() => null);
+			const aliases = (models?.models ?? []).map((m) => m.alias).filter((a): a is string => typeof a === "string");
+			const agents = aliases.length ? `\nPi model aliases on the server (agent "pi:<alias>"): ${aliases.join(", ")}` : "";
+			return { content: text(body + agents), details: { jobs: jobs.map((job) => jobData(client, job)) } };
 		},
 	})), Type.Object({ jobs: Type.Array(jobSchema) }, { additionalProperties: false }), (result) => ({ data: result.details })));
 

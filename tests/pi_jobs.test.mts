@@ -17,7 +17,7 @@ const TOOLS = ["jobs_approve", "jobs_create", "jobs_list", "jobs_run", "jobs_run
 interface Received { method: string; path: string; body: any }
 
 /** A minimal pi-jobs server: records requests and answers from canned state. */
-async function fakeServer(t: any, options: { apiVersion?: number; preview?: boolean } = {}) {
+async function fakeServer(t: any, options: { apiVersion?: number; preview?: boolean; piModels?: string[] } = {}) {
 	const received: Received[] = [];
 	const jobs = new Map<number, any>();
 	const job = (id: number, draft: any) => ({
@@ -37,6 +37,8 @@ async function fakeServer(t: any, options: { apiVersion?: number; preview?: bool
 		if (req.headers.authorization !== `Bearer ${TOKEN}`) return send(401, { error: "Sign in with an API token" });
 		const id = Number(url.pathname.split("/")[3]);
 		if (url.pathname === "/api/jobs" && req.method === "GET") return send(200, [...jobs.values()]);
+		// Servers from 0.11.0 list Pi's model aliases; older ones don't have the route.
+		if (url.pathname === "/api/pi-models" && options.piModels) return send(200, { models: options.piModels.map((alias) => ({ alias, aliases: [], name: alias, group: "cloud", default: false })), error: null });
 		if (url.pathname === "/api/jobs" && req.method === "POST") {
 			if (!body.prompt) return send(400, { error: "Fix the highlighted fields", fields: { prompt: "Tell the agent what to do" } });
 			const created = job(jobs.size + 1, body);
@@ -357,4 +359,18 @@ test("jobs_ship on pi-jobs 0.9.0 shows the release preview and pins the release 
 	assert.match(prompts[0]!, /origin\/main has 2 newer commit\(s\); merges cleanly; no check configured; then verifies with: curl -f localhost/);
 	const posted = server.received.find((r) => r.path === "/api/runs/9/release")!;
 	assert.deepEqual(posted.body, { expectedHead: "a".repeat(40) });
+});
+
+test("jobs_list names the server's Pi model aliases when it has them; pi:<alias> agents round-trip", async (t) => {
+	const server = await fakeServer(t, { piModels: ["claude", "gpt"] });
+	const { tools, checkout } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${server.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
+	await call(tools, "jobs_create", { name: "Bridge", prompt: "P", agent: "pi:claude" }, ctx(checkout));
+	assert.equal(server.received.find((r) => r.method === "POST" && r.path === "/api/jobs")!.body.agent, "pi:claude");
+	const listed = await call(tools, "jobs_list", {}, ctx(checkout));
+	assert.match(listed.content[0].text, /<\/pi-jobs-data [0-9a-f]{12}>\nPi model aliases on the server \(agent "pi:<alias>"\): claude, gpt$/);
+
+	const older = await fakeServer(t);
+	const { tools: olderTools } = await load(t, { PI_JOBS_URL: `http://127.0.0.1:${older.port}`, PI_JOBS_TOKEN: TOKEN, PI_JOBS_RUN_ID: undefined, PI_SUBAGENT_DEPTH: undefined, PI_JOBS_AUTO_APPROVE: "1" });
+	const plain = await call(olderTools, "jobs_list", {}, ctx(checkout));
+	assert.doesNotMatch(plain.content[0].text, /Pi model aliases/);
 });

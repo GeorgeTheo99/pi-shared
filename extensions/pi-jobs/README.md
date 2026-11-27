@@ -46,8 +46,10 @@ its output. See pi-jobs' README, Release.
 `releaseInstructions` (pi-jobs 0.8.0, instead of `shipCommand`) has the job's agent release the
 item: it continues the item's conversation and, in that run only, may merge, push, deploy and
 publish. `autoRelease` releases every run that succeeds with changes without asking. `agent` takes
-`pi`, `claude`, `codex` or any agent added in the server's Settings, such as a Pi launcher with its
-own model (`pi-claude`). Older servers ignore the new fields.
+`pi`, `claude`, `codex`, any agent added in the server's Settings, or (pi-jobs 0.11.0)
+`pi:<alias>` for Pi on one of the server's model aliases, such as `pi:claude` for the Claude
+bridge. `jobs_list` names the aliases the server's `pi models` lists. Older servers ignore the new
+fields.
 
 With pi-jobs 0.9.0, `jobs_ship` shows what the release would release (commit, size, how far the
 base branch moved and whether it merges cleanly, the check) in its confirmation and pins the
